@@ -1,0 +1,56 @@
+# Build artifacts
+*.o
+amber
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+test_output/
+
+# Exclude from repo
+scientific_documentation_amber_2025-12-21.md
+profile_results/
+
+# Temporary analysis files
+analyze_*
+explore_*
+filter_*
+test_*
+debug_*
+compare_*
+create_*
+summarize_*
+
+# Job logs
+*.err
+*.log
+
+# Backup directories
+src_backup*/
+src_jan*/
+include_backup*/
+build/
+data/
+experiments/
+paper_data/
+phylo_comparison/
+test_deconv_comparison/
+
+# Validation outputs
+8/
+16/
+
+# Documents (keep in separate repo)
+*.docx
+
+# Cache
+.cache/
+.claude/
+.entities
+.predicates
