@@ -76,18 +76,115 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] " << marker_index_->num_marker_contigs()
               << " contigs have markers across " << n_communities << " initial clusters\n";
 
-    // Calibrate lambda using dense version
-    // Phase 2: Disabled — unconstrained local moves from libleidenalg's result are not RBER
-    // local maxima in our backend, causing pathological merging (400→25 clusters).
-    // The MarkerIndex / quality weights are preserved for future post-processing use.
-    // TODO: Implement quality-guided contamination splitting (not merging) for Phase 2.
-    (void)comm_q;
     (void)comm_weights;
     (void)comm_sizes;
 
+    // Phase 2: Quality-guided contamination splitting.
+    // For each cluster with duplicate markers (dup_excess > 0), re-run libleidenalg
+    // on the cluster's subgraph at higher resolution. Accept splits that reduce
+    // contamination (total dup_excess decreases). Uses libleidenalg to avoid the
+    // objective mismatch that caused the old local-move Phase 2 to pathologically merge.
+    {
+        // Index nodes by cluster
+        std::vector<std::vector<int>> cluster_nodes(n_communities);
+        for (int i = 0; i < n_nodes; ++i) {
+            cluster_nodes[labels[i]].push_back(i);
+        }
+
+        int n_contaminated = 0;
+        int n_split = 0;
+
+        for (int c = 0; c < n_communities; ++c) {
+            if (comm_q[c].dup_excess == 0) continue;
+            const auto& nodes = cluster_nodes[c];
+            if ((int)nodes.size() <= 1) continue;
+            n_contaminated++;
+
+            // Build local ID map and extract subgraph edges
+            std::unordered_map<int, int> local_id;
+            local_id.reserve(nodes.size());
+            for (int i = 0; i < (int)nodes.size(); ++i) {
+                local_id[nodes[i]] = i;
+            }
+
+            std::vector<WeightedEdge> sub_edges;
+            for (int v : nodes) {
+                for (const auto& [u, w] : adj_[v]) {
+                    auto it = local_id.find(u);
+                    if (it != local_id.end() && u > v) {
+                        sub_edges.push_back({local_id[v], it->second, static_cast<float>(w)});
+                    }
+                }
+            }
+            if (sub_edges.empty()) continue;
+
+            // Re-cluster at 3x resolution to force finer splits
+            LeidenConfig sub_config = config;
+            sub_config.resolution = config.resolution * 3.0f;
+            sub_config.use_initial_membership = false;
+            sub_config.use_fixed_membership = false;
+            if (config.use_node_sizes) {
+                sub_config.node_sizes.resize(nodes.size());
+                for (int i = 0; i < (int)nodes.size(); ++i) {
+                    sub_config.node_sizes[i] = node_sizes_[nodes[i]];
+                }
+            }
+
+#ifdef USE_LIBLEIDENALG
+            LibLeidenalgBackend sub_leiden;
+            ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
+#else
+            LeidenBackend sub_leiden;
+            ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
+#endif
+            if (sub_result.num_clusters <= 1) continue;
+
+            // Compute dup_excess for each new sub-cluster
+            std::vector<CommQuality> sub_q(sub_result.num_clusters);
+            for (int i = 0; i < (int)nodes.size(); ++i) {
+                int sc = sub_result.labels[i];
+                for (const auto& entry : marker_index_->get_markers(nodes[i])) {
+                    int m = entry.id;
+                    int k = entry.copy_count;
+                    if (sub_q[sc].cnt[m] == 0) sub_q[sc].present++;
+                    sub_q[sc].cnt[m] += k;
+                }
+            }
+            int new_dup_excess = 0;
+            for (auto& cq : sub_q) {
+                for (int m = 0; m < MAX_MARKER_TYPES; ++m) {
+                    if (cq.cnt[m] > 1) new_dup_excess += cq.cnt[m] - 1;
+                }
+            }
+
+            if (new_dup_excess >= comm_q[c].dup_excess) continue;  // no improvement
+
+            // Accept split: sub-cluster 0 keeps label c, rest get new labels
+            std::vector<int> sc_to_global(sub_result.num_clusters);
+            sc_to_global[0] = c;
+            for (int sc = 1; sc < sub_result.num_clusters; ++sc) {
+                sc_to_global[sc] = n_communities + sc - 1;
+            }
+            for (int i = 0; i < (int)nodes.size(); ++i) {
+                labels[nodes[i]] = sc_to_global[sub_result.labels[i]];
+            }
+            n_communities += sub_result.num_clusters - 1;
+            n_split++;
+
+            std::cerr << "[QualityLeiden] Split cluster " << c << " (" << nodes.size()
+                      << " nodes, dup_excess " << comm_q[c].dup_excess
+                      << " -> " << new_dup_excess << ") into "
+                      << sub_result.num_clusters << " parts\n";
+        }
+
+        std::cerr << "[QualityLeiden-MT] Phase 2: " << n_contaminated
+                  << " contaminated clusters, " << n_split << " split, "
+                  << n_communities << " total\n";
+    }
+
     // Compact labels and compute final modularity
     n_communities = compact_labels(labels);
-    double modularity = modularity_rber(labels, config.resolution);
+    double modularity = initial_result.modularity;
 
     ClusteringResult result;
     result.labels = labels;
