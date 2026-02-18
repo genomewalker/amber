@@ -79,13 +79,17 @@ struct QualityLeidenConfig {
     // Stage 2: top restart_stage2_topk arms, restart_stage2_extra runs via UCB bandit
     //          → Phase 2 score for candidates within margin of global best
     // Stage 3: best arm, up to restart_stage3_extra runs (always Phase 2), early stop
-    int   n_leiden_restarts    = 1;     // Total budget (1 = off)
-    int   restart_stage1_res   = 7;     // Stage 1 resolution grid
-    int   restart_stage2_topk  = 3;     // Top arms to race in Stage 2
-    int   restart_stage2_extra = 12;    // Extra runs across top arms in Stage 2
-    int   restart_stage3_extra = 6;     // Max extra runs on best arm in Stage 3
-    int   restart_patience     = 4;     // Stage 3 early stop after N non-improving runs
-    float restart_ucb_beta     = 1.0f;  // UCB: priority = mean + beta * std
+    int      n_leiden_restarts    = 1;        // Total budget (1 = off)
+    int      restart_stage1_res   = 7;        // Stage 1 resolution grid
+    int      restart_stage2_topk  = 3;        // Top arms to race in Stage 2
+    int      restart_stage2_extra = 12;       // Extra runs across top arms in Stage 2
+    int      restart_stage3_extra = 6;        // Max extra runs on best arm in Stage 3
+    int      restart_patience     = 4;        // Stage 3 early stop after N non-improving runs
+    float    restart_ucb_beta     = 1.0f;     // UCB: priority = mean + beta * std
+    long long restart_min_viable_bp = 200000; // Only score clusters >= this size in bp
+                                              // Prevents the search from favouring high
+                                              // resolutions that shatter clusters into tiny
+                                              // sub-threshold fragments.
 };
 
 // Snapshot of one (resolution, seed) candidate from the restart search.

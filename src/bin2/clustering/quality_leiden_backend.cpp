@@ -82,22 +82,35 @@ void QualityLeidenBackend::init_comm_internal(
 float QualityLeidenBackend::scg_score_labels(
     const std::vector<int>& labels, int n_communities) const {
     if (!marker_index_ || marker_index_->num_marker_contigs() == 0) return 0.0f;
+
     std::vector<CommQuality> cq(n_communities);
+    std::vector<long long>   comm_bp(n_communities, 0);
+
     for (int i = 0; i < n_nodes_; ++i) {
         int c = labels[i];
+        comm_bp[c] += node_sizes_[i];
         for (const auto& entry : marker_index_->get_markers(i)) {
-            int m = entry.id;
-            int k = entry.copy_count;
+            int m = entry.id, k = entry.copy_count;
             if (cq[c].cnt[m] == 0) cq[c].present++;
             cq[c].cnt[m] += k;
         }
     }
     for (auto& q : cq) {
-        for (int m = 0; m < MAX_MARKER_TYPES; ++m) {
+        for (int m = 0; m < MAX_MARKER_TYPES; ++m)
             if (q.cnt[m] > 1) q.dup_excess += q.cnt[m] - 1;
-        }
     }
-    return scg_quality_score(cq);
+
+    // Only score viable clusters — skip those below the minimum bin size.
+    // Without this filter the objective monotonically increases with resolution
+    // (more clusters → less dup_excess per cluster) even when most clusters are
+    // too small to be real bins.
+    float score = 0.0f;
+    for (int c = 0; c < n_communities; ++c) {
+        if (comm_bp[c] < qconfig_.restart_min_viable_bp) continue;
+        score += static_cast<float>(cq[c].present)
+               - qconfig_.contamination_penalty * static_cast<float>(cq[c].dup_excess);
+    }
+    return score;
 }
 
 // Internal SCG quality score: sum of (completeness - penalty * contamination) over all clusters.
