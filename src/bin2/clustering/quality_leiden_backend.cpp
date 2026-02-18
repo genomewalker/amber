@@ -736,10 +736,19 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     }
 
     // Phase 1b (optional): marker-guided map equation refinement.
+    // The per-move quality delta only guards marker contigs; unmarked contigs
+    // (most of them) are moved freely by the map equation and can cascade into
+    // large cluster merges. We therefore compute the partition-level SCG score
+    // before and after, and revert if it decreased.
     if (qconfig_.use_map_equation) {
         std::cerr << "[QualityLeiden-MT] Phase 1b: map-equation quality refinement...\n";
 
         n_communities = compact_labels(labels);
+
+        // Snapshot before Phase 1b for partition-level quality guard.
+        std::vector<int>    labels_before_p1b    = labels;
+        int                 n_comm_before_p1b    = n_communities;
+        float               score_before_p1b     = scg_score_labels(labels, n_communities);
 
         comm_weights.assign(n_communities, 0.0);
         comm_sizes.assign(n_communities, 0.0);
@@ -770,6 +779,25 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
                                     config.resolution, lambda, n_threads);
 
         n_communities = compact_labels(labels);
+
+        // Partition-level quality guard: revert if SCG score decreased.
+        // Per-move quality deltas only apply to marker contigs (~269 of 28162),
+        // so the map equation can cascade-merge clusters through unmarked contigs.
+        float score_after_p1b = scg_score_labels(labels, n_communities);
+        if (score_after_p1b < score_before_p1b) {
+            std::cerr << "[QualityLeiden-MT] Phase 1b degraded score ("
+                      << score_before_p1b << " -> " << score_after_p1b
+                      << ", " << n_comm_before_p1b << " -> " << n_communities
+                      << " clusters) — reverting\n";
+            labels        = std::move(labels_before_p1b);
+            n_communities = n_comm_before_p1b;
+        } else {
+            std::cerr << "[QualityLeiden-MT] Phase 1b accepted ("
+                      << score_before_p1b << " -> " << score_after_p1b
+                      << ", " << n_comm_before_p1b << " -> " << n_communities
+                      << " clusters)\n";
+        }
+
         std::cerr << "[QualityLeiden-MT] Phase 1b done: " << n_communities << " clusters\n";
     }
 
