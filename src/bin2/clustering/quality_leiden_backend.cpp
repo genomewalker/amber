@@ -143,6 +143,13 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             if (comm_q[c].dup_excess == 0) continue;
             const auto& nodes = cluster_nodes[c];
             if ((int)nodes.size() <= 1) continue;
+
+            // Only split if cluster is large enough to yield at least 2 viable bins
+            // (> 2 × 200kb min_bin_size). Splitting small clusters just fragments good bins.
+            long long total_bp = 0;
+            for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+            if (total_bp < 400000LL) continue;
+
             n_contaminated++;
 
             // Build local ID map and extract subgraph edges
@@ -190,6 +197,11 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
 #endif
             if (sub_result.num_clusters <= 1) continue;
+
+            // Reject if over-fragmented: a cluster with dup_excess=k needs at most k+2 parts.
+            // Over-fragmented splits shatter viable bins into sub-threshold fragments.
+            int max_acceptable = comm_q[c].dup_excess + 2;
+            if (sub_result.num_clusters > max_acceptable) continue;
 
             // Compute dup_excess for each new sub-cluster
             std::vector<CommQuality> sub_q(sub_result.num_clusters);
