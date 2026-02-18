@@ -126,8 +126,9 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
 
         int n_contaminated = 0;
         int n_split = 0;
+        int original_n_communities = n_communities;  // freeze before splits grow n_communities
 
-        for (int c = 0; c < n_communities; ++c) {
+        for (int c = 0; c < original_n_communities; ++c) {
             if (comm_q[c].dup_excess == 0) continue;
             const auto& nodes = cluster_nodes[c];
             if ((int)nodes.size() <= 1) continue;
