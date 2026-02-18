@@ -81,8 +81,7 @@ std::vector<std::string> SeedGenerator::generate(const std::string& contigs_path
 
     // Step 4: Select seeds
     auto seeds = select_seeds(hits, output_path);
-    std::cerr << "[seeds] Selected " << seeds.size() << " seed contigs from "
-              << selected_markers_ << " markers\n";
+    std::cerr << "[seeds] Selected " << seeds.size() << " seed contigs\n";
 
     return seeds;
 }
@@ -347,39 +346,53 @@ std::vector<std::string> SeedGenerator::select_seeds(const std::vector<HMMHit>& 
     size_t median_count = counts[counts.size() / 2];
     std::cerr << "[seeds] Median marker hit count: " << median_count << "\n";
 
-    // Build best-coverage map: marker -> contig -> max alignment coverage
-    std::unordered_map<std::string, std::unordered_map<std::string, double>> best_cov;
+    // COMEBin seed selection: pick the single marker whose count == median_count
+    // (smallest query length as tiebreaker). Since the marker is single-copy, each
+    // of its N hits comes from a different genome → exactly N seeds, one per genome.
+    // Multi-marker selection risks assigning multiple seeds to the same genome
+    // (different SCGs on different contigs of the same organism), which causes Leiden
+    // to fragment that genome into separate fixed clusters.
+    std::unordered_map<std::string, int> marker_qlen;
     for (const auto& hit : hits) {
-        auto it = contig_lengths_.find(hit.contig);
-        if (it == contig_lengths_.end() || static_cast<int>(it->second) < min_length_) continue;
-        best_cov[hit.marker][hit.contig] = std::max(best_cov[hit.marker][hit.contig], hit.coverage);
+        if (!marker_qlen.count(hit.marker) || hit.qlen < marker_qlen[hit.marker]) {
+            marker_qlen[hit.marker] = hit.qlen;
+        }
     }
 
-    // For each marker with count <= median (reliable single-copy in this sample):
-    // select the one contig with highest alignment coverage.
-    // Using multiple markers gives seeds that span many gene families / genomes.
-    std::unordered_set<std::string> seed_set;
-    int qualifying_markers = 0;
+    std::string best_marker;
+    int best_qlen = std::numeric_limits<int>::max();
     for (const auto& [marker, contigs] : by_marker) {
-        if (contigs.size() > median_count) continue;
-
-        const auto& cov_map = best_cov[marker];
-        if (cov_map.empty()) continue;
-
-        std::string best_contig;
-        double best = -1.0;
-        for (const auto& [contig, cov] : cov_map) {
-            if (cov > best) { best = cov; best_contig = contig; }
-        }
-        if (!best_contig.empty()) {
-            seed_set.insert(best_contig);
-            qualifying_markers++;
+        if (contigs.size() != median_count) continue;
+        int qlen = marker_qlen.count(marker) ? marker_qlen[marker] : INT_MAX;
+        if (qlen < best_qlen) {
+            best_qlen = qlen;
+            best_marker = marker;
         }
     }
-    selected_markers_ = qualifying_markers;
 
-    std::cerr << "[seeds] Selected " << seed_set.size() << " unique seed contigs from "
-              << qualifying_markers << " markers with count <= " << median_count << "\n";
+    // Fallback: if no marker has exactly median_count, take closest above
+    if (best_marker.empty()) {
+        for (const auto& [marker, contigs] : by_marker) {
+            if (contigs.size() < median_count) continue;
+            int qlen = marker_qlen.count(marker) ? marker_qlen[marker] : INT_MAX;
+            if (qlen < best_qlen) {
+                best_qlen = qlen;
+                best_marker = marker;
+            }
+        }
+    }
+
+    std::unordered_set<std::string> seed_set;
+    if (!best_marker.empty()) {
+        for (const auto& contig : by_marker[best_marker]) {
+            seed_set.insert(contig);
+        }
+        selected_markers_ = 1;
+        std::cerr << "[seeds] Selected marker: " << best_marker
+                  << " (qlen=" << best_qlen << ", hits=" << seed_set.size() << ")\n";
+    } else {
+        selected_markers_ = 0;
+    }
 
     std::vector<std::string> seeds(seed_set.begin(), seed_set.end());
 
