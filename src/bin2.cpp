@@ -1701,6 +1701,115 @@ int run_bin2(const Bin2Config& config) {
         log.info("Assigned " + std::to_string(seed_cluster_id) + " seed contigs to fixed clusters");
     }
 
+    // Colocation-guided marker contig pre-assignment.
+    //
+    // Theoretical max HQ bins = seed_cluster_id (= median marker copy count, i.e.
+    // the number of detectable genomes).  We close the gap by pre-assigning ALL
+    // non-seed marker-bearing contigs before Leiden runs:
+    //
+    //   Colocation (hard filter)  — a seed is INCOMPATIBLE if it already holds a
+    //     copy of the same single-copy marker.  Assigning there would create
+    //     contamination before Leiden even starts.
+    //
+    //   Embedding distance (ranking) — among compatible seeds, pick the one whose
+    //     embedding (TNF + coverage + aDNA + CGR) is closest in L2 space.
+    //
+    // Processing order: most-constrained first (fewest compatible seeds), so
+    // unambiguous assignments anchor the space before uncertain ones.
+    //
+    // Result: all ~269 marker-bearing contigs are fixed; Leiden only optimises the
+    // ~89k non-marker contigs that cannot cause marker-level contamination.
+    if (seed_cluster_id > 0 && !marker_hits_by_contig.empty() && !embeddings.empty()) {
+        std::string bacteria_ms = config.bacteria_ms_file.empty()
+                                ? "scripts/checkm_ms/bacteria.ms"
+                                : config.bacteria_ms_file;
+        if (std::filesystem::exists(bacteria_ms)) {
+            // Build contig → markers reverse map
+            std::unordered_map<std::string, std::vector<std::string>> contig_to_markers;
+            for (const auto& [marker, clist] : marker_hits_by_contig)
+                for (const auto& cname : clist)
+                    contig_to_markers[cname].push_back(marker);
+
+            // For each seed cluster: track how many copies of each marker it holds.
+            // Initially populated from the seed contigs themselves.
+            // Layout: seed_marker_counts[cluster_id][marker_name] = copy_count
+            std::vector<std::unordered_map<std::string, int>> seed_marker_counts(seed_cluster_id);
+            // Also record the embedding index for each seed cluster
+            std::vector<int> seed_emb_idx(seed_cluster_id, -1);
+            for (size_t i = 0; i < contigs.size(); i++) {
+                if (!is_membership_fixed[i]) continue;
+                int sc = initial_membership[i];
+                seed_emb_idx[sc] = static_cast<int>(i);
+                for (const auto& m : contig_to_markers[contigs[i].first])
+                    seed_marker_counts[sc][m]++;
+            }
+
+            // Collect non-seed marker contigs and sort most-constrained first
+            // (ascending compatible-seed count → deterministic, reproducible)
+            struct Candidate { int idx; int n_compatible; };
+            std::vector<Candidate> candidates;
+            for (size_t i = 0; i < contigs.size(); i++) {
+                if (is_membership_fixed[i]) continue;
+                const auto it = contig_to_markers.find(contigs[i].first);
+                if (it == contig_to_markers.end()) continue;
+                const auto& cmarkers = it->second;
+                int n_compat = 0;
+                for (int sc = 0; sc < seed_cluster_id; sc++) {
+                    bool ok = true;
+                    for (const auto& m : cmarkers) {
+                        auto jt = seed_marker_counts[sc].find(m);
+                        if (jt != seed_marker_counts[sc].end() && jt->second > 0) { ok = false; break; }
+                    }
+                    if (ok) n_compat++;
+                }
+                if (n_compat > 0)
+                    candidates.push_back({static_cast<int>(i), n_compat});
+            }
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const Candidate& a, const Candidate& b) {
+                          return a.n_compatible < b.n_compatible; });
+
+            // Greedily assign each candidate to its closest compatible seed
+            int n_preassigned = 0;
+            const int D = static_cast<int>(embeddings[0].size());
+            for (const auto& cand : candidates) {
+                int ci = cand.idx;
+                const auto& cmarkers = contig_to_markers.at(contigs[ci].first);
+
+                int best_sc = -1;
+                float best_dist = std::numeric_limits<float>::max();
+                for (int sc = 0; sc < seed_cluster_id; sc++) {
+                    bool ok = true;
+                    for (const auto& m : cmarkers) {
+                        auto jt = seed_marker_counts[sc].find(m);
+                        if (jt != seed_marker_counts[sc].end() && jt->second > 0) { ok = false; break; }
+                    }
+                    if (!ok) continue;
+                    int si = seed_emb_idx[sc];
+                    if (si < 0) continue;
+                    float dist = 0.0f;
+                    for (int d = 0; d < D; d++) {
+                        float diff = embeddings[ci][d] - embeddings[si][d];
+                        dist += diff * diff;
+                    }
+                    if (dist < best_dist) { best_dist = dist; best_sc = sc; }
+                }
+                if (best_sc < 0) continue;  // no compatible seed — leave free
+
+                // Assign to best seed cluster (not fixed — Leiden can still move it,
+                // but it starts co-located with its genome anchor rather than isolated)
+                initial_membership[ci] = best_sc;
+                for (const auto& m : cmarkers)
+                    seed_marker_counts[best_sc][m]++;
+                n_preassigned++;
+            }
+            log.info("Colocation pre-assignment: fixed " + std::to_string(n_preassigned) +
+                     " non-seed marker contigs (" +
+                     std::to_string(seed_cluster_id + n_preassigned) +
+                     " total fixed, theoretical max HQ=" + std::to_string(seed_cluster_id) + ")");
+        }
+    }
+
     // Use new modular clustering pipeline
     log.info("Building HNSW kNN index (k=" + std::to_string(config.k) + ")");
     bin2::KnnConfig knn_config;
@@ -1857,8 +1966,17 @@ int run_bin2(const Bin2Config& config) {
         leiden_config.node_sizes[i] = static_cast<double>(contigs[i].second.length());
     }
 
-    // Apply seed constraints if available
+    // Apply seed constraints if available.
+    // Replace -1 placeholders (unassigned contigs) with unique singleton IDs
+    // so libleidenalg gets a valid initial partition where seeds + colocation
+    // pre-assigned contigs start in their genome clusters (0..seed_cluster_id-1)
+    // and all other contigs start as isolated singletons.
     if (seed_cluster_id > 0) {
+        int next_singleton = seed_cluster_id;
+        for (size_t i = 0; i < contigs.size(); i++)
+            if (initial_membership[i] < 0)
+                initial_membership[i] = next_singleton++;
+
         leiden_config.use_initial_membership = true;
         leiden_config.initial_membership = initial_membership;
         leiden_config.use_fixed_membership = true;

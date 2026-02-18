@@ -966,12 +966,18 @@ ClusteringResult LibLeidenalgBackend::cluster(
     // NOTE: With our patch to GraphHelper.cpp, density uses vertex count, not sum of node_sizes
     Graph graph(&impl_->igraph, edge_weights, node_sizes);
 
-    // Initial membership: always start with singletons [0, 1, 2, ..., n-1]
-    // Seed constraints are handled via is_fixed below, NOT via initial_membership.
-    // Using config.initial_membership causes libleidenalg to not merge clusters properly
-    // (regression identified: 26798 singletons instead of ~384 merged clusters).
+    // Initial membership: use provided partition when available (seeds + colocation
+    // pre-assigned contigs start in their genome clusters; unassigned contigs start
+    // as unique singletons with IDs > seed_cluster_id).
+    // Falls back to iota (all singletons) when no initial membership is provided.
     std::vector<size_t> initial_membership(n_nodes);
-    std::iota(initial_membership.begin(), initial_membership.end(), 0);
+    if (config.use_initial_membership &&
+        config.initial_membership.size() == static_cast<size_t>(n_nodes)) {
+        for (int i = 0; i < n_nodes; i++)
+            initial_membership[i] = static_cast<size_t>(config.initial_membership[i]);
+    } else {
+        std::iota(initial_membership.begin(), initial_membership.end(), 0);
+    }
 
     // Create RBERVertexPartition (Erdős-Rényi null model - same as COMEBin)
     RBERVertexPartition partition(&graph, initial_membership, config.resolution);
