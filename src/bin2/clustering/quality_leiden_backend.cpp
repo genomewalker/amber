@@ -82,36 +82,55 @@ void QualityLeidenBackend::init_comm_internal(
 float QualityLeidenBackend::scg_score_labels(
     const std::vector<int>& labels, int n_communities) const {
     if (!marker_index_ || marker_index_->num_marker_contigs() == 0) return 0.0f;
+    // labels must be compacted: all values in [0, n_communities).
+    // node_names_ must have size >= n_nodes_ when CheckM path is taken.
 
-    // Group nodes by cluster and accumulate bp.
+    // Accumulate bp per cluster.
     std::vector<long long> comm_bp(n_communities, 0);
     for (int i = 0; i < n_nodes_; ++i)
         comm_bp[labels[i]] += static_cast<long long>(node_sizes_[i]);
 
-    // --- CheckM path: proper colocation-based HQ count ---
-    // Direct optimisation target: returns the number of viable clusters that
-    // meet the CheckM HQ threshold (completeness >= 90%, contamination <= 5%).
+    // --- CheckM path: lexicographic composite score ---
+    // Priority: HQ (90/5) > 70/10 MQ > 50/5 bins > avg soft quality.
+    // Strict scale separation (1e6 / 1e4 / 1e2 / <1) ensures correctness even
+    // when many clusters contribute to the soft term.
     if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
         std::vector<std::vector<int>> cluster_nodes(n_communities);
         for (int i = 0; i < n_nodes_; ++i)
             cluster_nodes[labels[i]].push_back(i);
 
-        int hq = 0;
+        int   num_905 = 0, num_705 = 0, num_505 = 0;
+        float total_comp = 0.0f, total_cont = 0.0f;
+        int   n_viable = 0;
+
         for (int c = 0; c < n_communities; ++c) {
             if (comm_bp[c] < qconfig_.restart_min_viable_bp) continue;
             std::vector<std::string> names;
             names.reserve(cluster_nodes[c].size());
             for (int v : cluster_nodes[c]) names.push_back((*node_names_)[v]);
             auto q = checkm_est_->estimate_bin_quality(names);
-            if (q.completeness >= 90.0f && q.contamination <= 5.0f) hq++;
+
+            if (q.completeness >= 90.0f && q.contamination <=  5.0f) num_905++;
+            if (q.completeness >= 70.0f && q.contamination <= 10.0f) num_705++;
+            if (q.completeness >= 50.0f && q.contamination <=  5.0f) num_505++;
+            total_comp += q.completeness;
+            total_cont += q.contamination;
+            n_viable++;
         }
-        return static_cast<float>(hq);
+
+        // Soft tiebreaker: mean (comp - 5*cont) normalised to (-1, +1) so it
+        // never overrides a difference in the discrete category counts.
+        float soft = (n_viable > 0)
+            ? (total_comp - 5.0f * total_cont) / (n_viable * 100.0f)
+            : 0.0f;
+
+        return 1e6f * num_905 + 1e4f * num_705 + 1e2f * num_505 + soft;
     }
 
     // --- Proxy path (fallback when CheckM estimator not available) ---
-    // Soft score: Σ_viable_cluster [present - penalty * dup_excess].
-    // Only count clusters above the minimum bin size to avoid the monotonicity
-    // trap (more clusters → less dup_excess per cluster at any resolution).
+    // Soft score Σ_viable [present - penalty * dup_excess].
+    // The min-viable-bp filter prevents the monotonicity trap (more clusters →
+    // less dup_excess per cluster) that caused UCB to favour res=50.
     std::vector<CommQuality> cq(n_communities);
     for (int i = 0; i < n_nodes_; ++i) {
         int c = labels[i];
@@ -293,20 +312,20 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
         for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
         if (total_bp < 400000LL) continue;
 
-        // Decide whether to attempt a split.
-        // With CheckM: only split clusters that are genuinely contaminated (>5%).
-        // Without CheckM: fall back to any duplicate marker excess (old behavior).
-        bool should_split = false;
-        if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
+        // Decide whether to attempt a split, using the same objective family
+        // for trigger, fragmentation guard, and acceptance.
+        bool use_checkm = checkm_est_ && node_names_ && checkm_est_->has_marker_sets();
+        CheckMQuality parent_q;
+        if (use_checkm) {
             std::vector<std::string> cluster_names;
             cluster_names.reserve(nodes.size());
             for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
-            auto q = checkm_est_->estimate_bin_quality(cluster_names);
-            should_split = (q.contamination > 5.0f);
+            parent_q = checkm_est_->estimate_bin_quality(cluster_names);
+            // +0.5 hysteresis to avoid splitting near-clean clusters under estimator noise
+            if (parent_q.contamination <= 5.5f) continue;
         } else {
-            should_split = (comm_q[c].dup_excess > 0);
+            if (comm_q[c].dup_excess == 0) continue;
         }
-        if (!should_split) continue;
 
         n_contaminated++;
         std::unordered_map<int, int> local_id;
@@ -345,35 +364,104 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
         ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
 #endif
         if (sub_result.num_clusters <= 1) continue;
-        if (sub_result.num_clusters > comm_q[c].dup_excess + 2) continue;
 
-        std::vector<CommQuality> sub_q(sub_result.num_clusters);
-        for (int i = 0; i < (int)nodes.size(); ++i) {
-            int sc = sub_result.labels[i];
-            for (const auto& entry : marker_index_->get_markers(nodes[i])) {
-                int m = entry.id, k = entry.copy_count;
-                if (sub_q[sc].cnt[m] == 0) sub_q[sc].present++;
-                sub_q[sc].cnt[m] += k;
+        // --- Fragmentation guard (same objective family as trigger) ---
+        if (use_checkm) {
+            // Guard in bp-space: limit children to 2 + floor(parent_bp / min_viable_bp),
+            // capped at 12. Also require >= 2 children above the size threshold.
+            int max_children = std::min(12, 2 + static_cast<int>(
+                total_bp / static_cast<long long>(qconfig_.restart_min_viable_bp)));
+            if (sub_result.num_clusters > max_children) continue;
+
+            // Count viable children and spill bp.
+            std::vector<long long> sub_bp(sub_result.num_clusters, 0);
+            for (int i = 0; i < (int)nodes.size(); ++i)
+                sub_bp[sub_result.labels[i]] += static_cast<long long>(node_sizes_[nodes[i]]);
+
+            int viable_children = 0;
+            long long spill_bp = 0;
+            for (int sc = 0; sc < sub_result.num_clusters; ++sc) {
+                if (sub_bp[sc] >= qconfig_.restart_min_viable_bp) viable_children++;
+                else spill_bp += sub_bp[sc];
             }
+            if (viable_children < 2) continue;
+            if (static_cast<float>(spill_bp) / total_bp > 0.25f) continue;
+
+            // --- CheckM acceptance: consistent with trigger objective ---
+            // Primary: any new viable HQ child that wasn't there before.
+            // Secondary: weighted-average contamination drops by >= 1%, completeness
+            //            stays within 2% (anti-regression).
+            int parent_hq = (parent_q.completeness >= 90.0f &&
+                             parent_q.contamination <=  5.0f &&
+                             total_bp >= qconfig_.restart_min_viable_bp) ? 1 : 0;
+
+            float wcont = 0.0f, wcomp = 0.0f;
+            int child_hq = 0;
+            for (int sc = 0; sc < sub_result.num_clusters; ++sc) {
+                if (sub_bp[sc] < qconfig_.restart_min_viable_bp) continue;
+                std::vector<std::string> sub_names;
+                for (int i = 0; i < (int)nodes.size(); ++i)
+                    if (sub_result.labels[i] == sc)
+                        sub_names.push_back((*node_names_)[nodes[i]]);
+                auto sq = checkm_est_->estimate_bin_quality(sub_names);
+                float frac = static_cast<float>(sub_bp[sc]) / total_bp;
+                wcont += frac * sq.contamination;
+                wcomp += frac * sq.completeness;
+                if (sq.completeness >= 90.0f && sq.contamination <= 5.0f) child_hq++;
+            }
+
+            bool accept = (child_hq > parent_hq) ||
+                          (wcont <= parent_q.contamination - 1.0f &&
+                           wcomp >= parent_q.completeness - 2.0f);
+            if (!accept) continue;
+
+            std::vector<int> sc_to_global(sub_result.num_clusters);
+            sc_to_global[0] = c;
+            for (int sc = 1; sc < sub_result.num_clusters; ++sc)
+                sc_to_global[sc] = n_communities + sc - 1;
+            for (int i = 0; i < (int)nodes.size(); ++i)
+                labels[nodes[i]] = sc_to_global[sub_result.labels[i]];
+            n_communities += sub_result.num_clusters - 1;
+            n_split++;
+
+            std::cerr << "[QualityLeiden] Split cluster " << c
+                      << " (cont " << parent_q.contamination
+                      << "% -> wcont " << wcont
+                      << "%, hq " << parent_hq << "->" << child_hq
+                      << ") into " << sub_result.num_clusters << " parts\n";
+        } else {
+            // --- Proxy acceptance: dup_excess must decrease ---
+            if (sub_result.num_clusters > comm_q[c].dup_excess + 2) continue;
+
+            std::vector<CommQuality> sub_q(sub_result.num_clusters);
+            for (int i = 0; i < (int)nodes.size(); ++i) {
+                int sc = sub_result.labels[i];
+                for (const auto& entry : marker_index_->get_markers(nodes[i])) {
+                    int m = entry.id, k = entry.copy_count;
+                    if (sub_q[sc].cnt[m] == 0) sub_q[sc].present++;
+                    sub_q[sc].cnt[m] += k;
+                }
+            }
+            int new_dup = 0;
+            for (auto& cq : sub_q)
+                for (int m = 0; m < MAX_MARKER_TYPES; ++m)
+                    if (cq.cnt[m] > 1) new_dup += cq.cnt[m] - 1;
+            if (new_dup >= comm_q[c].dup_excess) continue;
+
+            std::vector<int> sc_to_global(sub_result.num_clusters);
+            sc_to_global[0] = c;
+            for (int sc = 1; sc < sub_result.num_clusters; ++sc)
+                sc_to_global[sc] = n_communities + sc - 1;
+            for (int i = 0; i < (int)nodes.size(); ++i)
+                labels[nodes[i]] = sc_to_global[sub_result.labels[i]];
+            n_communities += sub_result.num_clusters - 1;
+            n_split++;
+
+            std::cerr << "[QualityLeiden] Split cluster " << c
+                      << " (" << nodes.size() << " nodes, dup_excess "
+                      << comm_q[c].dup_excess << " -> " << new_dup
+                      << ") into " << sub_result.num_clusters << " parts\n";
         }
-        int new_dup = 0;
-        for (auto& cq : sub_q)
-            for (int m = 0; m < MAX_MARKER_TYPES; ++m)
-                if (cq.cnt[m] > 1) new_dup += cq.cnt[m] - 1;
-        if (new_dup >= comm_q[c].dup_excess) continue;
-
-        std::vector<int> sc_to_global(sub_result.num_clusters);
-        sc_to_global[0] = c;
-        for (int sc = 1; sc < sub_result.num_clusters; ++sc)
-            sc_to_global[sc] = n_communities + sc - 1;
-        for (int i = 0; i < (int)nodes.size(); ++i)
-            labels[nodes[i]] = sc_to_global[sub_result.labels[i]];
-        n_communities += sub_result.num_clusters - 1;
-        n_split++;
-
-        std::cerr << "[QualityLeiden] Split cluster " << c << " (" << nodes.size()
-                  << " nodes, dup_excess " << comm_q[c].dup_excess
-                  << " -> " << new_dup << ") into " << sub_result.num_clusters << " parts\n";
     }
 
     std::cerr << "[QualityLeiden] Phase 2: " << n_contaminated
