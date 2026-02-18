@@ -53,6 +53,7 @@ struct Bin2Config {
     float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
     // Quality-guided clustering
     bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
+    bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
