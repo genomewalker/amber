@@ -102,6 +102,7 @@ struct Bin2Config {
     bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
+    int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
@@ -1898,6 +1899,7 @@ int run_bin2(const Bin2Config& config) {
         bin2::QualityLeidenConfig qcfg;
         qcfg.alpha = config.quality_alpha;
         qcfg.use_map_equation = config.use_map_equation;
+        qcfg.n_leiden_restarts = config.n_leiden_restarts;
         qcfg.n_threads = config.threads;
         qb->set_quality_config(qcfg);
         backend = std::move(qb);

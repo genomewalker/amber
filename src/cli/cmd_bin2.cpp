@@ -58,6 +58,7 @@ struct Bin2Config {
     bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
+    int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
     std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
@@ -131,6 +132,10 @@ int cmd_bin2(int argc, char** argv) {
                       << "  --map-equation         Phase 1b: marker-guided map equation refinement\n"
                       << "                         Requires --quality-leiden. Replaces modularity delta\n"
                       << "                         with parameter-free MDL objective (Rosvall & Bergstrom).\n"
+                      << "  --leiden-restarts N    Best-of-K joint (resolution x seed) restart search\n"
+                      << "                         Selects best partition by internal SCG quality.\n"
+                      << "                         Replaces fixed --resolution and --random-seed.\n"
+                      << "                         N=1 (default, off). Recommended: N=25.\n"
                       << "  --quality-alpha F      Quality weight in combined objective (default: 1.0)\n"
                       << "                         0=pure modularity, 1=balanced, >1=quality-dominant\n"
                       << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
@@ -262,6 +267,10 @@ int cmd_bin2(int argc, char** argv) {
         else if (arg == "--map-equation") {
             config.use_quality_leiden = true;  // implies quality-leiden
             config.use_map_equation = true;
+        }
+        else if (arg == "--leiden-restarts" && i + 1 < argc) {
+            config.n_leiden_restarts = std::stoi(argv[++i]);
+            if (config.n_leiden_restarts > 1) config.use_quality_leiden = true;
         }
         else if (arg == "--quality-alpha" && i + 1 < argc) {
             config.quality_alpha = std::stof(argv[++i]);

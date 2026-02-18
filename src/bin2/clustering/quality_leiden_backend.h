@@ -70,6 +70,65 @@ struct QualityLeidenConfig {
     float res_search_max = 50.0f;
 
     int n_threads = 0;  // 0 = use hardware concurrency
+
+    // Best-of-K joint (resolution × seed) restart search.
+    // 3-stage adaptive racing with SCG quality scoring.
+    // Set n_leiden_restarts=1 to disable (single run, backward-compatible).
+    //
+    // Stage 1: restart_stage1_res log-uniform resolutions × 1 seed → Phase 1 SCG score
+    // Stage 2: top restart_stage2_topk arms, restart_stage2_extra runs via UCB bandit
+    //          → Phase 2 score for candidates within margin of global best
+    // Stage 3: best arm, up to restart_stage3_extra runs (always Phase 2), early stop
+    int   n_leiden_restarts    = 1;     // Total budget (1 = off)
+    int   restart_stage1_res   = 7;     // Stage 1 resolution grid
+    int   restart_stage2_topk  = 3;     // Top arms to race in Stage 2
+    int   restart_stage2_extra = 12;    // Extra runs across top arms in Stage 2
+    int   restart_stage3_extra = 6;     // Max extra runs on best arm in Stage 3
+    int   restart_patience     = 4;     // Stage 3 early stop after N non-improving runs
+    float restart_ucb_beta     = 1.0f;  // UCB: priority = mean + beta * std
+};
+
+// Snapshot of one (resolution, seed) candidate from the restart search.
+struct CandidateSnapshot {
+    float resolution = 0.0f;
+    int   seed = 0;
+
+    ClusteringResult p1_result;         // output of libleidenalg Phase 1
+    float score_p1 = -1e30f;           // SCG score after Phase 1
+
+    bool             has_p2 = false;
+    std::vector<int> labels_after_p2;
+    int              num_clusters_after_p2 = 0;
+    float            score_p2 = -1e30f; // SCG score after Phase 2 (valid if has_p2)
+
+    float selection_score() const { return has_p2 ? score_p2 : score_p1; }
+};
+
+// One resolution arm in the adaptive racing search.
+struct ResolutionArm {
+    float  resolution = 0.0f;
+    int    pulls = 0;
+    double mean  = 0.0;
+    double m2    = 0.0;   // Welford M2 for online variance
+    CandidateSnapshot best;
+
+    void add(const CandidateSnapshot& c) {
+        pulls++;
+        double x = c.selection_score();
+        double delta = x - mean;
+        mean += delta / pulls;
+        m2   += delta * (x - mean);
+        if (c.selection_score() > best.selection_score()) best = c;
+    }
+
+    // Sample std-dev, with prior_sigma when fewer than 2 pulls.
+    double stddev(double prior_sigma = 1.0) const {
+        return pulls > 1 ? std::sqrt(m2 / (pulls - 1)) : prior_sigma;
+    }
+
+    double priority(double beta, double prior_sigma = 1.0) const {
+        return mean + beta * stddev(prior_sigma);
+    }
 };
 
 // Quality-weighted Leiden backend
@@ -200,6 +259,35 @@ protected:
         const std::vector<WeightedEdge>& edges,
         int n_nodes,
         const LeidenConfig& config) const;
+
+    // SCG quality score for an arbitrary label vector (builds CommQuality internally).
+    // Falls back to 0.0 if no markers hit any node.
+    float scg_score_labels(const std::vector<int>& labels, int n_communities) const;
+
+    // Run Phase 2 contamination splitting on a label vector.
+    // Returns {updated_labels, updated_n_communities}.
+    // Requires build_adjacency() to have been called.
+    std::pair<std::vector<int>, int> run_phase2(
+        std::vector<int> labels,
+        int n_communities,
+        const LeidenConfig& effective_config);
+
+    // Evaluate one (resolution, seed) candidate: run libleidenalg + optional Phase 2 scoring.
+    CandidateSnapshot evaluate_candidate(
+        const std::vector<WeightedEdge>& p1_edges,
+        int n_nodes,
+        const LeidenConfig& base_cfg,
+        float resolution,
+        int seed,
+        bool run_phase2_for_score);
+
+    // 3-stage adaptive racing over (resolution × seed) space.
+    // Returns the globally best CandidateSnapshot.
+    // Requires build_adjacency() and has_marker_ to have been set up.
+    CandidateSnapshot run_adaptive_restarts(
+        const std::vector<WeightedEdge>& p1_edges,
+        int n_nodes,
+        const LeidenConfig& base_cfg);
 
     // Dense CommQuality version of calibrate_lambda
     // comm_internal and q_total are only used when qconfig_.use_map_equation is true.

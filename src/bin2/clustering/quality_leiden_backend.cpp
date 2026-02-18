@@ -79,6 +79,27 @@ void QualityLeidenBackend::init_comm_internal(
     }
 }
 
+float QualityLeidenBackend::scg_score_labels(
+    const std::vector<int>& labels, int n_communities) const {
+    if (!marker_index_ || marker_index_->num_marker_contigs() == 0) return 0.0f;
+    std::vector<CommQuality> cq(n_communities);
+    for (int i = 0; i < n_nodes_; ++i) {
+        int c = labels[i];
+        for (const auto& entry : marker_index_->get_markers(i)) {
+            int m = entry.id;
+            int k = entry.copy_count;
+            if (cq[c].cnt[m] == 0) cq[c].present++;
+            cq[c].cnt[m] += k;
+        }
+    }
+    for (auto& q : cq) {
+        for (int m = 0; m < MAX_MARKER_TYPES; ++m) {
+            if (q.cnt[m] > 1) q.dup_excess += q.cnt[m] - 1;
+        }
+    }
+    return scg_quality_score(cq);
+}
+
 // Internal SCG quality score: sum of (completeness - penalty * contamination) over all clusters.
 // Completeness = markers present in this cluster (unique SCGs).
 // Contamination = duplicate marker excess (dup_excess).
@@ -215,6 +236,240 @@ float QualityLeidenBackend::calibrate_resolution(
     return best_res;
 }
 
+std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
+    std::vector<int> labels,
+    int n_communities,
+    const LeidenConfig& effective_config) {
+
+    std::vector<CommQuality> comm_q;
+    init_comm_quality(labels, n_communities, comm_q);
+
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    for (int i = 0; i < n_nodes_; ++i)
+        cluster_nodes[labels[i]].push_back(i);
+
+    int n_contaminated = 0, n_split = 0;
+    int original_n_communities = n_communities;
+
+    for (int c = 0; c < original_n_communities; ++c) {
+        if (comm_q[c].dup_excess == 0) continue;
+        const auto& nodes = cluster_nodes[c];
+        if ((int)nodes.size() <= 1) continue;
+
+        long long total_bp = 0;
+        for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+        if (total_bp < 400000LL) continue;
+
+        n_contaminated++;
+        std::unordered_map<int, int> local_id;
+        local_id.reserve(nodes.size());
+        for (int i = 0; i < (int)nodes.size(); ++i) local_id[nodes[i]] = i;
+
+        std::vector<WeightedEdge> sub_edges;
+        for (int v : nodes) {
+            for (const auto& [u, w] : adj_[v]) {
+                auto it = local_id.find(u);
+                if (it != local_id.end() && u > v)
+                    sub_edges.push_back({local_id[v], it->second, static_cast<float>(w)});
+            }
+        }
+        if (sub_edges.empty()) continue;
+
+        LeidenConfig sub_config = effective_config;
+        float size_scale = std::max(1.0f, static_cast<float>(nodes.size()) / 100.0f);
+        sub_config.resolution = effective_config.resolution
+                               * std::min(3.0f, 3.0f / std::sqrt(size_scale));
+        sub_config.use_initial_membership = false;
+        sub_config.initial_membership.clear();
+        sub_config.use_fixed_membership = false;
+        sub_config.is_membership_fixed.clear();
+        if (effective_config.use_node_sizes) {
+            sub_config.node_sizes.resize(nodes.size());
+            for (int i = 0; i < (int)nodes.size(); ++i)
+                sub_config.node_sizes[i] = node_sizes_[nodes[i]];
+        }
+
+#ifdef USE_LIBLEIDENALG
+        LibLeidenalgBackend sub_leiden;
+        ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
+#else
+        LeidenBackend sub_leiden;
+        ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
+#endif
+        if (sub_result.num_clusters <= 1) continue;
+        if (sub_result.num_clusters > comm_q[c].dup_excess + 2) continue;
+
+        std::vector<CommQuality> sub_q(sub_result.num_clusters);
+        for (int i = 0; i < (int)nodes.size(); ++i) {
+            int sc = sub_result.labels[i];
+            for (const auto& entry : marker_index_->get_markers(nodes[i])) {
+                int m = entry.id, k = entry.copy_count;
+                if (sub_q[sc].cnt[m] == 0) sub_q[sc].present++;
+                sub_q[sc].cnt[m] += k;
+            }
+        }
+        int new_dup = 0;
+        for (auto& cq : sub_q)
+            for (int m = 0; m < MAX_MARKER_TYPES; ++m)
+                if (cq.cnt[m] > 1) new_dup += cq.cnt[m] - 1;
+        if (new_dup >= comm_q[c].dup_excess) continue;
+
+        std::vector<int> sc_to_global(sub_result.num_clusters);
+        sc_to_global[0] = c;
+        for (int sc = 1; sc < sub_result.num_clusters; ++sc)
+            sc_to_global[sc] = n_communities + sc - 1;
+        for (int i = 0; i < (int)nodes.size(); ++i)
+            labels[nodes[i]] = sc_to_global[sub_result.labels[i]];
+        n_communities += sub_result.num_clusters - 1;
+        n_split++;
+
+        std::cerr << "[QualityLeiden] Split cluster " << c << " (" << nodes.size()
+                  << " nodes, dup_excess " << comm_q[c].dup_excess
+                  << " -> " << new_dup << ") into " << sub_result.num_clusters << " parts\n";
+    }
+
+    std::cerr << "[QualityLeiden] Phase 2: " << n_contaminated
+              << " contaminated, " << n_split << " split, "
+              << n_communities << " total\n";
+
+    return {std::move(labels), n_communities};
+}
+
+CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
+    const std::vector<WeightedEdge>& p1_edges,
+    int n_nodes,
+    const LeidenConfig& base_cfg,
+    float resolution,
+    int seed,
+    bool run_phase2_for_score) {
+
+    CandidateSnapshot snap;
+    snap.resolution = resolution;
+    snap.seed = seed;
+
+    LeidenConfig trial = base_cfg;
+    trial.resolution = resolution;
+    trial.random_seed = seed;
+
+#ifdef USE_LIBLEIDENALG
+    LibLeidenalgBackend trial_leiden;
+    snap.p1_result = trial_leiden.cluster(p1_edges, n_nodes, trial);
+#else
+    LeidenBackend trial_leiden;
+    snap.p1_result = trial_leiden.cluster(p1_edges, n_nodes, trial);
+#endif
+    snap.score_p1 = scg_score_labels(snap.p1_result.labels, snap.p1_result.num_clusters);
+
+    if (run_phase2_for_score) {
+        auto [p2_labels, p2_nc] = run_phase2(snap.p1_result.labels, snap.p1_result.num_clusters, trial);
+        snap.has_p2             = true;
+        snap.labels_after_p2    = std::move(p2_labels);
+        snap.num_clusters_after_p2 = p2_nc;
+        snap.score_p2 = scg_score_labels(snap.labels_after_p2, snap.num_clusters_after_p2);
+    }
+
+    return snap;
+}
+
+CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
+    const std::vector<WeightedEdge>& p1_edges,
+    int n_nodes,
+    const LeidenConfig& base_cfg) {
+
+    const float log_lo = std::log(qconfig_.res_search_min);
+    const float log_hi = std::log(qconfig_.res_search_max);
+    const int   N_RES  = qconfig_.restart_stage1_res;
+
+    // Build resolution arms (log-uniform grid)
+    std::vector<ResolutionArm> arms(N_RES);
+    for (int i = 0; i < N_RES; ++i) {
+        float t = (N_RES > 1) ? static_cast<float>(i) / (N_RES - 1) : 0.5f;
+        arms[i].resolution = std::exp(log_lo + t * (log_hi - log_lo));
+    }
+
+    int seed_counter = 0;
+    auto next_seed = [&]() { return base_cfg.random_seed + seed_counter++; };
+
+    CandidateSnapshot global_best;  // selection_score() = -1e30 initially
+
+    // Stage 1: one pull per arm, Phase 1 SCG score only
+    std::cerr << "[QualityLeiden] Restart Stage 1: " << N_RES << " resolutions...\n";
+    for (auto& arm : arms) {
+        auto c = evaluate_candidate(p1_edges, n_nodes, base_cfg,
+                                    arm.resolution, next_seed(), false);
+        arm.add(c);
+        if (c.selection_score() > global_best.selection_score()) global_best = c;
+        std::cerr << "  res=" << arm.resolution
+                  << " clusters=" << c.p1_result.num_clusters
+                  << " score=" << c.score_p1 << "\n";
+    }
+
+    // Rank top-K arms by stage 1 best score
+    std::vector<int> idx(N_RES);
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+        return arms[a].best.selection_score() > arms[b].best.selection_score();
+    });
+    int topk = std::min(qconfig_.restart_stage2_topk, N_RES);
+    std::vector<int> top(idx.begin(), idx.begin() + topk);
+
+    // Stage 2: UCB bandit across top arms; Phase 2 for candidates near global best
+    std::cerr << "[QualityLeiden] Restart Stage 2: top " << topk
+              << " arms, " << qconfig_.restart_stage2_extra << " runs...\n";
+    for (int t = 0; t < qconfig_.restart_stage2_extra; ++t) {
+        // Pick arm with highest UCB priority
+        int ai = top[0];
+        double best_pri = -1e30;
+        for (int a : top) {
+            double p = arms[a].priority(qconfig_.restart_ucb_beta);
+            if (p > best_pri) { best_pri = p; ai = a; }
+        }
+        // Promote to Phase 2 if this arm's best is within 1 penalty unit of global best
+        float margin = qconfig_.contamination_penalty;
+        bool do_p2 = (arms[ai].best.selection_score() >= global_best.selection_score() - margin);
+        auto c = evaluate_candidate(p1_edges, n_nodes, base_cfg,
+                                    arms[ai].resolution, next_seed(), do_p2);
+        arms[ai].add(c);
+        if (c.selection_score() > global_best.selection_score()) global_best = c;
+        std::cerr << "  [S2/" << t << "] res=" << arms[ai].resolution
+                  << " score=" << c.selection_score()
+                  << (do_p2 ? "(p2)" : "(p1)")
+                  << " global_best=" << global_best.selection_score() << "\n";
+    }
+
+    // Stage 3: exploit arm with highest mean score
+    int best_arm = top[0];
+    for (int a : top) {
+        if (arms[a].mean > arms[best_arm].mean) best_arm = a;
+    }
+    std::cerr << "[QualityLeiden] Restart Stage 3: exploiting res="
+              << arms[best_arm].resolution << ", up to "
+              << qconfig_.restart_stage3_extra << " runs (patience="
+              << qconfig_.restart_patience << ")...\n";
+    int no_improve = 0;
+    for (int i = 0; i < qconfig_.restart_stage3_extra; ++i) {
+        auto c = evaluate_candidate(p1_edges, n_nodes, base_cfg,
+                                    arms[best_arm].resolution, next_seed(), true);
+        arms[best_arm].add(c);
+        if (c.selection_score() > global_best.selection_score()) {
+            global_best = c;
+            no_improve = 0;
+        } else {
+            if (++no_improve >= qconfig_.restart_patience) {
+                std::cerr << "  Early stop at run " << i << "\n";
+                break;
+            }
+        }
+    }
+
+    std::cerr << "[QualityLeiden] Restart done: best res=" << global_best.resolution
+              << " seed=" << global_best.seed
+              << " score=" << global_best.selection_score()
+              << (global_best.has_p2 ? " (P2-scored)" : " (P1-scored)") << "\n";
+
+    return global_best;
+}
+
 ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& edges,
                                              int n_nodes,
                                              const LeidenConfig& config) {
@@ -238,23 +493,8 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] alpha=" << qconfig_.alpha
               << ", penalty=" << qconfig_.contamination_penalty << "\n";
 
-    // Optional: calibrate resolution using internal SCG quality before the main run.
-    LeidenConfig calibrated_config = config;
-    if (qconfig_.calibrate_resolution && marker_index_->num_marker_contigs() > 0) {
-        std::cerr << "[QualityLeiden-MT] Calibrating resolution over ["
-                  << qconfig_.res_search_min << ", " << qconfig_.res_search_max << "] ...\n";
-        calibrated_config.resolution = calibrate_resolution(edges, n_nodes, config);
-        std::cerr << "[QualityLeiden-MT] Using calibrated resolution = "
-                  << calibrated_config.resolution << "\n";
-    }
-    const LeidenConfig& effective_config = qconfig_.calibrate_resolution ? calibrated_config : config;
-
-    // Step 1: Run libleidenalg for initial clustering.
-    // Pre-process edges: penalize connections between contigs sharing SCG markers.
-    // Contigs sharing the same single-copy gene belong to different genomes, so their
-    // edge weights are scaled down by exp(-penalty * n_shared_markers). This biases
-    // libleidenalg away from contamination-creating merges without modifying libleidenalg.
-    std::cerr << "[QualityLeiden-MT] Phase 1: libleidenalg for initial clustering...\n";
+    // Phase 1 edge penalization: reduce weights between SCG-sharing contigs.
+    std::cerr << "[QualityLeiden-MT] Phase 1: edge penalization + libleidenalg...\n";
     std::vector<WeightedEdge> phase1_edges;
     if (qconfig_.marker_edge_penalty > 0.0f) {
         phase1_edges.reserve(edges.size());
@@ -264,202 +504,110 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             const auto& mv = marker_index_->get_markers(e.v);
             int shared = 0;
             if (!mu.empty() && !mv.empty()) {
-                for (const auto& a : mu) {
-                    for (const auto& b : mv) {
+                for (const auto& a : mu)
+                    for (const auto& b : mv)
                         if (a.id == b.id) { shared++; break; }
-                    }
-                }
             }
             float w = e.w;
-            if (shared > 0) {
-                w *= std::exp(-qconfig_.marker_edge_penalty * shared);
-                penalized++;
-            }
+            if (shared > 0) { w *= std::exp(-qconfig_.marker_edge_penalty * shared); penalized++; }
             phase1_edges.push_back({e.u, e.v, w});
         }
-        if (penalized > 0) {
-            std::cerr << "[QualityLeiden-MT] Penalized " << penalized
-                      << " edges with shared SCG markers\n";
-        }
+        if (penalized > 0)
+            std::cerr << "[QualityLeiden-MT] Penalized " << penalized << " edges\n";
     }
     const std::vector<WeightedEdge>& p1_edges = phase1_edges.empty() ? edges : phase1_edges;
 
-#ifdef USE_LIBLEIDENALG
-    LibLeidenalgBackend fast_backend;
-    ClusteringResult initial_result = fast_backend.cluster(p1_edges, n_nodes, effective_config);
-#else
-    ClusteringResult initial_result = LeidenBackend::cluster(p1_edges, n_nodes, effective_config);
-#endif
-    std::cerr << "[QualityLeiden-MT] Initial clustering: " << initial_result.num_clusters
-              << " clusters, modularity=" << initial_result.modularity << "\n";
-
-    // Use the initial clustering labels
-    std::vector<int> labels = initial_result.labels;
-    int n_communities = initial_result.num_clusters;
-
-    // Build adjacency for refinement
+    // Build adjacency now — needed by run_phase2() and run_adaptive_restarts().
     build_adjacency(edges, n_nodes, config);
-
-    // Build has_marker_ lookup from marker_index
     has_marker_.resize(n_nodes_);
-    for (int i = 0; i < n_nodes_; ++i) {
+    for (int i = 0; i < n_nodes_; ++i)
         has_marker_[i] = marker_index_->has_markers(i) ? 1 : 0;
+
+    // Effective config: calibrate resolution only in single-run mode (n_leiden_restarts=1).
+    // In restart mode the search covers the resolution range directly.
+    LeidenConfig calibrated_config = config;
+    const bool do_restarts = (qconfig_.n_leiden_restarts > 1)
+                           && (marker_index_->num_marker_contigs() > 0);
+    if (!do_restarts && qconfig_.calibrate_resolution
+            && marker_index_->num_marker_contigs() > 0) {
+        std::cerr << "[QualityLeiden-MT] Calibrating resolution...\n";
+        calibrated_config.resolution = calibrate_resolution(edges, n_nodes, config);
+        std::cerr << "[QualityLeiden-MT] Using resolution = " << calibrated_config.resolution << "\n";
+    }
+    const LeidenConfig& effective_config =
+        (!do_restarts && qconfig_.calibrate_resolution) ? calibrated_config : config;
+
+    // Initial clustering: single run or adaptive restart search.
+    std::vector<int> labels;
+    int n_communities;
+    bool phase2_already_done = false;
+
+    if (do_restarts) {
+        std::cerr << "[QualityLeiden-MT] Restart search (K=" << qconfig_.n_leiden_restarts
+                  << ", S1=" << qconfig_.restart_stage1_res
+                  << ", S2=" << qconfig_.restart_stage2_extra
+                  << ", S3=" << qconfig_.restart_stage3_extra << ")...\n";
+        CandidateSnapshot best = run_adaptive_restarts(p1_edges, n_nodes, effective_config);
+
+        if (best.has_p2) {
+            // Phase 2 already scored for the best candidate — reuse cached labels.
+            labels = std::move(best.labels_after_p2);
+            n_communities = best.num_clusters_after_p2;
+            phase2_already_done = true;
+            std::cerr << "[QualityLeiden-MT] Reusing cached Phase 2 partition ("
+                      << n_communities << " clusters)\n";
+        } else {
+            labels = std::move(best.p1_result.labels);
+            n_communities = best.p1_result.num_clusters;
+        }
+        std::cerr << "[QualityLeiden-MT] Best restart: res=" << best.resolution
+                  << " seed=" << best.seed
+                  << " score=" << best.selection_score() << "\n";
+    } else {
+#ifdef USE_LIBLEIDENALG
+        LibLeidenalgBackend fast_backend;
+        ClusteringResult initial_result = fast_backend.cluster(p1_edges, n_nodes, effective_config);
+#else
+        ClusteringResult initial_result = LeidenBackend::cluster(p1_edges, n_nodes, effective_config);
+#endif
+        std::cerr << "[QualityLeiden-MT] Initial clustering: " << initial_result.num_clusters
+                  << " clusters, modularity=" << initial_result.modularity << "\n";
+        labels = std::move(initial_result.labels);
+        n_communities = initial_result.num_clusters;
     }
 
     // Initialize community statistics
     std::vector<double> comm_weights(n_communities, 0.0);
     std::vector<double> comm_sizes(n_communities, 0.0);
     for (int i = 0; i < n_nodes_; ++i) {
-        int c = labels[i];
-        comm_weights[c] += node_weights_[i];
-        comm_sizes[c] += node_sizes_[i];
+        comm_weights[labels[i]] += node_weights_[i];
+        comm_sizes[labels[i]]   += node_sizes_[i];
     }
-
-    // Initialize dense community quality counts
     std::vector<CommQuality> comm_q;
     init_comm_quality(labels, n_communities, comm_q);
     std::cerr << "[QualityLeiden-MT] " << marker_index_->num_marker_contigs()
-              << " contigs have markers across " << n_communities << " initial clusters\n";
+              << " contigs have markers across " << n_communities << " clusters\n";
 
-    // Phase 2: Quality-guided contamination splitting.
-    // For each cluster with duplicate markers (dup_excess > 0), re-run libleidenalg
-    // on the cluster's subgraph at higher resolution. Accept splits that reduce
-    // contamination (total dup_excess decreases). Uses libleidenalg to avoid the
-    // objective mismatch that caused the old local-move Phase 2 to pathologically merge.
-    {
-        // Index nodes by cluster
-        std::vector<std::vector<int>> cluster_nodes(n_communities);
-        for (int i = 0; i < n_nodes; ++i) {
-            cluster_nodes[labels[i]].push_back(i);
-        }
-
-        int n_contaminated = 0;
-        int n_split = 0;
-        int original_n_communities = n_communities;  // freeze before splits grow n_communities
-
-        for (int c = 0; c < original_n_communities; ++c) {
-            if (comm_q[c].dup_excess == 0) continue;
-            const auto& nodes = cluster_nodes[c];
-            if ((int)nodes.size() <= 1) continue;
-
-            // Only split if cluster is large enough to yield at least 2 viable bins
-            // (> 2 × 200kb min_bin_size). Splitting small clusters just fragments good bins.
-            long long total_bp = 0;
-            for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
-            if (total_bp < 400000LL) continue;
-
-            n_contaminated++;
-
-            // Build local ID map and extract subgraph edges
-            std::unordered_map<int, int> local_id;
-            local_id.reserve(nodes.size());
-            for (int i = 0; i < (int)nodes.size(); ++i) {
-                local_id[nodes[i]] = i;
-            }
-
-            std::vector<WeightedEdge> sub_edges;
-            for (int v : nodes) {
-                for (const auto& [u, w] : adj_[v]) {
-                    auto it = local_id.find(u);
-                    if (it != local_id.end() && u > v) {
-                        sub_edges.push_back({local_id[v], it->second, static_cast<float>(w)});
-                    }
-                }
-            }
-            if (sub_edges.empty()) continue;
-
-            // Re-cluster with resolution scaled inversely with cluster size.
-            // For small clusters (~50 nodes), use 3x to force fine splits.
-            // For large clusters (~1000+ nodes), scale down to avoid shattering into singletons
-            // (a 1836-node cluster at 3x resolution fragments into 320 parts, all too small to bin).
-            LeidenConfig sub_config = effective_config;
-            float size_scale = std::max(1.0f, static_cast<float>(nodes.size()) / 100.0f);
-            float res_mult = std::min(3.0f, 3.0f / std::sqrt(size_scale));
-            sub_config.resolution = effective_config.resolution * res_mult;
-            sub_config.use_initial_membership = false;
-            sub_config.initial_membership.clear();
-            sub_config.use_fixed_membership = false;
-            sub_config.is_membership_fixed.clear();
-            if (config.use_node_sizes) {
-                sub_config.node_sizes.resize(nodes.size());
-                for (int i = 0; i < (int)nodes.size(); ++i) {
-                    sub_config.node_sizes[i] = node_sizes_[nodes[i]];
-                }
-            }
-
-#ifdef USE_LIBLEIDENALG
-            LibLeidenalgBackend sub_leiden;
-            ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
-#else
-            LeidenBackend sub_leiden;
-            ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
-#endif
-            if (sub_result.num_clusters <= 1) continue;
-
-            // Reject if over-fragmented: a cluster with dup_excess=k needs at most k+2 parts.
-            // Over-fragmented splits shatter viable bins into sub-threshold fragments.
-            int max_acceptable = comm_q[c].dup_excess + 2;
-            if (sub_result.num_clusters > max_acceptable) continue;
-
-            // Compute dup_excess for each new sub-cluster
-            std::vector<CommQuality> sub_q(sub_result.num_clusters);
-            for (int i = 0; i < (int)nodes.size(); ++i) {
-                int sc = sub_result.labels[i];
-                for (const auto& entry : marker_index_->get_markers(nodes[i])) {
-                    int m = entry.id;
-                    int k = entry.copy_count;
-                    if (sub_q[sc].cnt[m] == 0) sub_q[sc].present++;
-                    sub_q[sc].cnt[m] += k;
-                }
-            }
-            int new_dup_excess = 0;
-            for (auto& cq : sub_q) {
-                for (int m = 0; m < MAX_MARKER_TYPES; ++m) {
-                    if (cq.cnt[m] > 1) new_dup_excess += cq.cnt[m] - 1;
-                }
-            }
-
-            if (new_dup_excess >= comm_q[c].dup_excess) continue;  // no improvement
-
-            // Accept split: sub-cluster 0 keeps label c, rest get new labels
-            std::vector<int> sc_to_global(sub_result.num_clusters);
-            sc_to_global[0] = c;
-            for (int sc = 1; sc < sub_result.num_clusters; ++sc) {
-                sc_to_global[sc] = n_communities + sc - 1;
-            }
-            for (int i = 0; i < (int)nodes.size(); ++i) {
-                labels[nodes[i]] = sc_to_global[sub_result.labels[i]];
-            }
-            n_communities += sub_result.num_clusters - 1;
-            n_split++;
-
-            std::cerr << "[QualityLeiden] Split cluster " << c << " (" << nodes.size()
-                      << " nodes, dup_excess " << comm_q[c].dup_excess
-                      << " -> " << new_dup_excess << ") into "
-                      << sub_result.num_clusters << " parts\n";
-        }
-
-        std::cerr << "[QualityLeiden-MT] Phase 2: " << n_contaminated
-                  << " contaminated clusters, " << n_split << " split, "
-                  << n_communities << " total\n";
+    // Phase 2: contamination splitting (skip if already done by restart search).
+    if (!phase2_already_done) {
+        auto [p2_labels, p2_nc] = run_phase2(std::move(labels), n_communities, effective_config);
+        labels        = std::move(p2_labels);
+        n_communities = p2_nc;
+        // Re-init comm_q for Phase 1b
+        init_comm_quality(labels, n_communities, comm_q);
     }
 
     // Phase 1b (optional): marker-guided map equation refinement.
-    // Uses the map equation delta (parameter-free MDL objective) combined with
-    // the marker quality penalty. Unlike modularity, the map equation has no
-    // resolution limit, so it won't over-merge unlike the old Phase 1b.
     if (qconfig_.use_map_equation) {
         std::cerr << "[QualityLeiden-MT] Phase 1b: map-equation quality refinement...\n";
 
-        // Re-compact labels first (Phase 2 may have grown n_communities)
         n_communities = compact_labels(labels);
 
-        // Re-init community stats after Phase 2
         comm_weights.assign(n_communities, 0.0);
         comm_sizes.assign(n_communities, 0.0);
         for (int i = 0; i < n_nodes_; ++i) {
             comm_weights[labels[i]] += node_weights_[i];
-            comm_sizes[labels[i]] += node_sizes_[i];
+            comm_sizes[labels[i]]   += node_sizes_[i];
         }
         init_comm_quality(labels, n_communities, comm_q);
 
@@ -489,7 +637,7 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
 
     // Compact labels and compute final modularity
     n_communities = compact_labels(labels);
-    double modularity = initial_result.modularity;
+    double modularity = 0.0;  // restart path doesn't track a single modularity value
 
     ClusteringResult result;
     result.labels = labels;
