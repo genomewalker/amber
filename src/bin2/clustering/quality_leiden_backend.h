@@ -60,6 +60,15 @@ struct QualityLeidenConfig {
     // resolution limit and over-merging issues of modularity-based refinement.
     bool use_map_equation = false;
 
+    // Resolution calibration: try n_res_trials resolutions log-uniform over
+    // [res_search_min, res_search_max], score each with the internal SCG metric
+    // (Σ present - penalty*dup_excess), fit a quadratic in log-resolution space,
+    // and use the argmax for the main pipeline run.
+    bool calibrate_resolution = false;
+    int n_res_trials = 8;
+    float res_search_min = 0.5f;
+    float res_search_max = 50.0f;
+
     int n_threads = 0;  // 0 = use hardware concurrency
 };
 
@@ -182,6 +191,15 @@ protected:
         float resolution,
         float lambda,
         int n_threads);
+
+    // Resolution calibration: score a partition with the internal SCG metric.
+    float scg_quality_score(const std::vector<CommQuality>& comm_q) const;
+
+    // Try n_res_trials resolutions, fit quadratic in log-res space, return argmax.
+    float calibrate_resolution(
+        const std::vector<WeightedEdge>& edges,
+        int n_nodes,
+        const LeidenConfig& config) const;
 
     // Dense CommQuality version of calibrate_lambda
     float calibrate_lambda(

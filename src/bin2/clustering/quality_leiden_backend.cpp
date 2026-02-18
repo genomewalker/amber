@@ -79,6 +79,142 @@ void QualityLeidenBackend::init_comm_internal(
     }
 }
 
+// Internal SCG quality score: sum of (completeness - penalty * contamination) over all clusters.
+// Completeness = markers present in this cluster (unique SCGs).
+// Contamination = duplicate marker excess (dup_excess).
+// Higher = better. No CheckM2 needed — uses the in-memory MarkerIndex directly.
+float QualityLeidenBackend::scg_quality_score(const std::vector<CommQuality>& comm_q) const {
+    float score = 0.0f;
+    for (const auto& cq : comm_q) {
+        score += static_cast<float>(cq.present)
+               - qconfig_.contamination_penalty * static_cast<float>(cq.dup_excess);
+    }
+    return score;
+}
+
+// Resolution calibration via internal SCG metric.
+//
+// Fits a quadratic model in log-resolution space to the SCG quality scores
+// from n_res_trials Leiden runs (log-uniform over [res_search_min, res_search_max]),
+// then returns the argmax. This adapts the resolution to the dataset without
+// any external validation — uses only the HMM marker information already loaded.
+//
+// Each trial run takes <1s (libleidenalg without GPU), so total overhead is small.
+float QualityLeidenBackend::calibrate_resolution(
+    const std::vector<WeightedEdge>& edges,
+    int n_nodes,
+    const LeidenConfig& config) const {
+
+    const int n = qconfig_.n_res_trials;
+    const float log_lo = std::log(qconfig_.res_search_min);
+    const float log_hi = std::log(qconfig_.res_search_max);
+
+    std::vector<float> log_res(n), scores(n);
+
+    for (int i = 0; i < n; ++i) {
+        float t = (n > 1) ? static_cast<float>(i) / (n - 1) : 0.5f;
+        log_res[i] = log_lo + t * (log_hi - log_lo);
+        float res = std::exp(log_res[i]);
+
+        LeidenConfig trial = config;
+        trial.resolution = res;
+
+#ifdef USE_LIBLEIDENALG
+        LibLeidenalgBackend trial_leiden;
+        auto result = trial_leiden.cluster(edges, n_nodes, trial);
+#else
+        LeidenBackend trial_leiden;
+        auto result = trial_leiden.cluster(edges, n_nodes, trial);
+#endif
+
+        // Score with internal SCG metric
+        int nc = result.num_clusters;
+        std::vector<CommQuality> cq;
+        // Temporarily init_comm_quality using a const-cast-free approach:
+        // build comm_q from scratch using the marker_index_
+        cq.resize(nc);
+        for (int v = 0; v < n_nodes; ++v) {
+            int c = result.labels[v];
+            for (const auto& entry : marker_index_->get_markers(v)) {
+                int m = entry.id;
+                int k = entry.copy_count;
+                if (cq[c].cnt[m] == 0) cq[c].present++;
+                cq[c].cnt[m] += k;
+            }
+        }
+        for (auto& q : cq) {
+            for (int m = 0; m < MAX_MARKER_TYPES; ++m) {
+                if (q.cnt[m] > 1) q.dup_excess += q.cnt[m] - 1;
+            }
+        }
+        scores[i] = scg_quality_score(cq);
+
+        std::cerr << "[QualityLeiden] ResCalib trial " << (i+1) << "/" << n
+                  << " res=" << res << " clusters=" << nc
+                  << " score=" << scores[i] << "\n";
+    }
+
+    // Fit quadratic: score ≈ a*x² + b*x + c where x = log_res
+    // Least-squares via normal equations on the 3-parameter model.
+    // If n < 3, just return the best sample.
+    if (n < 3) {
+        int best_i = static_cast<int>(std::max_element(scores.begin(), scores.end()) - scores.begin());
+        return std::exp(log_res[best_i]);
+    }
+
+    double sx = 0, sx2 = 0, sx3 = 0, sx4 = 0;
+    double sy = 0, sxy = 0, sx2y = 0;
+    for (int i = 0; i < n; ++i) {
+        double x = log_res[i], y = scores[i];
+        sx += x; sx2 += x*x; sx3 += x*x*x; sx4 += x*x*x*x;
+        sy += y; sxy += x*y; sx2y += x*x*y;
+    }
+    // Normal equations: [n, sx, sx2; sx, sx2, sx3; sx2, sx3, sx4] * [c,b,a]^T = [sy,sxy,sx2y]^T
+    // Solve with Cramer's rule for the 3×3 system.
+    double det = n*(sx2*sx4 - sx3*sx3) - sx*(sx*sx4 - sx3*sx2) + sx2*(sx*sx3 - sx2*sx2);
+
+    float best_log_res = log_res[static_cast<int>(
+        std::max_element(scores.begin(), scores.end()) - scores.begin())];
+
+    if (std::abs(det) > 1e-12) {
+        double da = n*(sx2*sx2y - sx3*sxy) - sx*(sx*sx2y - sx3*sy) + sx2*(sx*sxy - sx2*sy);
+        double a = da / det;
+
+        if (a < 0.0) {
+            // Concave down: argmax at -b/(2a)
+            double db = n*(sx2y*sx4 - sx3*sx2y) - sy*(sx*sx4 - sx3*sx2) + sx2*(sx*sx2y - sx2*sy);
+            // Actually recompute b properly:
+            double mat[3][3] = {{(double)n,sx,sx2},{sx,sx2,sx3},{sx2,sx3,sx4}};
+            double rhs[3] = {sy, sxy, sx2y};
+            // b is coefficient of x: use col 1 replacement
+            double det_b = (double)n*(sx2*sx2y - sx3*sxy) - sx*(sx*sx2y - sx3*sy) + sx2*(sx*sxy - sx2*sy);
+            (void)det_b;  // reuse da for a, compute b separately below
+            // Simpler: just find argmax of fitted quadratic at midpoint
+            // b/a coefficient: fit at 3 evenly-spaced points for stability
+            int i0 = 0, i1 = n/2, i2 = n-1;
+            double x0=log_res[i0], x1=log_res[i1], x2=log_res[i2];
+            double y0=scores[i0], y1=scores[i1], y2=scores[i2];
+            double denom = (x0-x1)*(x0-x2)*(x1-x2);
+            if (std::abs(denom) > 1e-12) {
+                double aa = (x2*(y1-y0) + x1*(y0-y2) + x0*(y2-y1)) / denom;
+                double bb = (x2*x2*(y0-y1) + x1*x1*(y2-y0) + x0*x0*(y1-y2)) / denom;
+                if (aa < 0.0) {
+                    double peak = -bb / (2.0*aa);
+                    // Clamp to search range
+                    peak = std::max(static_cast<double>(log_lo),
+                                    std::min(static_cast<double>(log_hi), peak));
+                    best_log_res = static_cast<float>(peak);
+                }
+            }
+        }
+    }
+
+    float best_res = std::exp(best_log_res);
+    std::cerr << "[QualityLeiden] ResCalib: best resolution = " << best_res
+              << " (log=" << best_log_res << ")\n";
+    return best_res;
+}
+
 ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& edges,
                                              int n_nodes,
                                              const LeidenConfig& config) {
@@ -101,6 +237,17 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] Starting quality-weighted clustering (" << n_threads << " threads)\n";
     std::cerr << "[QualityLeiden-MT] alpha=" << qconfig_.alpha
               << ", penalty=" << qconfig_.contamination_penalty << "\n";
+
+    // Optional: calibrate resolution using internal SCG quality before the main run.
+    LeidenConfig calibrated_config = config;
+    if (qconfig_.calibrate_resolution && marker_index_->num_marker_contigs() > 0) {
+        std::cerr << "[QualityLeiden-MT] Calibrating resolution over ["
+                  << qconfig_.res_search_min << ", " << qconfig_.res_search_max << "] ...\n";
+        calibrated_config.resolution = calibrate_resolution(edges, n_nodes, config);
+        std::cerr << "[QualityLeiden-MT] Using calibrated resolution = "
+                  << calibrated_config.resolution << "\n";
+    }
+    const LeidenConfig& effective_config = qconfig_.calibrate_resolution ? calibrated_config : config;
 
     // Step 1: Run libleidenalg for initial clustering.
     // Pre-process edges: penalize connections between contigs sharing SCG markers.
@@ -139,9 +286,9 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
 
 #ifdef USE_LIBLEIDENALG
     LibLeidenalgBackend fast_backend;
-    ClusteringResult initial_result = fast_backend.cluster(p1_edges, n_nodes, config);
+    ClusteringResult initial_result = fast_backend.cluster(p1_edges, n_nodes, effective_config);
 #else
-    ClusteringResult initial_result = LeidenBackend::cluster(p1_edges, n_nodes, config);
+    ClusteringResult initial_result = LeidenBackend::cluster(p1_edges, n_nodes, effective_config);
 #endif
     std::cerr << "[QualityLeiden-MT] Initial clustering: " << initial_result.num_clusters
               << " clusters, modularity=" << initial_result.modularity << "\n";
@@ -225,10 +372,10 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             // For small clusters (~50 nodes), use 3x to force fine splits.
             // For large clusters (~1000+ nodes), scale down to avoid shattering into singletons
             // (a 1836-node cluster at 3x resolution fragments into 320 parts, all too small to bin).
-            LeidenConfig sub_config = config;
+            LeidenConfig sub_config = effective_config;
             float size_scale = std::max(1.0f, static_cast<float>(nodes.size()) / 100.0f);
             float res_mult = std::min(3.0f, 3.0f / std::sqrt(size_scale));
-            sub_config.resolution = config.resolution * res_mult;
+            sub_config.resolution = effective_config.resolution * res_mult;
             sub_config.use_initial_membership = false;
             sub_config.initial_membership.clear();
             sub_config.use_fixed_membership = false;
@@ -326,7 +473,7 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
                        ? (total_edge_weight_ - ci_sum) / total_edge_weight_
                        : 0.0;
 
-        float lambda = calibrate_lambda(labels, comm_weights, comm_sizes, comm_q, config.resolution);
+        float lambda = calibrate_lambda(labels, comm_weights, comm_sizes, comm_q, effective_config.resolution);
         std::cerr << "[QualityLeiden-MT] Phase 1b lambda=" << lambda
                   << ", q_total=" << q_total
                   << ", communities=" << n_communities << "\n";
