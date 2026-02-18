@@ -26,6 +26,9 @@
 #include "bin2/clustering/hnsw_knn_index.h"
 #include "bin2/clustering/edge_weighter.h"
 #include "bin2/clustering/leiden_backend.h"
+#include "bin2/clustering/ensemble_leiden.h"
+#include "bin2/clustering/marker_index.h"
+#include "bin2/clustering/quality_leiden_backend.h"
 #include "seeds/seed_generator.h"
 
 #include <iostream>
@@ -90,6 +93,15 @@ struct Bin2Config {
     float damage_lambda = 0.5f;        // Damage attenuation strength (0.4-0.6)
     float damage_wmin = 0.5f;          // Minimum negative weight (keep graph connected)
     bool use_multiscale_cgr = false;   // Use multi-scale CGR late fusion
+    bool use_ensemble_leiden = false;  // Use ensemble Leiden for reproducible clustering
+    int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
+    float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
+    bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
+    float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
+    // CheckM marker files for proper colocation-weighted quality in QualityLeiden
+    std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
+    std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
+    std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
 };
 
 // Load seed marker contig names from TSV (contig\tcluster) or one-per-line format
@@ -951,7 +963,7 @@ int run_bin2(const Bin2Config& config) {
         if (seed_path.empty()) {
             // Auto-generate seeds using SCG markers
             seed_path = config.output_dir + "/auto_seeds.txt";
-            std::string hmm_path = config.hmm_file.empty() ? "auxiliary/bacar_marker.hmm" : config.hmm_file;
+            std::string hmm_path = config.hmm_file.empty() ? "auxiliary/checkm_markers_only.hmm" : config.hmm_file;
             std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
             std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
             log.info("Auto-generating seeds using " + hmm_path);
@@ -1628,11 +1640,12 @@ int run_bin2(const Bin2Config& config) {
 
     // Load or auto-generate seed markers
     std::unordered_set<std::string> seed_set;
+    std::unordered_map<std::string, std::vector<std::string>> marker_hits_by_contig;
     std::string seed_path = config.seed_file;
     if (seed_path.empty()) {
         // Auto-generate seeds using SCG markers
         seed_path = config.output_dir + "/auto_seeds.txt";
-        std::string hmm_path = config.hmm_file.empty() ? "auxiliary/bacar_marker.hmm" : config.hmm_file;
+        std::string hmm_path = config.hmm_file.empty() ? "auxiliary/checkm_markers_only.hmm" : config.hmm_file;
         std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
         std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
         log.info("Auto-generating seeds using " + hmm_path);
@@ -1643,6 +1656,7 @@ int run_bin2(const Bin2Config& config) {
         } else {
             seed_set.insert(seeds.begin(), seeds.end());
             log.info("Auto-generated " + std::to_string(seed_set.size()) + " seed marker contigs");
+            marker_hits_by_contig = gen.get_hits_by_contig();
         }
     } else if (std::filesystem::exists(seed_path)) {
         auto seeds = load_seed_markers(seed_path);
@@ -1826,7 +1840,53 @@ int run_bin2(const Bin2Config& config) {
         leiden_config.is_membership_fixed = is_membership_fixed;
     }
 
-    auto backend = bin2::create_leiden_backend(true);  // Use Leiden (not Louvain)
+    // Build marker index if quality Leiden is requested
+    bin2::MarkerIndex marker_index;
+    if (config.use_quality_leiden && !marker_hits_by_contig.empty()) {
+        std::vector<std::string> contig_names;
+        contig_names.reserve(contigs.size());
+        for (const auto& [name, seq] : contigs)
+            contig_names.push_back(name);
+
+        std::string bacteria_ms = config.bacteria_ms_file.empty() ? "scripts/checkm_ms/bacteria.ms" : config.bacteria_ms_file;
+        std::string archaea_ms  = config.archaea_ms_file.empty()  ? "scripts/checkm_ms/archaea.ms"  : config.archaea_ms_file;
+
+        if (std::filesystem::exists(bacteria_ms)) {
+            bin2::CheckMMarkerParser ms_parser;
+            ms_parser.load(bacteria_ms, archaea_ms);
+            marker_index.build(ms_parser.bacteria(), marker_hits_by_contig, contig_names);
+            log.info("MarkerIndex (CheckM colocation weights): " +
+                     std::to_string(marker_index.num_marker_contigs()) +
+                     " contigs, " + std::to_string(marker_index.num_markers()) +
+                     " markers, " + std::to_string(marker_index.num_sets()) + " sets");
+        } else {
+            log.info("CheckM marker sets not found at " + bacteria_ms + ", using uniform weights");
+            marker_index.build_from_hits(marker_hits_by_contig, contig_names);
+            log.info("MarkerIndex (uniform weights): " +
+                     std::to_string(marker_index.num_marker_contigs()) +
+                     " contigs, " + std::to_string(marker_index.num_markers()) + " markers");
+        }
+    }
+
+    std::unique_ptr<bin2::ILeidenBackend> backend;
+    if (config.use_quality_leiden && marker_index.num_marker_contigs() > 0) {
+        log.info("Using QualityLeiden (alpha=" + std::to_string(config.quality_alpha) + ")");
+        auto qb = std::make_unique<bin2::QualityLeidenBackend>();
+        qb->set_marker_index(&marker_index);
+        bin2::QualityLeidenConfig qcfg;
+        qcfg.alpha = config.quality_alpha;
+        qcfg.n_threads = config.threads;
+        qb->set_quality_config(qcfg);
+        backend = std::move(qb);
+    } else if (config.use_ensemble_leiden) {
+        log.info("Using EnsembleLeiden (" + std::to_string(config.n_ensemble_runs) +
+                 " runs, threshold=" + std::to_string(config.ensemble_threshold) + ")");
+        auto ensemble = bin2::create_ensemble_leiden(config.n_ensemble_runs, config.ensemble_threshold);
+        ensemble->set_seed(leiden_config.random_seed);  // use Leiden seed as base (not hardcoded 42)
+        backend = std::move(ensemble);
+    } else {
+        backend = bin2::create_leiden_backend(true);  // Use Leiden (not Louvain)
+    }
     auto result = backend->cluster(edges, static_cast<int>(contigs.size()), leiden_config);
 
     std::vector<int> labels = result.labels;

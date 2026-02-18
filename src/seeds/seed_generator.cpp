@@ -2,6 +2,7 @@
 // SCG marker-based seed generation for COMEBin-style binning
 
 #include "seed_generator.h"
+#include <filesystem>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -45,6 +46,7 @@ std::vector<std::string> SeedGenerator::generate(const std::string& contigs_path
     }
 
     std::string faa_path = temp_prefix + ".faa";
+    faa_path_ = faa_path;
 
     // Count ORFs
     std::ifstream faa_file(faa_path);
@@ -71,12 +73,47 @@ std::vector<std::string> SeedGenerator::generate(const std::string& contigs_path
     total_hits_ = hits.size();
     std::cerr << "[seeds] Found " << total_hits_ << " raw hits\n";
 
+    // Build hits_by_contig index for downstream use (e.g. QualityLeidenBackend)
+    hits_by_contig_.clear();
+    for (const auto& hit : hits) {
+        hits_by_contig_[hit.contig].push_back(hit.marker);
+    }
+
     // Step 4: Select seeds
     auto seeds = select_seeds(hits, output_path);
     std::cerr << "[seeds] Selected " << seeds.size() << " seed contigs from "
               << selected_markers_ << " markers\n";
 
     return seeds;
+}
+
+std::unordered_map<std::string, std::vector<std::string>>
+SeedGenerator::search_additional_hmm(const std::string& hmm_path,
+                                      const std::string& output_prefix) {
+    if (faa_path_.empty() || !std::filesystem::exists(faa_path_)) {
+        std::cerr << "[seeds] search_additional_hmm: no FAA file (call generate() first)\n";
+        return {};
+    }
+
+    std::string saved_hmm = hmm_path_;
+    hmm_path_ = hmm_path;
+
+    std::string domtblout = output_prefix + ".hmmout";
+    std::cerr << "[seeds] Running additional hmmsearch: " << hmm_path << "\n";
+    bool ok = run_hmmsearch(faa_path_, domtblout);
+
+    hmm_path_ = saved_hmm;
+
+    if (!ok) {
+        std::cerr << "[seeds] Additional hmmsearch failed\n";
+        return {};
+    }
+
+    auto hits = parse_domtblout(domtblout);
+    std::unordered_map<std::string, std::vector<std::string>> result;
+    for (const auto& hit : hits)
+        result[hit.contig].push_back(hit.marker);
+    return result;
 }
 
 bool SeedGenerator::run_fraggenescan(const std::string& contigs_path,

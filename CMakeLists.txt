@@ -185,6 +185,9 @@ set(SOURCES
     src/bin2/clustering/hnsw_knn_index.cpp
     src/bin2/clustering/edge_weighter.cpp
     src/bin2/clustering/leiden_backend.cpp
+    src/bin2/clustering/ensemble_leiden.cpp
+    src/bin2/clustering/marker_index.cpp
+    src/bin2/clustering/quality_leiden_backend.cpp
     src/bin2/quality/marker_quality.cpp
     src/bin2/quality/checkm_markers.cpp
 )

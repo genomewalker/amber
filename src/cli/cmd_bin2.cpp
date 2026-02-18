@@ -47,6 +47,16 @@ struct Bin2Config {
     float damage_lambda = 0.5f;        // Damage attenuation strength (0.4-0.6)
     float damage_wmin = 0.5f;          // Minimum negative weight
     bool use_multiscale_cgr = false;   // Use multi-scale CGR late fusion
+    // Ensemble clustering
+    bool use_ensemble_leiden = false;  // Use ensemble Leiden for reproducible clustering
+    int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
+    float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
+    // Quality-guided clustering
+    bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
+    float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
+    std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
+    std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
+    std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
 };
 
 extern int run_bin2(const Bin2Config& config);
@@ -102,7 +112,21 @@ int cmd_bin2(int argc, char** argv) {
                       << "                         May regress on uniformly ancient samples\n"
                       << "  --damage-lambda FLOAT  Attenuation strength (default: 0.5)\n"
                       << "  --damage-wmin FLOAT    Minimum negative weight (default: 0.5)\n"
-                      << "  --multiscale-cgr       Enable multi-scale CGR late fusion\n";
+                      << "  --multiscale-cgr       Enable multi-scale CGR late fusion\n\n"
+                      << "Ensemble Clustering:\n"
+                      << "  --ensemble-leiden      Use ensemble Leiden for reproducible clustering\n"
+                      << "                         Runs Leiden N times, takes co-occurrence consensus\n"
+                      << "  --n-ensemble-runs INT  Number of Leiden runs (default: 10)\n"
+                      << "  --ensemble-threshold F Co-occurrence threshold for consensus (default: 0.5)\n"
+                      << "Quality-Guided Clustering:\n"
+                      << "  --quality-leiden       Use marker-quality-guided Leiden refinement\n"
+                      << "                         Optimizes modularity + SCG completeness/contamination\n"
+                      << "  --quality-alpha F      Quality weight in combined objective (default: 1.0)\n"
+                      << "                         0=pure modularity, 1=balanced, >1=quality-dominant\n"
+                      << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
+                      << "                         (default: auxiliary/checkm_markers_only.hmm)\n"
+                      << "  --bacteria-ms FILE     CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)\n"
+                      << "  --archaea-ms FILE      CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)\n";
             return 0;
         }
         else if (arg == "--contigs" && i + 1 < argc) {
@@ -203,6 +227,30 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--multiscale-cgr") {
             config.use_multiscale_cgr = true;
+        }
+        else if (arg == "--ensemble-leiden") {
+            config.use_ensemble_leiden = true;
+        }
+        else if (arg == "--n-ensemble-runs" && i + 1 < argc) {
+            config.n_ensemble_runs = std::stoi(argv[++i]);
+        }
+        else if (arg == "--ensemble-threshold" && i + 1 < argc) {
+            config.ensemble_threshold = std::stof(argv[++i]);
+        }
+        else if (arg == "--quality-leiden") {
+            config.use_quality_leiden = true;
+        }
+        else if (arg == "--quality-alpha" && i + 1 < argc) {
+            config.quality_alpha = std::stof(argv[++i]);
+        }
+        else if (arg == "--checkm-hmm" && i + 1 < argc) {
+            config.checkm_hmm_file = argv[++i];
+        }
+        else if (arg == "--bacteria-ms" && i + 1 < argc) {
+            config.bacteria_ms_file = argv[++i];
+        }
+        else if (arg == "--archaea-ms" && i + 1 < argc) {
+            config.archaea_ms_file = argv[++i];
         }
     }
 

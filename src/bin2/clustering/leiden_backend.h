@@ -80,7 +80,7 @@ public:
 
     void set_seed(int seed) override { rng_.seed(seed); }
 
-private:
+protected:
     void build_adjacency(
         const std::vector<WeightedEdge>& edges,
         int n_nodes,
