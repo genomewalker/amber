@@ -1735,16 +1735,18 @@ int run_bin2(const Bin2Config& config) {
             gc.partgraph_ratio = pgr;
             gc.damage_beta = 0.0f;  // Damage features disabled in COMEBin encoder
             bin2::DamageAwareEdgeWeighter weighter(gc);
-            auto pgr_edges = weighter.compute_comebin_edges(neighbors, pgr);
+            // Use raw distances: compute_comebin_edges() already applies exp(-dist/bw),
+            // so reusing its output in the bandwidth loop would double-transform.
+            auto pgr_edges = weighter.compute_comebin_edges_distances(neighbors, pgr);
             log.info("partgraph_ratio=" + std::to_string(pgr) + " -> " +
                      std::to_string(pgr_edges.size()) + " edges");
 
             for (float bw : bandwidths) {
-                // Re-weight edges with this bandwidth
+                // Apply COMEBin kernel: exp(-dist/bw)
                 std::vector<bin2::WeightedEdge> weighted_edges;
                 weighted_edges.reserve(pgr_edges.size());
                 for (const auto& e : pgr_edges) {
-                    float w = std::exp(-e.w * e.w / (bw * bw));  // Gaussian kernel
+                    float w = std::exp(-e.w / bw);
                     weighted_edges.emplace_back(e.u, e.v, w);
                 }
 
@@ -2035,16 +2037,19 @@ int run_bin2(const Bin2Config& config) {
              std::to_string(total_binned) + " contigs)");
     log.info("Unbinned: " + std::to_string(n_unbinned) + " contigs");
 
-    // Write embeddings
+    // Write embeddings (pure: contig + dims only, no bin column).
+    // The reader (load_embeddings_tsv) parses all post-name tokens as floats,
+    // so a bin column would corrupt the embedding if fed back via --embeddings.
+    // Bin assignments are already in the output .fa files.
     std::ofstream emb_out(config.output_dir + "/embeddings.tsv");
-    emb_out << "contig\tbin";
+    emb_out << "contig";
     for (int d = 0; d < config.embedding_dim; d++) {
         emb_out << "\tdim_" << d;
     }
     emb_out << "\n";
 
     for (size_t i = 0; i < contigs.size(); i++) {
-        emb_out << contigs[i].first << "\t" << labels[i];
+        emb_out << contigs[i].first;
         for (int d = 0; d < config.embedding_dim; d++) {
             emb_out << "\t" << std::fixed << std::setprecision(6) << embeddings[i][d];
         }
