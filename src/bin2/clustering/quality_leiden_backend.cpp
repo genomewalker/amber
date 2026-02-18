@@ -109,20 +109,6 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] " << marker_index_->num_marker_contigs()
               << " contigs have markers across " << n_communities << " initial clusters\n";
 
-    // Phase 1b: Quality-guided local move refinement.
-    // Runs the combined modularity+quality objective to refine the initial libleidenalg
-    // clustering. This replaces the COMEBin single-pass approach with a quality-aware
-    // iterative refinement that actively avoids contamination.
-    {
-        float lambda = calibrate_lambda(labels, comm_weights, comm_sizes, comm_q, config.resolution);
-        std::cerr << "[QualityLeiden-MT] Phase 1b: quality-guided refinement (lambda=" << lambda << ")...\n";
-        refine_partition_quality_mt(labels, comm_weights, comm_sizes, comm_q,
-                                    config.resolution, lambda, n_threads);
-        // Re-count after refinement (communities may have merged/grown)
-        n_communities = *std::max_element(labels.begin(), labels.end()) + 1;
-        std::cerr << "[QualityLeiden-MT] After refinement: " << n_communities << " communities\n";
-    }
-
     // Phase 2: Quality-guided contamination splitting.
     // For each cluster with duplicate markers (dup_excess > 0), re-run libleidenalg
     // on the cluster's subgraph at higher resolution. Accept splits that reduce
