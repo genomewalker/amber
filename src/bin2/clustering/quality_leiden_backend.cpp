@@ -14,6 +14,71 @@
 
 namespace amber::bin2 {
 
+// h(x) = x·ln(x) with h(0) = 0 (used in map equation codelength)
+static inline double hlog(double x) {
+    return (x > 1e-300) ? x * std::log(x) : 0.0;
+}
+
+// Map equation delta for moving node from curr to tgt.
+// gain = -ΔL (positive = the move reduces description length = improvement).
+//
+// L' = h(q_total) - 2·Σ_c h(q_c) + Σ_c h(flow_c)  (constant node-visit term omitted)
+// where:
+//   q_c    = (W_c - comm_internal[c]) / m2   (exit rate, comm_internal counts each edge twice)
+//   flow_c = (2*W_c - comm_internal[c]) / m2  (= q_c + p_c)
+//   m2     = total_edge_weight_ (sum of all edge weights, each edge counted from both endpoints)
+double QualityLeidenBackend::delta_map_equation(
+    int node, int curr, int tgt,
+    double edges_to_curr, double edges_to_tgt,
+    const std::vector<double>& comm_weights,
+    const std::vector<double>& comm_internal,
+    double q_total) const {
+
+    const double m2 = total_edge_weight_;
+    if (m2 < 1e-300) return 0.0;
+
+    const double kv = node_weights_[node];
+
+    // Current values
+    double q_a    = (comm_weights[curr] - comm_internal[curr]) / m2;
+    double q_b    = (comm_weights[tgt]  - comm_internal[tgt])  / m2;
+    double flow_a = (2.0*comm_weights[curr] - comm_internal[curr]) / m2;
+    double flow_b = (2.0*comm_weights[tgt]  - comm_internal[tgt])  / m2;
+
+    // Values after move
+    // Δcomm_internal[curr] = -2*edges_to_curr, Δcomm_internal[tgt] = +2*edges_to_tgt
+    double q_a_new    = q_a    + (-kv + 2.0*edges_to_curr) / m2;
+    double q_b_new    = q_b    + ( kv - 2.0*edges_to_tgt)  / m2;
+    double flow_a_new = flow_a + 2.0*(-kv + edges_to_curr) / m2;
+    double flow_b_new = flow_b + 2.0*( kv - edges_to_tgt)  / m2;
+    double q_total_new = q_total + 2.0*(edges_to_curr - edges_to_tgt) / m2;
+
+    // ΔL' = Δh(q_total) - 2·Δh(q_a) - 2·Δh(q_b) + Δh(flow_a) + Δh(flow_b)
+    double delta_L = (hlog(q_total_new) - hlog(q_total))
+                   - 2.0*(hlog(q_a_new) - hlog(q_a))
+                   - 2.0*(hlog(q_b_new) - hlog(q_b))
+                   + (hlog(flow_a_new) - hlog(flow_a))
+                   + (hlog(flow_b_new) - hlog(flow_b));
+
+    return -delta_L;  // gain: positive = improvement
+}
+
+void QualityLeidenBackend::init_comm_internal(
+    const std::vector<int>& labels,
+    int n_communities,
+    std::vector<double>& comm_internal) const {
+
+    comm_internal.assign(n_communities, 0.0);
+    for (int v = 0; v < n_nodes_; ++v) {
+        int cv = labels[v];
+        for (const auto& [u, w] : adj_[v]) {
+            if (labels[u] == cv) {
+                comm_internal[cv] += w;  // counts each internal edge from both endpoints
+            }
+        }
+    }
+}
+
 ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& edges,
                                              int n_nodes,
                                              const LeidenConfig& config) {
@@ -230,6 +295,48 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
         std::cerr << "[QualityLeiden-MT] Phase 2: " << n_contaminated
                   << " contaminated clusters, " << n_split << " split, "
                   << n_communities << " total\n";
+    }
+
+    // Phase 1b (optional): marker-guided map equation refinement.
+    // Uses the map equation delta (parameter-free MDL objective) combined with
+    // the marker quality penalty. Unlike modularity, the map equation has no
+    // resolution limit, so it won't over-merge unlike the old Phase 1b.
+    if (qconfig_.use_map_equation) {
+        std::cerr << "[QualityLeiden-MT] Phase 1b: map-equation quality refinement...\n";
+
+        // Re-compact labels first (Phase 2 may have grown n_communities)
+        n_communities = compact_labels(labels);
+
+        // Re-init community stats after Phase 2
+        comm_weights.assign(n_communities, 0.0);
+        comm_sizes.assign(n_communities, 0.0);
+        for (int i = 0; i < n_nodes_; ++i) {
+            comm_weights[labels[i]] += node_weights_[i];
+            comm_sizes[labels[i]] += node_sizes_[i];
+        }
+        init_comm_quality(labels, n_communities, comm_q);
+
+        std::vector<double> comm_internal;
+        init_comm_internal(labels, n_communities, comm_internal);
+
+        // q_total = fraction of flow crossing community boundaries
+        double ci_sum = 0.0;
+        for (double ci : comm_internal) ci_sum += ci;
+        double q_total = (total_edge_weight_ > 0.0)
+                       ? (total_edge_weight_ - ci_sum) / total_edge_weight_
+                       : 0.0;
+
+        float lambda = calibrate_lambda(labels, comm_weights, comm_sizes, comm_q, config.resolution);
+        std::cerr << "[QualityLeiden-MT] Phase 1b lambda=" << lambda
+                  << ", q_total=" << q_total
+                  << ", communities=" << n_communities << "\n";
+
+        refine_partition_quality_mt(labels, comm_weights, comm_sizes, comm_q,
+                                    comm_internal, q_total,
+                                    config.resolution, lambda, n_threads);
+
+        n_communities = compact_labels(labels);
+        std::cerr << "[QualityLeiden-MT] Phase 1b done: " << n_communities << " clusters\n";
     }
 
     // Compact labels and compute final modularity
@@ -706,6 +813,8 @@ bool QualityLeidenBackend::move_nodes_fast_quality_mt(
     std::vector<double>& comm_weights,
     std::vector<double>& comm_sizes,
     std::vector<CommQuality>& comm_q,
+    std::vector<double>& comm_internal,
+    double& q_total,
     float resolution,
     float lambda,
     int n_threads) {
@@ -864,9 +973,16 @@ bool QualityLeidenBackend::move_nodes_fast_quality_mt(
                 for (int c : my_ctx.touched) {
                     if (c == current) continue;
 
-                    double mod_delta = delta_modularity_fast(
-                        node, current, c, edges_to_current, my_ctx.acc[c],
-                        comm_weights, comm_sizes, resolution);
+                    double base_delta;
+                    if (qconfig_.use_map_equation) {
+                        base_delta = delta_map_equation(
+                            node, current, c, edges_to_current, my_ctx.acc[c],
+                            comm_weights, comm_internal, q_total);
+                    } else {
+                        base_delta = delta_modularity_fast(
+                            node, current, c, edges_to_current, my_ctx.acc[c],
+                            comm_weights, comm_sizes, resolution);
+                    }
 
                     double qual_delta = 0.0;
                     if (has_marker_[node]) {
@@ -874,7 +990,7 @@ bool QualityLeidenBackend::move_nodes_fast_quality_mt(
                         qual_delta = qd.total(qconfig_.contamination_penalty);
                     }
 
-                    double total = mod_delta + lambda * qual_delta;
+                    double total = base_delta + lambda * qual_delta;
                     if (total > best_delta) {
                         best_delta = total;
                         best = c;
@@ -913,15 +1029,22 @@ bool QualityLeidenBackend::move_nodes_fast_quality_mt(
                     if (c == current) edges_to_current += w;
                     else if (c == best) edges_to_best += w;
                 }
-                double mod_delta = delta_modularity_fast(
-                    node, current, best, edges_to_current, edges_to_best,
-                    comm_weights, comm_sizes, resolution);
+                double base_delta;
+                if (qconfig_.use_map_equation) {
+                    base_delta = delta_map_equation(
+                        node, current, best, edges_to_current, edges_to_best,
+                        comm_weights, comm_internal, q_total);
+                } else {
+                    base_delta = delta_modularity_fast(
+                        node, current, best, edges_to_current, edges_to_best,
+                        comm_weights, comm_sizes, resolution);
+                }
                 double qual_delta = 0.0;
                 if (has_marker_[node]) {
                     auto qd = compute_quality_delta_fast(node, current, best, comm_q);
                     qual_delta = qd.total(qconfig_.contamination_penalty);
                 }
-                double revalidated_delta = mod_delta + lambda * qual_delta;
+                double revalidated_delta = base_delta + lambda * qual_delta;
                 if (revalidated_delta <= EPSILON) {
                     skipped_epsilon++;
                     continue;  // Skip tiny/stale proposals
@@ -932,6 +1055,13 @@ bool QualityLeidenBackend::move_nodes_fast_quality_mt(
                 comm_weights[best] += node_weights_[node];
                 comm_sizes[current] -= node_sizes_[node];
                 comm_sizes[best] += node_sizes_[node];
+
+                if (qconfig_.use_map_equation) {
+                    const double m2 = total_edge_weight_;
+                    q_total += (m2 > 0.0) ? 2.0*(edges_to_current - edges_to_best) / m2 : 0.0;
+                    comm_internal[current] -= 2.0 * edges_to_current;
+                    comm_internal[best]    += 2.0 * edges_to_best;
+                }
 
                 if (has_marker_[node]) {
                     update_comm_quality(node, current, best, comm_q);
@@ -973,6 +1103,8 @@ void QualityLeidenBackend::refine_partition_quality_mt(
     std::vector<double>& comm_weights,
     std::vector<double>& comm_sizes,
     std::vector<CommQuality>& comm_q,
+    std::vector<double>& comm_internal,
+    double& q_total,
     float resolution,
     float lambda,
     int n_threads) {
@@ -983,6 +1115,7 @@ void QualityLeidenBackend::refine_partition_quality_mt(
         std::cerr << "[QualityLeiden-MT] Starting refinement pass " << pass << "...\n";
         bool improved = move_nodes_fast_quality_mt(
             labels, comm_weights, comm_sizes, comm_q,
+            comm_internal, q_total,
             resolution, lambda, n_threads);
 
         if (!improved) {

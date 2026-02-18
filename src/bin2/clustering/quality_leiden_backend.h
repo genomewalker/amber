@@ -54,6 +54,12 @@ struct QualityLeidenConfig {
     // 0 = disabled, 3.0 = ~95% reduction per shared marker.
     float marker_edge_penalty = 3.0f;
 
+    // Phase 1b: marker-guided map equation refinement after libleidenalg.
+    // Replaces modularity delta with the map equation delta (parameter-free,
+    // MDL-based), combined with the marker quality penalty. This avoids the
+    // resolution limit and over-merging issues of modularity-based refinement.
+    bool use_map_equation = false;
+
     int n_threads = 0;  // 0 = use hardware concurrency
 };
 
@@ -137,12 +143,30 @@ protected:
         int node, int source_comm, int target_comm,
         const std::vector<CommQuality>& comm_q) const;
 
+    // Map equation delta for moving node from curr to tgt (gain = -ΔL, positive = improvement).
+    // comm_internal[c] = Σ_{v∈c} Σ_{u∈c,u~v} w_{uv} (each internal edge counted twice).
+    // q_total = (total_edge_weight_ - Σ comm_internal[c]) / total_edge_weight_.
+    double delta_map_equation(
+        int node, int curr, int tgt,
+        double edges_to_curr, double edges_to_tgt,
+        const std::vector<double>& comm_weights,
+        const std::vector<double>& comm_internal,
+        double q_total) const;
+
+    // Initialize comm_internal from current labels.
+    void init_comm_internal(
+        const std::vector<int>& labels,
+        int n_communities,
+        std::vector<double>& comm_internal) const;
+
     // Multicore quality-weighted move kernel with work stealing
     bool move_nodes_fast_quality_mt(
         std::vector<int>& labels,
         std::vector<double>& comm_weights,
         std::vector<double>& comm_sizes,
         std::vector<CommQuality>& comm_q,
+        std::vector<double>& comm_internal,
+        double& q_total,
         float resolution,
         float lambda,
         int n_threads);
@@ -153,6 +177,8 @@ protected:
         std::vector<double>& comm_weights,
         std::vector<double>& comm_sizes,
         std::vector<CommQuality>& comm_q,
+        std::vector<double>& comm_internal,
+        double& q_total,
         float resolution,
         float lambda,
         int n_threads);
