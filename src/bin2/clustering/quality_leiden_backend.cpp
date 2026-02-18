@@ -118,11 +118,13 @@ float QualityLeidenBackend::scg_score_labels(
             n_viable++;
         }
 
-        // Soft tiebreaker: mean (comp - 5*cont) normalised to (-1, +1) so it
-        // never overrides a difference in the discrete category counts.
-        float soft = (n_viable > 0)
-            ? (total_comp - 5.0f * total_cont) / (n_viable * 100.0f)
-            : 0.0f;
+        // Soft tiebreaker: SUM (not mean) of (comp - 5*cont) across viable bins.
+        // Using the mean normalised by n_viable penalises having more viable bins
+        // (fewer large clusters score better than more small ones even though more
+        // clusters at the right resolution produces more HQ bins). The sum correctly
+        // rewards having more viable clusters with good quality.
+        // Divided by 1e4 to stay safely below the 1e2 * num_505 step.
+        float soft = (total_comp - 5.0f * total_cont) / 1e4f;
 
         return 1e6f * num_905 + 1e4f * num_705 + 1e2f * num_505 + soft;
     }
