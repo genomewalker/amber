@@ -338,62 +338,50 @@ std::vector<std::string> SeedGenerator::select_seeds(const std::vector<HMMHit>& 
         return {};
     }
 
-    // Build qlen map from hits
-    std::unordered_map<std::string, int> marker_qlen;
-    for (const auto& hit : hits) {
-        if (marker_qlen.find(hit.marker) == marker_qlen.end() ||
-            hit.qlen < marker_qlen[hit.marker]) {
-            marker_qlen[hit.marker] = hit.qlen;
-        }
-    }
-
-    // Count unique contigs per marker
+    // Count unique contigs per marker, find median
     std::vector<size_t> counts;
     for (const auto& [marker, contigs] : by_marker) {
         counts.push_back(contigs.size());
     }
-
-    // Find median count
     std::sort(counts.begin(), counts.end());
     size_t median_count = counts[counts.size() / 2];
     std::cerr << "[seeds] Median marker hit count: " << median_count << "\n";
 
-    // Find markers with exactly median count
-    std::vector<std::pair<std::string, int>> median_markers;
+    // Build best-coverage map: marker -> contig -> max alignment coverage
+    std::unordered_map<std::string, std::unordered_map<std::string, double>> best_cov;
+    for (const auto& hit : hits) {
+        auto it = contig_lengths_.find(hit.contig);
+        if (it == contig_lengths_.end() || static_cast<int>(it->second) < min_length_) continue;
+        best_cov[hit.marker][hit.contig] = std::max(best_cov[hit.marker][hit.contig], hit.coverage);
+    }
+
+    // For each marker with count <= median (reliable single-copy in this sample):
+    // select the one contig with highest alignment coverage.
+    // Using multiple markers gives seeds that span many gene families / genomes.
+    std::unordered_set<std::string> seed_set;
+    int qualifying_markers = 0;
     for (const auto& [marker, contigs] : by_marker) {
-        if (contigs.size() == median_count) {
-            int qlen = marker_qlen.count(marker) ? marker_qlen[marker] : 999999;
-            median_markers.push_back({marker, qlen});
+        if (contigs.size() > median_count) continue;
+
+        const auto& cov_map = best_cov[marker];
+        if (cov_map.empty()) continue;
+
+        std::string best_contig;
+        double best = -1.0;
+        for (const auto& [contig, cov] : cov_map) {
+            if (cov > best) { best = cov; best_contig = contig; }
+        }
+        if (!best_contig.empty()) {
+            seed_set.insert(best_contig);
+            qualifying_markers++;
         }
     }
+    selected_markers_ = qualifying_markers;
 
-    if (median_markers.empty()) {
-        // No markers with exactly median count, use closest
-        std::cerr << "[seeds] WARNING: No markers with median count, using all\n";
-        std::unordered_set<std::string> seed_set;
-        for (const auto& hit : hits) {
-            auto it = contig_lengths_.find(hit.contig);
-            if (it != contig_lengths_.end() && static_cast<int>(it->second) >= min_length_) {
-                seed_set.insert(hit.contig);
-            }
-        }
-        return std::vector<std::string>(seed_set.begin(), seed_set.end());
-    }
+    std::cerr << "[seeds] Selected " << seed_set.size() << " unique seed contigs from "
+              << qualifying_markers << " markers with count <= " << median_count << "\n";
 
-    // Sort by qlen to get marker with smallest query length
-    std::sort(median_markers.begin(), median_markers.end(),
-              [](const auto& a, const auto& b) { return a.second < b.second; });
-
-    std::string best_marker = median_markers[0].first;
-    selected_markers_ = 1;
-
-    std::cerr << "[seeds] Selected marker: " << best_marker
-              << " (qlen=" << median_markers[0].second
-              << ", hits=" << median_count << ")\n";
-
-    // Get contigs from the selected marker (by_marker now contains sets of contig names)
-    std::vector<std::string> seeds(by_marker[best_marker].begin(),
-                                   by_marker[best_marker].end());
+    std::vector<std::string> seeds(seed_set.begin(), seed_set.end());
 
     // Write seeds to output file
     std::ofstream out(output_path);
