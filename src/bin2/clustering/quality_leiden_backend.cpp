@@ -37,13 +37,46 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] alpha=" << qconfig_.alpha
               << ", penalty=" << qconfig_.contamination_penalty << "\n";
 
-    // Step 1: Run libleidenalg for fast initial clustering
+    // Step 1: Run libleidenalg for initial clustering.
+    // Pre-process edges: penalize connections between contigs sharing SCG markers.
+    // Contigs sharing the same single-copy gene belong to different genomes, so their
+    // edge weights are scaled down by exp(-penalty * n_shared_markers). This biases
+    // libleidenalg away from contamination-creating merges without modifying libleidenalg.
     std::cerr << "[QualityLeiden-MT] Phase 1: libleidenalg for initial clustering...\n";
+    std::vector<WeightedEdge> phase1_edges;
+    if (qconfig_.marker_edge_penalty > 0.0f) {
+        phase1_edges.reserve(edges.size());
+        int penalized = 0;
+        for (const auto& e : edges) {
+            const auto& mu = marker_index_->get_markers(e.u);
+            const auto& mv = marker_index_->get_markers(e.v);
+            int shared = 0;
+            if (!mu.empty() && !mv.empty()) {
+                for (const auto& a : mu) {
+                    for (const auto& b : mv) {
+                        if (a.id == b.id) { shared++; break; }
+                    }
+                }
+            }
+            float w = e.w;
+            if (shared > 0) {
+                w *= std::exp(-qconfig_.marker_edge_penalty * shared);
+                penalized++;
+            }
+            phase1_edges.push_back({e.u, e.v, w});
+        }
+        if (penalized > 0) {
+            std::cerr << "[QualityLeiden-MT] Penalized " << penalized
+                      << " edges with shared SCG markers\n";
+        }
+    }
+    const std::vector<WeightedEdge>& p1_edges = phase1_edges.empty() ? edges : phase1_edges;
+
 #ifdef USE_LIBLEIDENALG
     LibLeidenalgBackend fast_backend;
-    ClusteringResult initial_result = fast_backend.cluster(edges, n_nodes, config);
+    ClusteringResult initial_result = fast_backend.cluster(p1_edges, n_nodes, config);
 #else
-    ClusteringResult initial_result = LeidenBackend::cluster(edges, n_nodes, config);
+    ClusteringResult initial_result = LeidenBackend::cluster(p1_edges, n_nodes, config);
 #endif
     std::cerr << "[QualityLeiden-MT] Initial clustering: " << initial_result.num_clusters
               << " clusters, modularity=" << initial_result.modularity << "\n";
