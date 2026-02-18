@@ -473,7 +473,8 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
                        ? (total_edge_weight_ - ci_sum) / total_edge_weight_
                        : 0.0;
 
-        float lambda = calibrate_lambda(labels, comm_weights, comm_sizes, comm_q, effective_config.resolution);
+        float lambda = calibrate_lambda(labels, comm_weights, comm_sizes, comm_q,
+                                        comm_internal, q_total, effective_config.resolution);
         std::cerr << "[QualityLeiden-MT] Phase 1b lambda=" << lambda
                   << ", q_total=" << q_total
                   << ", communities=" << n_communities << "\n";
@@ -884,9 +885,11 @@ float QualityLeidenBackend::calibrate_lambda(
     const std::vector<double>& comm_weights,
     const std::vector<double>& comm_sizes,
     const std::vector<CommQuality>& comm_q,
+    const std::vector<double>& comm_internal,
+    double q_total,
     float resolution) {
 
-    std::vector<double> mod_deltas;
+    std::vector<double> base_deltas;   // map equation or modularity, depending on mode
     std::vector<double> quality_deltas;
 
     int n_samples = std::min(qconfig_.calibration_samples,
@@ -915,29 +918,37 @@ float QualityLeidenBackend::calibrate_lambda(
             else if (labels[k] == target) edges_to_target += w;
         }
 
-        double mod_delta = delta_modularity_fast(
-            node, current, target,
-            edges_to_current, edges_to_target,
-            comm_weights, comm_sizes, resolution);
+        double base_delta;
+        if (qconfig_.use_map_equation) {
+            base_delta = delta_map_equation(
+                node, current, target,
+                edges_to_current, edges_to_target,
+                comm_weights, comm_internal, q_total);
+        } else {
+            base_delta = delta_modularity_fast(
+                node, current, target,
+                edges_to_current, edges_to_target,
+                comm_weights, comm_sizes, resolution);
+        }
 
         auto q_delta = compute_quality_delta_fast(node, current, target, comm_q);
         double quality_delta = q_delta.total(qconfig_.contamination_penalty);
 
-        mod_deltas.push_back(std::abs(mod_delta));
+        base_deltas.push_back(std::abs(base_delta));
         if (std::abs(quality_delta) > 1e-10) {
             quality_deltas.push_back(std::abs(quality_delta));
         }
     }
 
-    if (mod_deltas.empty() || quality_deltas.empty()) {
+    if (base_deltas.empty() || quality_deltas.empty()) {
         std::cerr << "[QualityLeiden] Not enough samples for calibration, using default lambda\n";
         return qconfig_.alpha;
     }
 
-    std::sort(mod_deltas.begin(), mod_deltas.end());
+    std::sort(base_deltas.begin(), base_deltas.end());
     std::sort(quality_deltas.begin(), quality_deltas.end());
 
-    double s_R = mod_deltas[mod_deltas.size() / 2];
+    double s_R = base_deltas[base_deltas.size() / 2];
     double s_M = quality_deltas[quality_deltas.size() / 2];
 
     if (s_M < 1e-10) {
@@ -949,7 +960,9 @@ float QualityLeidenBackend::calibrate_lambda(
 
     lambda = std::max(qconfig_.lambda_min, std::min(qconfig_.lambda_max, lambda));
 
-    std::cerr << "[QualityLeiden] Calibration (dense): s_R=" << s_R << ", s_M=" << s_M
+    std::cerr << "[QualityLeiden] Calibration (dense,"
+              << (qconfig_.use_map_equation ? "map-eq" : "modularity")
+              << "): s_R=" << s_R << ", s_M=" << s_M
               << ", lambda=" << lambda << " (from " << quality_deltas.size() << " quality samples)\n";
 
     return lambda;

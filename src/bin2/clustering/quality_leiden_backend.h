@@ -202,11 +202,14 @@ protected:
         const LeidenConfig& config) const;
 
     // Dense CommQuality version of calibrate_lambda
+    // comm_internal and q_total are only used when qconfig_.use_map_equation is true.
     float calibrate_lambda(
         const std::vector<int>& labels,
         const std::vector<double>& comm_weights,
         const std::vector<double>& comm_sizes,
         const std::vector<CommQuality>& comm_q,
+        const std::vector<double>& comm_internal,
+        double q_total,
         float resolution);
 
 private:
