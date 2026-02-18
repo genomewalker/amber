@@ -1616,6 +1616,24 @@ int run_bin2(const Bin2Config& config) {
             }
         }
 
+        // Append 9 multi-scale CGR features (scale-transition entropy/occupancy/lacunarity)
+        // Captures sequence complexity at multiple scales, orthogonal to damage features
+        {
+            int total_dims = (int)embeddings[0].size() + bin2::MultiScaleCGRFeatures::num_features();
+            log.info("Concatenating 9 CGR features to embeddings (total " +
+                     std::to_string(total_dims) + " dims for clustering)");
+            std::vector<bin2::MultiScaleCGRFeatures> cgr_features(N);
+            #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
+            for (int i = 0; i < N; i++) {
+                cgr_features[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
+            }
+            for (int i = 0; i < N; i++) {
+                for (float f : cgr_features[i].to_vector()) {
+                    embeddings[i].push_back(f);
+                }
+            }
+        }
+
     auto train_end = std::chrono::steady_clock::now();
     auto train_s = std::chrono::duration_cast<std::chrono::seconds>(train_end - train_start).count();
     log.info("Training completed in " + std::to_string(train_s) + " s");
