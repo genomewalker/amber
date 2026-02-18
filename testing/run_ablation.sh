@@ -7,9 +7,9 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=2:00:00
-#SBATCH --array=1-21
+#SBATCH --array=1-24
 
-# Ablation ladder: 7 configs × 3 reps
+# Ablation ladder: 8 configs × 3 reps
 # Config 1: Baseline (standard)
 # Config 2: + DamageInfoNCE
 # Config 3: + QualityLeiden
@@ -49,6 +49,8 @@ case $CONFIG_ID in
        EXTRA_FLAGS="--damage-infonce --map-equation" ;;
     7) CONFIG_NAME="damage_map_cgr"
        EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr" ;;
+    8) CONFIG_NAME="damage_map_cgr_restarts"
+       EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr --leiden-restarts 25" ;;
     *) echo "Unknown config $CONFIG_ID"; exit 1 ;;
 esac
 
