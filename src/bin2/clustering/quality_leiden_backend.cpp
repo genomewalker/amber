@@ -163,9 +163,14 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             }
             if (sub_edges.empty()) continue;
 
-            // Re-cluster at 3x resolution to force finer splits
+            // Re-cluster with resolution scaled inversely with cluster size.
+            // For small clusters (~50 nodes), use 3x to force fine splits.
+            // For large clusters (~1000+ nodes), scale down to avoid shattering into singletons
+            // (a 1836-node cluster at 3x resolution fragments into 320 parts, all too small to bin).
             LeidenConfig sub_config = config;
-            sub_config.resolution = config.resolution * 3.0f;
+            float size_scale = std::max(1.0f, static_cast<float>(nodes.size()) / 100.0f);
+            float res_mult = std::min(3.0f, 3.0f / std::sqrt(size_scale));
+            sub_config.resolution = config.resolution * res_mult;
             sub_config.use_initial_membership = false;
             sub_config.initial_membership.clear();
             sub_config.use_fixed_membership = false;
