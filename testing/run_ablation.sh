@@ -5,15 +5,16 @@
 #SBATCH --nodelist=dandygpun01fl
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH --time=2:00:00
-#SBATCH --array=1-12
+#SBATCH --array=1-15
 
-# Ablation ladder: 4 configs × 3 reps
+# Ablation ladder: 5 configs × 3 reps
 # Config 1: Baseline (standard)
 # Config 2: + DamageInfoNCE
 # Config 3: + QualityLeiden
 # Config 4: Full (DamageInfoNCE + QualityLeiden)
+# Config 5: + MapEquation (QualityLeiden + map equation Phase 1b)
 
 set -e
 AMBER_DIR=/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber
@@ -27,7 +28,7 @@ export CUDACXX=/usr/local/cuda/bin/nvcc
 
 # Decode config and rep from array task ID (1-indexed)
 TASK=${SLURM_ARRAY_TASK_ID}
-CONFIG_ID=$(( (TASK - 1) / 3 + 1 ))  # 1-4
+CONFIG_ID=$(( (TASK - 1) / 3 + 1 ))  # 1-5
 REP_ID=$(( (TASK - 1) % 3 + 1 ))     # 1-3
 
 # Config names and extra flags
@@ -40,6 +41,8 @@ case $CONFIG_ID in
        EXTRA_FLAGS="--quality-leiden" ;;
     4) CONFIG_NAME="full_amber"
        EXTRA_FLAGS="--damage-infonce --quality-leiden" ;;
+    5) CONFIG_NAME="map_equation"
+       EXTRA_FLAGS="--map-equation" ;;
     *) echo "Unknown config $CONFIG_ID"; exit 1 ;;
 esac
 

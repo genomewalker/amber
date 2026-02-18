@@ -121,6 +121,9 @@ int cmd_bin2(int argc, char** argv) {
                       << "Quality-Guided Clustering:\n"
                       << "  --quality-leiden       Use marker-quality-guided Leiden refinement\n"
                       << "                         Optimizes modularity + SCG completeness/contamination\n"
+                      << "  --map-equation         Phase 1b: marker-guided map equation refinement\n"
+                      << "                         Requires --quality-leiden. Replaces modularity delta\n"
+                      << "                         with parameter-free MDL objective (Rosvall & Bergstrom).\n"
                       << "  --quality-alpha F      Quality weight in combined objective (default: 1.0)\n"
                       << "                         0=pure modularity, 1=balanced, >1=quality-dominant\n"
                       << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
@@ -239,6 +242,10 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--quality-leiden") {
             config.use_quality_leiden = true;
+        }
+        else if (arg == "--map-equation") {
+            config.use_quality_leiden = true;  // implies quality-leiden
+            config.use_map_equation = true;
         }
         else if (arg == "--quality-alpha" && i + 1 < argc) {
             config.quality_alpha = std::stof(argv[++i]);

@@ -97,6 +97,7 @@ struct Bin2Config {
     int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
     float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
     bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
+    bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
@@ -1893,6 +1894,7 @@ int run_bin2(const Bin2Config& config) {
         qb->set_marker_index(&marker_index);
         bin2::QualityLeidenConfig qcfg;
         qcfg.alpha = config.quality_alpha;
+        qcfg.use_map_equation = config.use_map_equation;
         qcfg.n_threads = config.threads;
         qb->set_quality_config(qcfg);
         backend = std::move(qb);
