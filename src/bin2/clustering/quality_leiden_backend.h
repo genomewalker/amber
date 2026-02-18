@@ -149,6 +149,16 @@ public:
     // Set quality configuration
     void set_quality_config(const QualityLeidenConfig& config) { qconfig_ = config; }
 
+    // Set CheckM estimator + node names for proper colocation-based scoring.
+    // node_names[i] must match the node ordering used in cluster().
+    // When set, scg_score_labels() returns CheckM HQ count and Phase 2 uses
+    // CheckM contamination > 5% as the split criterion.
+    void set_checkm_estimator(const CheckMQualityEstimator* est,
+                              const std::vector<std::string>* node_names) {
+        checkm_est_ = est;
+        node_names_ = node_names;
+    }
+
     // Override cluster to add quality-weighted optimization
     ClusteringResult cluster(const std::vector<WeightedEdge>& edges,
                           int n_nodes,
@@ -308,6 +318,10 @@ private:
     const MarkerIndex* marker_index_ = nullptr;
     QualityLeidenConfig qconfig_;
     std::vector<uint8_t> has_marker_;
+
+    // Optional: proper CheckM estimator for colocation-based scoring
+    const CheckMQualityEstimator* checkm_est_ = nullptr;
+    const std::vector<std::string>* node_names_ = nullptr;
 };
 
 // Factory function

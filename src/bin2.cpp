@@ -1863,13 +1863,16 @@ int run_bin2(const Bin2Config& config) {
         leiden_config.is_membership_fixed = is_membership_fixed;
     }
 
-    // Build marker index if quality Leiden is requested
+    // Build marker index and CheckM estimator if quality Leiden is requested.
+    // Both must outlive the backend, so they are declared at this scope.
     bin2::MarkerIndex marker_index;
+    std::vector<std::string> bin2_contig_names;
+    bin2::CheckMQualityEstimator bin2_checkm_est;
+
     if (config.use_quality_leiden && !marker_hits_by_contig.empty()) {
-        std::vector<std::string> contig_names;
-        contig_names.reserve(contigs.size());
+        bin2_contig_names.reserve(contigs.size());
         for (const auto& [name, seq] : contigs)
-            contig_names.push_back(name);
+            bin2_contig_names.push_back(name);
 
         std::string bacteria_ms = config.bacteria_ms_file.empty() ? "scripts/checkm_ms/bacteria.ms" : config.bacteria_ms_file;
         std::string archaea_ms  = config.archaea_ms_file.empty()  ? "scripts/checkm_ms/archaea.ms"  : config.archaea_ms_file;
@@ -1877,14 +1880,20 @@ int run_bin2(const Bin2Config& config) {
         if (std::filesystem::exists(bacteria_ms)) {
             bin2::CheckMMarkerParser ms_parser;
             ms_parser.load(bacteria_ms, archaea_ms);
-            marker_index.build(ms_parser.bacteria(), marker_hits_by_contig, contig_names);
+            marker_index.build(ms_parser.bacteria(), marker_hits_by_contig, bin2_contig_names);
             log.info("MarkerIndex (CheckM colocation weights): " +
                      std::to_string(marker_index.num_marker_contigs()) +
                      " contigs, " + std::to_string(marker_index.num_markers()) +
                      " markers, " + std::to_string(marker_index.num_sets()) + " sets");
+
+            // Build CheckM estimator for restart scoring and Phase 2 split criterion.
+            // Uses the same colocation sets so quality scores are consistent.
+            bin2_checkm_est.load_marker_sets(bacteria_ms, archaea_ms);
+            bin2_checkm_est.set_hits(marker_hits_by_contig);
+            log.info("CheckMQualityEstimator ready for colocation-based scoring");
         } else {
             log.info("CheckM marker sets not found at " + bacteria_ms + ", using uniform weights");
-            marker_index.build_from_hits(marker_hits_by_contig, contig_names);
+            marker_index.build_from_hits(marker_hits_by_contig, bin2_contig_names);
             log.info("MarkerIndex (uniform weights): " +
                      std::to_string(marker_index.num_marker_contigs()) +
                      " contigs, " + std::to_string(marker_index.num_markers()) + " markers");
@@ -1896,6 +1905,10 @@ int run_bin2(const Bin2Config& config) {
         log.info("Using QualityLeiden (alpha=" + std::to_string(config.quality_alpha) + ")");
         auto qb = std::make_unique<bin2::QualityLeidenBackend>();
         qb->set_marker_index(&marker_index);
+        if (bin2_checkm_est.has_marker_sets()) {
+            qb->set_checkm_estimator(&bin2_checkm_est, &bin2_contig_names);
+            log.info("QualityLeiden: CheckM colocation scoring enabled");
+        }
         bin2::QualityLeidenConfig qcfg;
         qcfg.alpha = config.quality_alpha;
         qcfg.use_map_equation = config.use_map_equation;

@@ -88,6 +88,9 @@ public:
     // Set hits directly (from seed generator)
     void set_hits(const std::unordered_map<std::string, std::vector<std::string>>& hits);
 
+    // True if marker sets have been loaded (bacteria at minimum)
+    bool has_marker_sets() const { return !parser_.bacteria().sets.empty(); }
+
     // Calculate quality for a bin (list of contig names)
     // Uses CheckM's colocation formula
     CheckMQuality estimate_bin_quality(const std::vector<std::string>& contig_names) const;

@@ -83,27 +83,48 @@ float QualityLeidenBackend::scg_score_labels(
     const std::vector<int>& labels, int n_communities) const {
     if (!marker_index_ || marker_index_->num_marker_contigs() == 0) return 0.0f;
 
-    std::vector<CommQuality> cq(n_communities);
-    std::vector<long long>   comm_bp(n_communities, 0);
+    // Group nodes by cluster and accumulate bp.
+    std::vector<long long> comm_bp(n_communities, 0);
+    for (int i = 0; i < n_nodes_; ++i)
+        comm_bp[labels[i]] += static_cast<long long>(node_sizes_[i]);
 
+    // --- CheckM path: proper colocation-based HQ count ---
+    // Direct optimisation target: returns the number of viable clusters that
+    // meet the CheckM HQ threshold (completeness >= 90%, contamination <= 5%).
+    if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
+        std::vector<std::vector<int>> cluster_nodes(n_communities);
+        for (int i = 0; i < n_nodes_; ++i)
+            cluster_nodes[labels[i]].push_back(i);
+
+        int hq = 0;
+        for (int c = 0; c < n_communities; ++c) {
+            if (comm_bp[c] < qconfig_.restart_min_viable_bp) continue;
+            std::vector<std::string> names;
+            names.reserve(cluster_nodes[c].size());
+            for (int v : cluster_nodes[c]) names.push_back((*node_names_)[v]);
+            auto q = checkm_est_->estimate_bin_quality(names);
+            if (q.completeness >= 90.0f && q.contamination <= 5.0f) hq++;
+        }
+        return static_cast<float>(hq);
+    }
+
+    // --- Proxy path (fallback when CheckM estimator not available) ---
+    // Soft score: Σ_viable_cluster [present - penalty * dup_excess].
+    // Only count clusters above the minimum bin size to avoid the monotonicity
+    // trap (more clusters → less dup_excess per cluster at any resolution).
+    std::vector<CommQuality> cq(n_communities);
     for (int i = 0; i < n_nodes_; ++i) {
         int c = labels[i];
-        comm_bp[c] += node_sizes_[i];
         for (const auto& entry : marker_index_->get_markers(i)) {
             int m = entry.id, k = entry.copy_count;
             if (cq[c].cnt[m] == 0) cq[c].present++;
             cq[c].cnt[m] += k;
         }
     }
-    for (auto& q : cq) {
+    for (auto& q : cq)
         for (int m = 0; m < MAX_MARKER_TYPES; ++m)
             if (q.cnt[m] > 1) q.dup_excess += q.cnt[m] - 1;
-    }
 
-    // Only score viable clusters — skip those below the minimum bin size.
-    // Without this filter the objective monotonically increases with resolution
-    // (more clusters → less dup_excess per cluster) even when most clusters are
-    // too small to be real bins.
     float score = 0.0f;
     for (int c = 0; c < n_communities; ++c) {
         if (comm_bp[c] < qconfig_.restart_min_viable_bp) continue;
@@ -265,13 +286,27 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
     int original_n_communities = n_communities;
 
     for (int c = 0; c < original_n_communities; ++c) {
-        if (comm_q[c].dup_excess == 0) continue;
         const auto& nodes = cluster_nodes[c];
         if ((int)nodes.size() <= 1) continue;
 
         long long total_bp = 0;
         for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
         if (total_bp < 400000LL) continue;
+
+        // Decide whether to attempt a split.
+        // With CheckM: only split clusters that are genuinely contaminated (>5%).
+        // Without CheckM: fall back to any duplicate marker excess (old behavior).
+        bool should_split = false;
+        if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
+            std::vector<std::string> cluster_names;
+            cluster_names.reserve(nodes.size());
+            for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
+            auto q = checkm_est_->estimate_bin_quality(cluster_names);
+            should_split = (q.contamination > 5.0f);
+        } else {
+            should_split = (comm_q[c].dup_excess > 0);
+        }
+        if (!should_split) continue;
 
         n_contaminated++;
         std::unordered_map<int, int> local_id;
