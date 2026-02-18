@@ -110,7 +110,7 @@ BINARY="$AMBER_DIR/build/amber_gpu"
 if mkdir "$BUILD_MUTEX" 2>/dev/null; then
     echo ""
     echo "=== Building AMBER (task ${SLURM_ARRAY_TASK_ID} is builder) ==="
-    rm -rf build && mkdir -p build && cd build
+    mkdir -p build && cd build
     TORCH_CMAKE_PATH=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
     cmake .. -DAMBER_USE_TORCH=ON -DAMBER_USE_LIBLEIDENALG=ON -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_PREFIX_PATH="$TORCH_CMAKE_PATH" 2>&1 | tail -5
