@@ -978,7 +978,9 @@ ClusteringResult LibLeidenalgBackend::cluster(
 
     // Set up fixed membership for seeds
     std::vector<bool> is_fixed(n_nodes, false);
-    if (!config.is_membership_fixed.empty()) {
+    if (config.use_fixed_membership &&
+        !config.is_membership_fixed.empty() &&
+        config.is_membership_fixed.size() == static_cast<size_t>(n_nodes)) {
         is_fixed = config.is_membership_fixed;
         int n_fixed = std::count(is_fixed.begin(), is_fixed.end(), true);
         std::cerr << "[libleidenalg RBER] " << n_fixed << " fixed seeds" << std::endl;

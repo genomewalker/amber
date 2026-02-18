@@ -155,7 +155,9 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             LeidenConfig sub_config = config;
             sub_config.resolution = config.resolution * 3.0f;
             sub_config.use_initial_membership = false;
+            sub_config.initial_membership.clear();
             sub_config.use_fixed_membership = false;
+            sub_config.is_membership_fixed.clear();
             if (config.use_node_sizes) {
                 sub_config.node_sizes.resize(nodes.size());
                 for (int i = 0; i < (int)nodes.size(); ++i) {
