@@ -51,6 +51,9 @@ struct Bin2Config {
     bool use_ensemble_leiden = false;  // Use ensemble Leiden for reproducible clustering
     int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
     float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
+    bool ensemble_vary_resolution = false;  // Explore resolution space log-uniformly
+    float ensemble_res_min = 1.0f;
+    float ensemble_res_max = 20.0f;
     // Quality-guided clustering
     bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
@@ -119,6 +122,9 @@ int cmd_bin2(int argc, char** argv) {
                       << "                         Runs Leiden N times, takes co-occurrence consensus\n"
                       << "  --n-ensemble-runs INT  Number of Leiden runs (default: 10)\n"
                       << "  --ensemble-threshold F Co-occurrence threshold for consensus (default: 0.5)\n"
+                      << "  --ensemble-vary-res    Explore resolution log-uniformly across runs\n"
+                      << "  --ensemble-res-min F   Min resolution for exploration (default: 1.0)\n"
+                      << "  --ensemble-res-max F   Max resolution for exploration (default: 20.0)\n"
                       << "Quality-Guided Clustering:\n"
                       << "  --quality-leiden       Use marker-quality-guided Leiden refinement\n"
                       << "                         Optimizes modularity + SCG completeness/contamination\n"
@@ -240,6 +246,15 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--ensemble-threshold" && i + 1 < argc) {
             config.ensemble_threshold = std::stof(argv[++i]);
+        }
+        else if (arg == "--ensemble-vary-res") {
+            config.ensemble_vary_resolution = true;
+        }
+        else if (arg == "--ensemble-res-min" && i + 1 < argc) {
+            config.ensemble_res_min = std::stof(argv[++i]);
+        }
+        else if (arg == "--ensemble-res-max" && i + 1 < argc) {
+            config.ensemble_res_max = std::stof(argv[++i]);
         }
         else if (arg == "--quality-leiden") {
             config.use_quality_leiden = true;

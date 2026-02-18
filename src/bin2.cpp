@@ -96,6 +96,9 @@ struct Bin2Config {
     bool use_ensemble_leiden = false;  // Use ensemble Leiden for reproducible clustering
     int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
     float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
+    bool ensemble_vary_resolution = false;
+    float ensemble_res_min = 1.0f;
+    float ensemble_res_max = 20.0f;
     bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
@@ -1900,9 +1903,23 @@ int run_bin2(const Bin2Config& config) {
         backend = std::move(qb);
     } else if (config.use_ensemble_leiden) {
         log.info("Using EnsembleLeiden (" + std::to_string(config.n_ensemble_runs) +
-                 " runs, threshold=" + std::to_string(config.ensemble_threshold) + ")");
+                 " runs, threshold=" + std::to_string(config.ensemble_threshold) +
+                 (config.ensemble_vary_resolution ?
+                  ", res=[" + std::to_string(config.ensemble_res_min) + "," +
+                  std::to_string(config.ensemble_res_max) + "]" : "") + ")");
         auto ensemble = bin2::create_ensemble_leiden(config.n_ensemble_runs, config.ensemble_threshold);
-        ensemble->set_seed(leiden_config.random_seed);  // use Leiden seed as base (not hardcoded 42)
+        ensemble->set_seed(leiden_config.random_seed);
+        if (config.ensemble_vary_resolution) {
+            bin2::EnsembleLeidenConfig ecfg;
+            ecfg.n_runs = config.n_ensemble_runs;
+            ecfg.consensus_threshold = config.ensemble_threshold;
+            ecfg.base_seed = leiden_config.random_seed;
+            ecfg.vary_resolution = true;
+            ecfg.res_min = config.ensemble_res_min;
+            ecfg.res_max = config.ensemble_res_max;
+            ecfg.verbose = true;
+            ensemble->set_ensemble_config(ecfg);
+        }
         backend = std::move(ensemble);
     } else {
         backend = bin2::create_leiden_backend(true);  // Use Leiden (not Louvain)
