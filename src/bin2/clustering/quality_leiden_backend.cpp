@@ -595,17 +595,25 @@ void QualityLeidenBackend::run_phase3_rescue(
         std::sort(candidates.begin(), candidates.end(),
                   [](const auto& a, const auto& b) { return a.first > b.first; });
 
-        for (const auto& [w, node] : candidates) {
+        for (const auto& [w_to_target, node] : candidates) {
             int old_label = labels[node];
 
-            // Donor protection: don't steal from large viable bins unless the
-            // contig is a duplicate in the donor (removes donor contamination).
+            // Donor protection: don't steal from large viable bins unless:
+            // (a) the contig is duplicated in the donor (removes contamination), OR
+            // (b) the contig's kNN affinity to the target strongly exceeds its
+            //     affinity to its current bin (it almost certainly belongs here).
             if (cluster_bp[old_label] >= qconfig_.restart_min_viable_bp) {
                 bool removes_donor_dup = false;
                 for (const auto& me : marker_index_->get_markers(node)) {
                     if (comm_q[old_label].cnt[me.id] > 1) { removes_donor_dup = true; break; }
                 }
-                if (!removes_donor_dup) continue;
+                if (!removes_donor_dup) {
+                    // Compute affinity to current bin; allow steal if target >> current.
+                    double w_to_current = 0.0;
+                    for (const auto& [nbr, ew] : adj_[node])
+                        if (labels[nbr] == old_label) w_to_current += ew;
+                    if (w_to_target <= 3.0 * w_to_current) continue;
+                }
             }
 
             // Accept the move.
@@ -1395,7 +1403,7 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
         cluster_names.reserve(nodes.size());
         for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
         CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
-        if (parent_q.contamination <= 5.5f) continue;
+        if (parent_q.contamination <= 5.0f) continue;
 
         // Extended node set: bin contigs + their 1-hop kNN neighbors.
         // External neighbors serve as anchors: contaminating contigs have edges
@@ -1455,7 +1463,7 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
         // Try multiple seeds × resolutions. For near-HQ contaminated bins the
         // correct cut is findable but sensitive to seed — a few tries suffice.
         const float res_scales[] = {0.05f, 0.1f, 0.2f, 0.5f, 1.0f};
-        const int n_seeds = 5;
+        const int n_seeds = 15;
         bool accepted = false;
 
         for (float rs : res_scales) {
