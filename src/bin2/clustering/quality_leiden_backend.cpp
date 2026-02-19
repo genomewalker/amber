@@ -1119,11 +1119,13 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_tnf(
         }
         if ((int)bin_tnf.size() < 10) continue;
 
-        // TNF connectivity analysis — lower outlier_factor for more contaminated bins.
-        float outlier_factor = (parent_q.contamination >= 15.0f) ? 0.55f : 0.45f;
+        // TNF connectivity analysis — higher outlier_factor = more aggressive flagging.
+        // 0.8: flag if core_similarity < 80% of median (strongly deviant contigs).
+        // 0.7: slightly less aggressive for near-clean bins.
+        float outlier_factor = (parent_q.contamination >= 10.0f) ? 0.8f : 0.7f;
         auto refine = amber::tnf_graph::refine_bin_tnf(
             bin_tnf, global_indices,
-            /*similarity_threshold=*/0.95,
+            /*similarity_threshold=*/0.92,
             outlier_factor,
             /*min_bin_size=*/10);
 
@@ -1166,9 +1168,12 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_tnf(
         }
 
         bool accept;
-        if (parent_q.contamination >= 15.0f) {
-            accept = any_clean_child || (wcont <= parent_q.contamination - 10.0f);
+        if (parent_q.contamination >= 10.0f) {
+            // Chimeric purification: accept if any child is clean OR large cont drop.
+            accept = any_clean_child || (wcont <= parent_q.contamination - 8.0f);
         } else {
+            // Near-HQ preservation: require HQ gain or contamination drop without
+            // significant completeness regression.
             accept = (child_hq > parent_hq) ||
                      (wcont <= parent_q.contamination - 1.0f &&
                       wcomp >= parent_q.completeness - 2.0f);
