@@ -11,6 +11,7 @@
 #include <cmath>
 #include <random>
 #include "damage_aware_infonce.h"
+#include "scg_hard_negatives.h"
 
 namespace amber::bin2 {
 
@@ -365,6 +366,9 @@ public:
         bool use_damage_infonce = false;  // Use damage-weighted negative pairs
         float damage_lambda = 0.5f;       // Max attenuation strength (0.4-0.6)
         float damage_wmin = 0.5f;         // Minimum negative weight (graph connectivity)
+        // SCG hard negative mining
+        bool use_scg_infonce = false;     // Boost SCG-sharing pairs as hard negatives
+        float scg_boost = 2.0f;           // Multiplicative boost for shared-marker pairs
         int seed = 42;                    // Random seed for reproducibility
         // Stochastic Weight Averaging: average model weights over last epochs
         bool use_swa = true;
@@ -839,6 +843,203 @@ public:
         return best_loss;
     }
 
+    // SCG-only hard negative training — redirects to combined overload with empty damage.
+    float train_multiview(AmberEncoder& encoder,
+                          const std::vector<torch::Tensor>& views,
+                          const ContigMarkerLookup& scg_lookup) {
+        static const std::vector<DamageProfile> empty_damage;
+        return train_multiview(encoder, views, empty_damage, scg_lookup);
+    }
+
+    // Combined damage + SCG hard negative training.
+    // When damage_profiles is empty or use_damage_infonce=false: SCG weights only.
+    // When scg_lookup is empty: damage weights only (falls through to existing overload).
+    float train_multiview(AmberEncoder& encoder,
+                          const std::vector<torch::Tensor>& views,
+                          const std::vector<DamageProfile>& damage_profiles,
+                          const ContigMarkerLookup& scg_lookup) {
+        const bool has_damage = config_.use_damage_infonce && !damage_profiles.empty();
+        const bool has_scg = !scg_lookup.empty();
+
+        if (!has_scg) {
+            if (has_damage) return train_multiview(encoder, views, damage_profiles);
+            return train_multiview(encoder, views);
+        }
+
+        int n_views = views.size();
+        int N = views[0].size(0);
+
+        if (has_damage) {
+            std::cerr << "[AmberTrainer] Damage+SCG combined training with " << n_views
+                      << " views, " << N << " contigs\n";
+        } else {
+            std::cerr << "[AmberTrainer] SCG hard negative training with " << n_views
+                      << " views, " << N << " contigs\n";
+        }
+
+        encoder->to(device_);
+
+        std::vector<torch::Tensor> views_gpu;
+        for (int v = 0; v < n_views; v++)
+            views_gpu.push_back(views[v].to(device_));
+
+        DamageAwareInfoNCE damage_infonce(config_.temperature, [&]{
+            DamageInfoNCEParams p;
+            p.enabled = has_damage;
+            p.lambda = config_.damage_lambda;
+            p.wmin = config_.damage_wmin;
+            return p;
+        }());
+
+        torch::optim::AdamW optimizer(
+            encoder->parameters(),
+            torch::optim::AdamWOptions(config_.lr).weight_decay(config_.weight_decay));
+
+        int n_full_batches = N / config_.batch_size;
+        if (n_full_batches == 0) n_full_batches = 1;
+        std::cerr << "[AmberTrainer] Training on " << n_full_batches
+                  << " minibatches (drop_last=True), epochs=" << config_.epochs << "\n";
+
+        float best_loss = std::numeric_limits<float>::max();
+        int best_epoch = 0;
+        int earlystop_epoch = 0;
+
+        std::vector<torch::Tensor> swa_sums;
+        int swa_count = 0;
+        if (config_.use_swa) {
+            for (const auto& param : encoder->parameters())
+                swa_sums.push_back(torch::zeros_like(param));
+        }
+
+        for (int epoch = 1; epoch <= config_.epochs; epoch++) {
+            encoder->train();
+            auto total_loss_gpu = torch::zeros({1}, torch::TensorOptions().device(device_));
+            float last_accuracy = 0;
+
+            std::vector<int> indices(N);
+            std::iota(indices.begin(), indices.end(), 0);
+            std::shuffle(indices.begin(), indices.end(), std::mt19937(epoch));
+
+            for (int b = 0; b < n_full_batches; b++) {
+                int start = b * config_.batch_size;
+                int bs = config_.batch_size;
+                if (start + bs > N) break;
+
+                std::vector<long> batch_idx(bs);
+                std::vector<DamageProfile> batch_damage(has_damage ? bs : 0);
+                for (int i = 0; i < bs; i++) {
+                    batch_idx[i] = indices[start + i];
+                    if (has_damage) batch_damage[i] = damage_profiles[indices[start + i]];
+                }
+                auto idx_tensor = torch::tensor(batch_idx).to(device_);
+
+                std::vector<torch::Tensor> batch_views;
+                for (int v = 0; v < n_views; v++)
+                    batch_views.push_back(views_gpu[v].index_select(0, idx_tensor));
+                auto all_features = torch::cat(batch_views, 0);
+                auto embeddings = encoder->forward(all_features);
+
+                torch::Tensor final_weights;
+                if (has_damage) {
+                    auto dw = damage_infonce.compute_weights(batch_damage, device_);
+                    auto sw = compute_scg_weights(scg_lookup, batch_idx, device_);
+                    final_weights = dw.mul(sw);
+                } else {
+                    final_weights = compute_scg_weights(scg_lookup, batch_idx, device_);
+                }
+
+                bool last_batch = (b == n_full_batches - 1);
+                auto [loss, batch_acc] = info_nce_loss(
+                    embeddings, bs, n_views, last_batch, final_weights);
+
+                optimizer.zero_grad();
+                loss.backward();
+                optimizer.step();
+
+                total_loss_gpu += loss.detach();
+                if (last_batch) last_accuracy = batch_acc;
+            }
+
+            float epoch_loss = total_loss_gpu.item<float>() / std::max(1, n_full_batches);
+            if (epoch_loss < best_loss) { best_loss = epoch_loss; best_epoch = epoch; }
+
+            if (config_.use_scheduler && epoch >= config_.warmup_epochs) {
+                int t = epoch - config_.warmup_epochs;
+                int T_max = config_.epochs - config_.warmup_epochs;
+                float lr_new = 0.5f * config_.lr * (1.0f + std::cos(M_PI * t / T_max));
+                for (auto& pg : optimizer.param_groups())
+                    static_cast<torch::optim::AdamWOptions&>(pg.options()).lr(lr_new);
+            }
+
+            if (config_.use_swa && epoch >= config_.swa_start_epoch) {
+                torch::NoGradGuard no_grad;
+                int idx = 0;
+                for (const auto& param : encoder->parameters())
+                    swa_sums[idx++].add_(param);
+                swa_count++;
+            }
+
+            if (config_.earlystop) {
+                if (epoch >= config_.warmup_epochs && last_accuracy > 99.0f) earlystop_epoch++;
+                else earlystop_epoch = 0;
+                if (earlystop_epoch >= 3) {
+                    std::cerr << "  Early stopping at epoch " << epoch << "\n";
+                    break;
+                }
+            }
+
+            if (epoch == 1 || epoch % 10 == 0 || epoch == config_.epochs) {
+                std::cerr << "  Epoch " << epoch << "/" << config_.epochs
+                          << " - Loss: " << std::fixed << std::setprecision(5) << epoch_loss
+                          << " Acc: " << std::setprecision(1) << last_accuracy << "%"
+                          << " (best: " << std::setprecision(5) << best_loss
+                          << " @ " << best_epoch << ")\n";
+            }
+        }
+
+        if (config_.use_swa) {
+            apply_swa(encoder, swa_sums, swa_count);
+
+            std::vector<torch::nn::BatchNorm1dImpl*> bn_layers;
+            for (auto& mod : encoder->modules())
+                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>())
+                    bn_layers.push_back(bn);
+
+            if (!bn_layers.empty()) {
+                std::vector<c10::optional<double>> old_momenta;
+                old_momenta.reserve(bn_layers.size());
+                for (auto* bn : bn_layers) {
+                    old_momenta.push_back(bn->options.momentum());
+                    bn->reset_running_stats();
+                    bn->options.momentum(c10::nullopt);
+                }
+                encoder->train();
+                torch::NoGradGuard no_grad;
+                int recalib_batches = 0;
+                for (int b = 0; b < n_full_batches; b++) {
+                    int start = b * config_.batch_size;
+                    if (start + config_.batch_size > N) break;
+                    std::vector<long> bidx(config_.batch_size);
+                    for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
+                    encoder->forward(views_gpu[0].index_select(
+                        0, torch::tensor(bidx).to(device_)));
+                    recalib_batches++;
+                }
+                for (size_t i = 0; i < bn_layers.size(); i++)
+                    bn_layers[i]->options.momentum(old_momenta[i]);
+                encoder->eval();
+                std::cerr << "[SWA] BatchNorm recalibrated over "
+                          << recalib_batches << " batches\n";
+            } else {
+                std::cerr << "[SWA] No BatchNorm layers, skipping recalibration\n";
+            }
+        }
+
+        std::cerr << "[AmberTrainer] SCG training complete. Best loss: "
+                  << best_loss << " at epoch " << best_epoch << "\n";
+        return best_loss;
+    }
+
     // Legacy: Train encoder on TNF features with noise augmentation (fallback)
     void train(AmberEncoder& encoder,
                const std::vector<std::vector<float>>& features) {
@@ -979,6 +1180,41 @@ private:
     int cached_N_  = -1;
     int cached_bs_ = -1;
     int cached_nv_ = -1;
+
+    // Build (bs×bs) weight tensor for SCG hard negative mining.
+    // Pairs sharing ≥1 marker get scg_boost; all others get 1.0.
+    // Uses sorted-vector intersection: O(bs² × avg_markers_per_contig).
+    torch::Tensor compute_scg_weights(const ContigMarkerLookup& lookup,
+                                      const std::vector<long>& batch_idx,
+                                      torch::Device device) {
+        int bs = (int)batch_idx.size();
+        std::vector<float> w(static_cast<size_t>(bs) * bs, 1.0f);
+        for (int i = 0; i < bs; i++) {
+            long ci = batch_idx[i];
+            if (ci >= lookup.n_contigs) continue;
+            const auto& mi = lookup.contig_marker_ids[ci];
+            if (mi.empty()) continue;
+            for (int j = i + 1; j < bs; j++) {
+                long cj = batch_idx[j];
+                if (cj >= lookup.n_contigs) continue;
+                const auto& mj = lookup.contig_marker_ids[cj];
+                if (mj.empty()) continue;
+                bool shares = false;
+                size_t a = 0, b = 0;
+                while (a < mi.size() && b < mj.size()) {
+                    if (mi[a] == mj[b]) { shares = true; break; }
+                    else if (mi[a] < mj[b]) ++a;
+                    else ++b;
+                }
+                if (shares) {
+                    w[static_cast<size_t>(i) * bs + j] = config_.scg_boost;
+                    w[static_cast<size_t>(j) * bs + i] = config_.scg_boost;
+                }
+            }
+        }
+        return torch::from_blob(w.data(), {bs, bs}, torch::kFloat32)
+                   .clone().to(device);
+    }
 
     void ensure_pos_idx(int bs, int nv) {
         int N = bs * nv;

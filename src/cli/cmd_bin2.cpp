@@ -63,6 +63,9 @@ struct Bin2Config {
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
     std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
+    // SCG hard negative mining
+    bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
+    float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
 };
 
 extern int run_bin2(const Bin2Config& config);
@@ -146,7 +149,14 @@ int cmd_bin2(int argc, char** argv) {
                       << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
                       << "                         (default: auxiliary/checkm_markers_only.hmm)\n"
                       << "  --bacteria-ms FILE     CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)\n"
-                      << "  --archaea-ms FILE      CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)\n";
+                      << "  --archaea-ms FILE      CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)\n"
+                      << "SCG Hard Negative Mining:\n"
+                      << "  --scg-infonce          Enable SCG hard negative mining in InfoNCE\n"
+                      << "                         Boosts pairs sharing a single-copy marker as hard negatives.\n"
+                      << "                         Forces SCG contigs apart in embedding space before clustering.\n"
+                      << "  --scg-boost FLOAT      Amplification factor for shared-marker pairs (default: 2.0)\n"
+                      << "                         2.0 = safe (exp(10) vs exp(5) partition denominator).\n"
+                      << "                         >=3.0 can dominate log_Z; not recommended.\n";
             return 0;
         }
         else if (arg == "--contigs" && i + 1 < argc) {
@@ -292,6 +302,12 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--archaea-ms" && i + 1 < argc) {
             config.archaea_ms_file = argv[++i];
+        }
+        else if (arg == "--scg-infonce") {
+            config.use_scg_infonce = true;
+        }
+        else if (arg == "--scg-boost" && i + 1 < argc) {
+            config.scg_boost = std::stof(argv[++i]);
         }
     }
 

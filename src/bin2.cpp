@@ -20,6 +20,7 @@
 #include "bin2/encoder/substring_augmenter.h"
 #include "bin2/encoder/damage_aware_infonce.h"
 #include "bin2/encoder/multiscale_cgr.h"
+#include "bin2/encoder/scg_hard_negatives.h"
 #include "algorithms/damage_likelihood.h"
 
 #include "bin2/clustering/clustering_types.h"
@@ -122,6 +123,9 @@ struct Bin2Config {
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
     std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
+    // SCG hard negative mining
+    bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
+    float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
 };
 
 // Load seed marker contig names from TSV (contig\tcluster) or one-per-line format
@@ -1295,6 +1299,27 @@ int run_bin2(const Bin2Config& config) {
         log.info("Saved smiley plot data to " + config.output_dir + "/smiley_plot_rates.tsv");
     }
 
+    // Early SCG marker scan — provides marker_hits_by_contig for InfoNCE training.
+    // Moved before the training block so contig-marker pairs are available for
+    // SCG hard negative mining. Runs once; original post-training location is guarded.
+    std::unordered_map<std::string, std::vector<std::string>> marker_hits_by_contig;
+    std::vector<std::string> early_seeds;
+    if (config.seed_file.empty()) {
+        std::string hmm_path = config.hmm_file.empty() ? find_amber_data("auxiliary/checkm_markers_only.hmm") : config.hmm_file;
+        std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
+        std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
+        log.info("Pre-scan: Auto-generating seeds using " + hmm_path);
+        SeedGenerator early_gen(config.threads, hmm_path, 1001, hmmsearch, fgs);
+        early_seeds = early_gen.generate(config.contigs_path, config.output_dir + "/auto_seeds.txt");
+        if (!early_seeds.empty())
+            marker_hits_by_contig = early_gen.get_hits_by_contig();
+    }
+
+    // Build SCG marker lookup for hard negative mining
+    bin2::ContigMarkerLookup scg_lookup;
+    if (config.use_scg_infonce && !marker_hits_by_contig.empty())
+        scg_lookup = bin2::build_contig_marker_lookup(marker_hits_by_contig, contigs);
+
     // Build feature vectors
     // TNF (136) + CGR (26) + Complexity (14) + log_cov (1) + aDNA (20) = 197 dims
     // aDNA features: damage profile (10) + decay params (2) + frag len (2) + damage cov (2) + mismatch (4)
@@ -1582,14 +1607,20 @@ int run_bin2(const Bin2Config& config) {
         trainer_config.use_damage_infonce = config.use_damage_infonce;
         trainer_config.damage_lambda = config.damage_lambda;
         trainer_config.damage_wmin = config.damage_wmin;
+        // SCG hard negative mining settings
+        trainer_config.use_scg_infonce = config.use_scg_infonce;
+        trainer_config.scg_boost = config.scg_boost;
         // Encoder seed for reproducibility
         trainer_config.seed = config.encoder_seed;
 
         bin2::AmberTrainer trainer(trainer_config);
-        // Use damage-aware training if enabled and profiles available
         if (config.use_damage_infonce && !damage_profiles.empty()) {
-            log.info("Using damage-aware InfoNCE training");
-            trainer.train_multiview(amber_encoder, view_tensors, damage_profiles);
+            log.info("Using damage-aware InfoNCE training" +
+                     std::string(config.use_scg_infonce && !scg_lookup.empty() ? " + SCG hard negatives" : ""));
+            trainer.train_multiview(amber_encoder, view_tensors, damage_profiles, scg_lookup);
+        } else if (config.use_scg_infonce && !scg_lookup.empty()) {
+            log.info("Using SCG hard negative InfoNCE training");
+            trainer.train_multiview(amber_encoder, view_tensors, scg_lookup);
         } else {
             trainer.train_multiview(amber_encoder, view_tensors);
         }
@@ -1727,11 +1758,15 @@ int run_bin2(const Bin2Config& config) {
             run_tcfg.use_damage_infonce = config.use_damage_infonce;
             run_tcfg.damage_lambda   = config.damage_lambda;
             run_tcfg.damage_wmin     = config.damage_wmin;
+            run_tcfg.use_scg_infonce = config.use_scg_infonce;
+            run_tcfg.scg_boost       = config.scg_boost;
             run_tcfg.seed            = run_seed;
 
             bin2::AmberTrainer run_trainer(run_tcfg);
             if (config.use_damage_infonce && !damage_profiles.empty())
-                run_trainer.train_multiview(run_encoder, view_tensors, damage_profiles);
+                run_trainer.train_multiview(run_encoder, view_tensors, damage_profiles, scg_lookup);
+            else if (config.use_scg_infonce && !scg_lookup.empty())
+                run_trainer.train_multiview(run_encoder, view_tensors, scg_lookup);
             else
                 run_trainer.train_multiview(run_encoder, view_tensors);
 
@@ -1784,25 +1819,30 @@ int run_bin2(const Bin2Config& config) {
     // contig_lengths already computed above (line ~1323) for N50 calc
     // Used below for Leiden node_sizes (RBER null model)
 
-    // Load or auto-generate seed markers
+    // Load or auto-generate seed markers (marker_hits_by_contig pre-populated by early scan above)
     std::unordered_set<std::string> seed_set;
-    std::unordered_map<std::string, std::vector<std::string>> marker_hits_by_contig;
     std::string seed_path = config.seed_file;
     if (seed_path.empty()) {
-        // Auto-generate seeds using SCG markers
         seed_path = config.output_dir + "/auto_seeds.txt";
-        std::string hmm_path = config.hmm_file.empty() ? find_amber_data("auxiliary/checkm_markers_only.hmm") : config.hmm_file;
-        std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
-        std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
-        log.info("Auto-generating seeds using " + hmm_path);
-        SeedGenerator gen(config.threads, hmm_path, 1001, hmmsearch, fgs);
-        auto seeds = gen.generate(config.contigs_path, seed_path);
-        if (seeds.empty()) {
-            log.info("WARNING: Failed to auto-generate seeds, continuing without seeds");
+        if (marker_hits_by_contig.empty()) {
+            // Early scan failed or was skipped — re-run SeedGenerator
+            std::string hmm_path = config.hmm_file.empty() ? find_amber_data("auxiliary/checkm_markers_only.hmm") : config.hmm_file;
+            std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
+            std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
+            log.info("Auto-generating seeds using " + hmm_path);
+            SeedGenerator gen(config.threads, hmm_path, 1001, hmmsearch, fgs);
+            auto seeds = gen.generate(config.contigs_path, seed_path);
+            if (seeds.empty()) {
+                log.info("WARNING: Failed to auto-generate seeds, continuing without seeds");
+            } else {
+                seed_set.insert(seeds.begin(), seeds.end());
+                log.info("Auto-generated " + std::to_string(seed_set.size()) + " seed marker contigs");
+                marker_hits_by_contig = gen.get_hits_by_contig();
+            }
         } else {
-            seed_set.insert(seeds.begin(), seeds.end());
-            log.info("Auto-generated " + std::to_string(seed_set.size()) + " seed marker contigs");
-            marker_hits_by_contig = gen.get_hits_by_contig();
+            // Reuse results from early pre-scan
+            seed_set.insert(early_seeds.begin(), early_seeds.end());
+            log.info("Using pre-scanned " + std::to_string(seed_set.size()) + " seed marker contigs");
         }
     } else if (std::filesystem::exists(seed_path)) {
         auto seeds = load_seed_markers(seed_path);
