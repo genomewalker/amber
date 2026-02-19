@@ -192,6 +192,13 @@ public:
                           int n_nodes,
                           const LeidenConfig& config) override;
 
+    // Phase 4: targeted decontamination, callable from main pipeline after cluster().
+    // Splits bins >= min_completeness% CheckM completeness with > 5.5% contamination.
+    // Requires build_adjacency() to have been called (guaranteed after cluster()).
+    // Modifies labels in-place; returns updated cluster count.
+    int decontaminate(std::vector<int>& labels, const LeidenConfig& config,
+                      float min_completeness = 85.0f);
+
 protected:
     // Override move_nodes_fast to add quality delta
     bool move_nodes_fast_quality(
@@ -322,13 +329,6 @@ protected:
     // and no markers already present (safe to recruit without adding contamination).
     // Modifies labels in-place; n_communities is unchanged (no new clusters).
     void run_phase3_rescue(std::vector<int>& labels, int n_communities);
-
-    // Phase 4: targeted decontamination (public, callable from main pipeline).
-    // Runs Phase 2 on bins >= min_completeness% CheckM completeness with > 5.5% contamination.
-    // Requires build_adjacency() to have been called (i.e., after cluster()).
-    // Modifies labels in-place; returns updated cluster count.
-    int decontaminate(std::vector<int>& labels, const LeidenConfig& config,
-                      float min_completeness = 85.0f);
 
     // Evaluate one (bandwidth, seed) candidate.
     // raw_edges: edges with original_bandwidth applied (exp(-dist/bw_orig)).
