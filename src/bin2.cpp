@@ -56,6 +56,19 @@
 
 namespace amber {
 
+// Resolve a relative data path: check CWD first (backward-compat), then
+// look relative to the executable directory (e.g., bin/../auxiliary/).
+// Returns the first path that exists, or the original if neither does.
+static std::string find_amber_data(const std::string& rel_path) {
+    if (std::filesystem::exists(rel_path)) return rel_path;
+    try {
+        auto exe_dir = std::filesystem::canonical("/proc/self/exe").parent_path();
+        auto from_exe = exe_dir.parent_path() / rel_path;
+        if (std::filesystem::exists(from_exe)) return from_exe.string();
+    } catch (...) {}
+    return rel_path;
+}
+
 struct Bin2Config {
     std::string contigs_path;
     std::string bam_path;
@@ -970,7 +983,7 @@ int run_bin2(const Bin2Config& config) {
         if (seed_path.empty()) {
             // Auto-generate seeds using SCG markers
             seed_path = config.output_dir + "/auto_seeds.txt";
-            std::string hmm_path = config.hmm_file.empty() ? "auxiliary/checkm_markers_only.hmm" : config.hmm_file;
+            std::string hmm_path = config.hmm_file.empty() ? find_amber_data("auxiliary/checkm_markers_only.hmm") : config.hmm_file;
             std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
             std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
             log.info("Auto-generating seeds using " + hmm_path);
@@ -1779,7 +1792,7 @@ int run_bin2(const Bin2Config& config) {
     if (seed_path.empty()) {
         // Auto-generate seeds using SCG markers
         seed_path = config.output_dir + "/auto_seeds.txt";
-        std::string hmm_path = config.hmm_file.empty() ? "auxiliary/checkm_markers_only.hmm" : config.hmm_file;
+        std::string hmm_path = config.hmm_file.empty() ? find_amber_data("auxiliary/checkm_markers_only.hmm") : config.hmm_file;
         std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
         std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
         log.info("Auto-generating seeds using " + hmm_path);
@@ -1832,7 +1845,7 @@ int run_bin2(const Bin2Config& config) {
     // ~89k non-marker contigs that cannot cause marker-level contamination.
     if (seed_cluster_id > 0 && !marker_hits_by_contig.empty() && !embeddings.empty()) {
         std::string bacteria_ms = config.bacteria_ms_file.empty()
-                                ? "scripts/checkm_ms/bacteria.ms"
+                                ? find_amber_data("scripts/checkm_ms/bacteria.ms")
                                 : config.bacteria_ms_file;
         if (std::filesystem::exists(bacteria_ms)) {
             // marker_hits_by_contig is keyed by contig name → list of markers
@@ -2139,8 +2152,8 @@ int run_bin2(const Bin2Config& config) {
         for (const auto& [name, seq] : contigs)
             bin2_contig_names.push_back(name);
 
-        std::string bacteria_ms = config.bacteria_ms_file.empty() ? "scripts/checkm_ms/bacteria.ms" : config.bacteria_ms_file;
-        std::string archaea_ms  = config.archaea_ms_file.empty()  ? "scripts/checkm_ms/archaea.ms"  : config.archaea_ms_file;
+        std::string bacteria_ms = config.bacteria_ms_file.empty() ? find_amber_data("scripts/checkm_ms/bacteria.ms") : config.bacteria_ms_file;
+        std::string archaea_ms  = config.archaea_ms_file.empty()  ? find_amber_data("scripts/checkm_ms/archaea.ms")  : config.archaea_ms_file;
 
         if (std::filesystem::exists(bacteria_ms)) {
             bin2::CheckMMarkerParser ms_parser;
