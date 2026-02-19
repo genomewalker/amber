@@ -71,30 +71,35 @@ struct QualityLeidenConfig {
 
     int n_threads = 0;  // 0 = use hardware concurrency
 
-    // Best-of-K joint (resolution × seed) restart search.
-    // 3-stage adaptive racing with SCG quality scoring.
-    // Set n_leiden_restarts=1 to disable (single run, backward-compatible).
+    // Best-of-K bandwidth × seed restart search.
+    // Resolution is pinned via calibrate_resolution() first; the bandit then
+    // sweeps bandwidth (the kNN edge kernel scale), which is the remaining
+    // free parameter that most affects partition quality.
     //
-    // Stage 1: restart_stage1_res log-uniform resolutions × 1 seed → Phase 1 SCG score
+    // Edge re-weighting: given input edges with weights exp(-dist/bw_orig),
+    // a new bandwidth bw_new yields w_new = pow(w_orig, bw_orig/bw_new).
+    //
+    // Stage 1: restart_stage1_bw log-uniform bandwidths × 1 seed → Phase 1 SCG score
     // Stage 2: top restart_stage2_topk arms, restart_stage2_extra runs via UCB bandit
     //          → Phase 2 score for candidates within margin of global best
     // Stage 3: best arm, up to restart_stage3_extra runs (always Phase 2), early stop
     int      n_leiden_restarts    = 1;        // Total budget (1 = off)
-    int      restart_stage1_res   = 7;        // Stage 1 resolution grid
+    float    original_bandwidth   = 0.2f;     // Bandwidth used to build input edges
+    float    bw_search_min        = 0.05f;    // Log-uniform bandwidth search range
+    float    bw_search_max        = 0.5f;
+    int      restart_stage1_bw    = 7;        // Stage 1 bandwidth grid size
     int      restart_stage2_topk  = 3;        // Top arms to race in Stage 2
     int      restart_stage2_extra = 12;       // Extra runs across top arms in Stage 2
     int      restart_stage3_extra = 6;        // Max extra runs on best arm in Stage 3
     int      restart_patience     = 4;        // Stage 3 early stop after N non-improving runs
     float    restart_ucb_beta     = 1.0f;     // UCB: priority = mean + beta * std
     long long restart_min_viable_bp = 200000; // Only score clusters >= this size in bp
-                                              // Prevents the search from favouring high
-                                              // resolutions that shatter clusters into tiny
-                                              // sub-threshold fragments.
 };
 
-// Snapshot of one (resolution, seed) candidate from the restart search.
+// Snapshot of one (bandwidth, seed) candidate from the restart search.
 struct CandidateSnapshot {
     float resolution = 0.0f;
+    float bandwidth  = 0.0f;
     int   seed = 0;
 
     ClusteringResult p1_result;         // output of libleidenalg Phase 1
@@ -108,9 +113,9 @@ struct CandidateSnapshot {
     float selection_score() const { return has_p2 ? score_p2 : score_p1; }
 };
 
-// One resolution arm in the adaptive racing search.
+// One bandwidth arm in the adaptive racing search.
 struct ResolutionArm {
-    float  resolution = 0.0f;
+    float  bandwidth  = 0.0f;
     int    pulls = 0;
     double mean  = 0.0;
     double m2    = 0.0;   // Welford M2 for online variance
@@ -286,20 +291,23 @@ protected:
         int n_communities,
         const LeidenConfig& effective_config);
 
-    // Evaluate one (resolution, seed) candidate: run libleidenalg + optional Phase 2 scoring.
+    // Evaluate one (bandwidth, seed) candidate.
+    // raw_edges: edges with original_bandwidth applied (exp(-dist/bw_orig)).
+    // Internally re-weights to bandwidth via pow(w, bw_orig/bw_new), applies
+    // marker penalization, runs libleidenalg, and optionally scores Phase 2.
     CandidateSnapshot evaluate_candidate(
-        const std::vector<WeightedEdge>& p1_edges,
+        const std::vector<WeightedEdge>& raw_edges,
         int n_nodes,
         const LeidenConfig& base_cfg,
-        float resolution,
+        float bandwidth,
         int seed,
         bool run_phase2_for_score);
 
-    // 3-stage adaptive racing over (resolution × seed) space.
+    // 3-stage adaptive racing over (bandwidth × seed) space at the calibrated resolution.
+    // raw_edges: edges with original_bandwidth applied (no marker penalization yet).
     // Returns the globally best CandidateSnapshot.
-    // Requires build_adjacency() and has_marker_ to have been set up.
     CandidateSnapshot run_adaptive_restarts(
-        const std::vector<WeightedEdge>& p1_edges,
+        const std::vector<WeightedEdge>& raw_edges,
         int n_nodes,
         const LeidenConfig& base_cfg);
 

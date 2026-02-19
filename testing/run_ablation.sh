@@ -51,6 +51,8 @@ case $CONFIG_ID in
        EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr" ;;
     8) CONFIG_NAME="damage_map_cgr_restarts"
        EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr --leiden-restarts 25" ;;
+    9) CONFIG_NAME="damage_infonce_cgr_restarts"
+       EXTRA_FLAGS="--damage-infonce --multiscale-cgr --leiden-restarts 25" ;;
     *) echo "Unknown config $CONFIG_ID"; exit 1 ;;
 esac
 

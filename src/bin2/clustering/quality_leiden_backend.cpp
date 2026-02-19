@@ -474,27 +474,50 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
 }
 
 CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
-    const std::vector<WeightedEdge>& p1_edges,
+    const std::vector<WeightedEdge>& raw_edges,
     int n_nodes,
     const LeidenConfig& base_cfg,
-    float resolution,
+    float bandwidth,
     int seed,
     bool run_phase2_for_score) {
 
     CandidateSnapshot snap;
-    snap.resolution = resolution;
-    snap.seed = seed;
+    snap.resolution = base_cfg.resolution;
+    snap.bandwidth  = bandwidth;
+    snap.seed       = seed;
+
+    // Re-weight edges from original_bandwidth to trial bandwidth.
+    // Input weights: w = exp(-dist/bw_orig)  =>  w^(bw_orig/bw_new) = exp(-dist/bw_new)
+    const float bw_ratio = qconfig_.original_bandwidth / bandwidth;
+    std::vector<WeightedEdge> trial_edges;
+    trial_edges.reserve(raw_edges.size());
+    for (const auto& e : raw_edges) {
+        float w = std::pow(e.w, bw_ratio);
+        // Apply marker edge penalization
+        if (qconfig_.marker_edge_penalty > 0.0f) {
+            const auto& mu = marker_index_->get_markers(e.u);
+            const auto& mv = marker_index_->get_markers(e.v);
+            if (!mu.empty() && !mv.empty()) {
+                int shared = 0;
+                for (const auto& a : mu)
+                    for (const auto& b : mv)
+                        if (a.id == b.id) { shared++; break; }
+                if (shared > 0)
+                    w *= std::exp(-qconfig_.marker_edge_penalty * shared);
+            }
+        }
+        trial_edges.push_back({e.u, e.v, w});
+    }
 
     LeidenConfig trial = base_cfg;
-    trial.resolution = resolution;
     trial.random_seed = seed;
 
 #ifdef USE_LIBLEIDENALG
     LibLeidenalgBackend trial_leiden;
-    snap.p1_result = trial_leiden.cluster(p1_edges, n_nodes, trial);
+    snap.p1_result = trial_leiden.cluster(trial_edges, n_nodes, trial);
 #else
     LeidenBackend trial_leiden;
-    snap.p1_result = trial_leiden.cluster(p1_edges, n_nodes, trial);
+    snap.p1_result = trial_leiden.cluster(trial_edges, n_nodes, trial);
 #endif
     snap.score_p1 = scg_score_labels(snap.p1_result.labels, snap.p1_result.num_clusters);
 
@@ -510,84 +533,83 @@ CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
 }
 
 CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
-    const std::vector<WeightedEdge>& p1_edges,
+    const std::vector<WeightedEdge>& raw_edges,
     int n_nodes,
     const LeidenConfig& base_cfg) {
 
-    const float log_lo = std::log(qconfig_.res_search_min);
-    const float log_hi = std::log(qconfig_.res_search_max);
-    const int   N_RES  = qconfig_.restart_stage1_res;
+    const float log_lo = std::log(qconfig_.bw_search_min);
+    const float log_hi = std::log(qconfig_.bw_search_max);
+    const int   N_BW   = qconfig_.restart_stage1_bw;
 
-    // Build resolution arms (log-uniform grid)
-    std::vector<ResolutionArm> arms(N_RES);
-    for (int i = 0; i < N_RES; ++i) {
-        float t = (N_RES > 1) ? static_cast<float>(i) / (N_RES - 1) : 0.5f;
-        arms[i].resolution = std::exp(log_lo + t * (log_hi - log_lo));
+    // Build bandwidth arms (log-uniform grid)
+    std::vector<ResolutionArm> arms(N_BW);
+    for (int i = 0; i < N_BW; ++i) {
+        float t = (N_BW > 1) ? static_cast<float>(i) / (N_BW - 1) : 0.5f;
+        arms[i].bandwidth = std::exp(log_lo + t * (log_hi - log_lo));
     }
 
     int seed_counter = 0;
     auto next_seed = [&]() { return base_cfg.random_seed + seed_counter++; };
 
-    CandidateSnapshot global_best;  // selection_score() = -1e30 initially
+    CandidateSnapshot global_best;
 
     // Stage 1: one pull per arm, Phase 1 SCG score only
-    std::cerr << "[QualityLeiden] Restart Stage 1: " << N_RES << " resolutions...\n";
+    std::cerr << "[QualityLeiden] Restart Stage 1: " << N_BW << " bandwidths"
+              << " (res=" << base_cfg.resolution << ")...\n";
     for (auto& arm : arms) {
-        auto c = evaluate_candidate(p1_edges, n_nodes, base_cfg,
-                                    arm.resolution, next_seed(), false);
+        auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
+                                    arm.bandwidth, next_seed(), false);
         arm.add(c);
         if (c.selection_score() > global_best.selection_score()) global_best = c;
-        std::cerr << "  res=" << arm.resolution
+        std::cerr << "  bw=" << arm.bandwidth
                   << " clusters=" << c.p1_result.num_clusters
                   << " score=" << c.score_p1 << "\n";
     }
 
     // Rank top-K arms by stage 1 best score
-    std::vector<int> idx(N_RES);
+    std::vector<int> idx(N_BW);
     std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](int a, int b) {
         return arms[a].best.selection_score() > arms[b].best.selection_score();
     });
-    int topk = std::min(qconfig_.restart_stage2_topk, N_RES);
+    int topk = std::min(qconfig_.restart_stage2_topk, N_BW);
     std::vector<int> top(idx.begin(), idx.begin() + topk);
 
-    // Stage 2: UCB bandit across top arms; Phase 2 for candidates near global best
+    // Stage 2: UCB bandit across top arms
     std::cerr << "[QualityLeiden] Restart Stage 2: top " << topk
-              << " arms, " << qconfig_.restart_stage2_extra << " runs...\n";
+              << " bw arms, " << qconfig_.restart_stage2_extra << " runs...\n";
     for (int t = 0; t < qconfig_.restart_stage2_extra; ++t) {
-        // Pick arm with highest UCB priority
         int ai = top[0];
         double best_pri = -1e30;
         for (int a : top) {
             double p = arms[a].priority(qconfig_.restart_ucb_beta);
             if (p > best_pri) { best_pri = p; ai = a; }
         }
-        // Promote to Phase 2 if this arm's best is within 1 penalty unit of global best
         float margin = qconfig_.contamination_penalty;
         bool do_p2 = (arms[ai].best.selection_score() >= global_best.selection_score() - margin);
-        auto c = evaluate_candidate(p1_edges, n_nodes, base_cfg,
-                                    arms[ai].resolution, next_seed(), do_p2);
+        auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
+                                    arms[ai].bandwidth, next_seed(), do_p2);
         arms[ai].add(c);
         if (c.selection_score() > global_best.selection_score()) global_best = c;
-        std::cerr << "  [S2/" << t << "] res=" << arms[ai].resolution
+        std::cerr << "  [S2/" << t << "] bw=" << arms[ai].bandwidth
                   << " score=" << c.selection_score()
                   << (do_p2 ? "(p2)" : "(p1)")
                   << " global_best=" << global_best.selection_score() << "\n";
     }
 
-    // Stage 3: exploit arm with highest mean score
+    // Stage 3: exploit best bandwidth arm
     int best_arm = top[0];
     for (int a : top) {
         if (arms[a].mean > arms[best_arm].mean) best_arm = a;
     }
-    std::cerr << "[QualityLeiden] Restart Stage 3: exploiting res="
-              << arms[best_arm].resolution << ", up to "
+    std::cerr << "[QualityLeiden] Restart Stage 3: exploiting bw="
+              << arms[best_arm].bandwidth << ", up to "
               << qconfig_.restart_stage3_extra << " runs (patience="
               << qconfig_.restart_patience << ")...\n";
     int no_improve = 0;
     for (int i = 0; i < qconfig_.restart_stage3_extra; ++i) {
-        auto c = evaluate_candidate(p1_edges, n_nodes, base_cfg,
-                                    arms[best_arm].resolution, next_seed(), true);
+        auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
+                                    arms[best_arm].bandwidth, next_seed(), true);
         arms[best_arm].add(c);
         if (c.selection_score() > global_best.selection_score()) {
             global_best = c;
@@ -600,7 +622,8 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
         }
     }
 
-    std::cerr << "[QualityLeiden] Restart done: best res=" << global_best.resolution
+    std::cerr << "[QualityLeiden] Restart done: best bw=" << global_best.bandwidth
+              << " res=" << global_best.resolution
               << " seed=" << global_best.seed
               << " score=" << global_best.selection_score()
               << (global_best.has_p2 ? " (P2-scored)" : " (P1-scored)") << "\n";
@@ -631,10 +654,29 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] alpha=" << qconfig_.alpha
               << ", penalty=" << qconfig_.contamination_penalty << "\n";
 
-    // Phase 1 edge penalization: reduce weights between SCG-sharing contigs.
-    std::cerr << "[QualityLeiden-MT] Phase 1: edge penalization + libleidenalg...\n";
+    // Build adjacency now — needed by run_phase2() and evaluate_candidate().
+    build_adjacency(edges, n_nodes, config);
+    has_marker_.resize(n_nodes_);
+    for (int i = 0; i < n_nodes_; ++i)
+        has_marker_[i] = marker_index_->has_markers(i) ? 1 : 0;
+
+    const bool do_restarts = (qconfig_.n_leiden_restarts > 1)
+                           && (marker_index_->num_marker_contigs() > 0);
+
+    // Always calibrate resolution (both single-run and restart mode).
+    // In restart mode, bandwidth is the swept parameter; resolution is pinned.
+    LeidenConfig calibrated_config = config;
+    if (qconfig_.calibrate_resolution && marker_index_->num_marker_contigs() > 0) {
+        std::cerr << "[QualityLeiden-MT] Calibrating resolution...\n";
+        calibrated_config.resolution = calibrate_resolution(edges, n_nodes, config);
+        std::cerr << "[QualityLeiden-MT] Using resolution = " << calibrated_config.resolution << "\n";
+    }
+    const LeidenConfig& effective_config = calibrated_config;
+
+    // Phase 1 edge penalization (single-run path only; restart path does it per-candidate).
     std::vector<WeightedEdge> phase1_edges;
-    if (qconfig_.marker_edge_penalty > 0.0f) {
+    if (!do_restarts && qconfig_.marker_edge_penalty > 0.0f) {
+        std::cerr << "[QualityLeiden-MT] Phase 1: edge penalization + libleidenalg...\n";
         phase1_edges.reserve(edges.size());
         int penalized = 0;
         for (const auto& e : edges) {
@@ -655,37 +697,19 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     }
     const std::vector<WeightedEdge>& p1_edges = phase1_edges.empty() ? edges : phase1_edges;
 
-    // Build adjacency now — needed by run_phase2() and run_adaptive_restarts().
-    build_adjacency(edges, n_nodes, config);
-    has_marker_.resize(n_nodes_);
-    for (int i = 0; i < n_nodes_; ++i)
-        has_marker_[i] = marker_index_->has_markers(i) ? 1 : 0;
-
-    // Effective config: calibrate resolution only in single-run mode (n_leiden_restarts=1).
-    // In restart mode the search covers the resolution range directly.
-    LeidenConfig calibrated_config = config;
-    const bool do_restarts = (qconfig_.n_leiden_restarts > 1)
-                           && (marker_index_->num_marker_contigs() > 0);
-    if (!do_restarts && qconfig_.calibrate_resolution
-            && marker_index_->num_marker_contigs() > 0) {
-        std::cerr << "[QualityLeiden-MT] Calibrating resolution...\n";
-        calibrated_config.resolution = calibrate_resolution(edges, n_nodes, config);
-        std::cerr << "[QualityLeiden-MT] Using resolution = " << calibrated_config.resolution << "\n";
-    }
-    const LeidenConfig& effective_config =
-        (!do_restarts && qconfig_.calibrate_resolution) ? calibrated_config : config;
-
-    // Initial clustering: single run or adaptive restart search.
+    // Initial clustering: single run or adaptive bandwidth restart search.
     std::vector<int> labels;
     int n_communities;
     bool phase2_already_done = false;
 
     if (do_restarts) {
-        std::cerr << "[QualityLeiden-MT] Restart search (K=" << qconfig_.n_leiden_restarts
-                  << ", S1=" << qconfig_.restart_stage1_res
+        std::cerr << "[QualityLeiden-MT] Bandwidth restart search (K=" << qconfig_.n_leiden_restarts
+                  << ", S1=" << qconfig_.restart_stage1_bw
                   << ", S2=" << qconfig_.restart_stage2_extra
-                  << ", S3=" << qconfig_.restart_stage3_extra << ")...\n";
-        CandidateSnapshot best = run_adaptive_restarts(p1_edges, n_nodes, effective_config);
+                  << ", S3=" << qconfig_.restart_stage3_extra
+                  << ", bw=[" << qconfig_.bw_search_min << "," << qconfig_.bw_search_max << "])...\n";
+        // Pass raw edges (no penalization) — evaluate_candidate applies it per-trial.
+        CandidateSnapshot best = run_adaptive_restarts(edges, n_nodes, effective_config);
 
         if (best.has_p2) {
             // Phase 2 already scored for the best candidate — reuse cached labels.

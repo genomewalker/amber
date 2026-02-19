@@ -2058,6 +2058,7 @@ int run_bin2(const Bin2Config& config) {
         qcfg.alpha = config.quality_alpha;
         qcfg.use_map_equation = config.use_map_equation;
         qcfg.n_leiden_restarts = config.n_leiden_restarts;
+        qcfg.original_bandwidth = config.bandwidth;
         qcfg.n_threads = config.threads;
         qb->set_quality_config(qcfg);
         backend = std::move(qb);
