@@ -334,6 +334,15 @@ protected:
         std::vector<int> labels,
         int n_communities);
 
+    // Phase 4G: cross-cluster graph-boundary eviction.
+    // Contaminating contigs sit at the kNN boundary between the primary genome
+    // cluster and other clusters → they have high out-of-bin edge weight.
+    // Ranks contigs by cross_ratio = w_out / (w_in + w_out), greedily evicts
+    // highest-ratio contigs until cont < 5%. Sole-carrier protection applied.
+    std::pair<std::vector<int>, int> run_phase4_graph(
+        std::vector<int> labels,
+        int n_communities);
+
     // Phase 4C: Gaussian curvature-based decontamination.
     // For each contaminated bin, computes per-contig off-tangent-plane score
     // (local SVD of k-NN embedding neighborhood), ranks contigs by curvature,

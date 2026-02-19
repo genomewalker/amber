@@ -1071,6 +1071,16 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
         n = new_n;
     }
 
+    // Phase 4G: cross-cluster graph-boundary eviction.
+    // Contaminating contigs have high out-of-bin kNN weight — they sit at the
+    // partition boundary and could fall into a different cluster with a different
+    // Leiden seed. This is the mechanism behind 12 HQ vs 11 HQ variance.
+    {
+        auto [new_labels, new_n] = run_phase4_graph(std::move(labels), n);
+        labels = std::move(new_labels);
+        n = new_n;
+    }
+
     // Phase 4C: Gaussian curvature eviction.
     // Catches contaminating contigs that carry no duplicate SCG markers.
     // Uses local SVD of kNN embedding neighborhoods: contaminating contigs
@@ -1193,6 +1203,115 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
     }
 
     std::cerr << "[QualityLeiden] Phase 4M: " << n_split << " bins cleaned, "
+              << (n_communities + n_split) << " total\n";
+
+    return {std::move(labels), n_communities + n_split};
+}
+
+std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_graph(
+    std::vector<int> labels,
+    int n_communities) {
+
+    if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets())
+        return {std::move(labels), n_communities};
+
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    for (int i = 0; i < n_nodes_; ++i)
+        if (labels[i] >= 0 && labels[i] < n_communities)
+            cluster_nodes[labels[i]].push_back(i);
+
+    int n_split = 0;
+
+    for (int c = 0; c < n_communities; ++c) {
+        const auto& nodes = cluster_nodes[c];
+        if (nodes.empty()) continue;
+
+        long long total_bp = 0;
+        for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+        if (total_bp < 400000LL) continue;
+
+        std::vector<std::string> cluster_names;
+        cluster_names.reserve(nodes.size());
+        for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
+        CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
+        if (parent_q.contamination <= 5.5f) continue;
+
+        // Sole-carrier protection.
+        std::unordered_set<int> sole_carriers;
+        if (marker_index_) {
+            std::unordered_map<int, std::vector<int>> marker_to_nodes;
+            for (int v : nodes)
+                for (const auto& entry : marker_index_->get_markers(v))
+                    marker_to_nodes[entry.id].push_back(v);
+            for (const auto& [mid, carriers] : marker_to_nodes)
+                if (carriers.size() == 1) sole_carriers.insert(carriers[0]);
+        }
+
+        // Cross-cluster ratio: w_out / (w_in + w_out).
+        // Contaminating contigs are kNN-connected to other clusters → high ratio.
+        std::unordered_set<int> bin_set(nodes.begin(), nodes.end());
+        std::vector<std::pair<float, int>> cross_scores;
+        cross_scores.reserve(nodes.size());
+
+        for (int ii = 0; ii < (int)nodes.size(); ++ii) {
+            int v = nodes[ii];
+            double w_in = 0.0, w_out = 0.0;
+            for (const auto& [u, w] : adj_[v]) {
+                if (bin_set.count(u)) w_in  += w;
+                else                  w_out += w;
+            }
+            float total = static_cast<float>(w_in + w_out);
+            float ratio = (total > 0.0f) ? static_cast<float>(w_out / total) : 0.0f;
+            cross_scores.push_back({ratio, ii});
+        }
+
+        std::sort(cross_scores.begin(), cross_scores.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        // Greedy eviction: highest cross-ratio first until cont < 5%.
+        std::vector<int> evicted;
+        bool found = false;
+        for (auto& [ratio, ii] : cross_scores) {
+            if ((int)evicted.size() >= (int)nodes.size() / 3) break;
+            int v = nodes[ii];
+            if (sole_carriers.count(v)) continue;
+            evicted.push_back(v);
+
+            std::unordered_set<int> evict_set(evicted.begin(), evicted.end());
+            std::vector<std::string> remaining_names;
+            long long remaining_bp = 0;
+            for (int vv : nodes) {
+                if (!evict_set.count(vv)) {
+                    remaining_names.push_back((*node_names_)[vv]);
+                    remaining_bp += static_cast<long long>(node_sizes_[vv]);
+                }
+            }
+            if (remaining_bp < qconfig_.restart_min_viable_bp) break;
+
+            auto remaining_q = checkm_est_->estimate_bin_quality(remaining_names);
+            if (remaining_q.contamination < 5.0f &&
+                remaining_q.completeness >= parent_q.completeness - 5.0f) {
+                found = true;
+                long long evicted_bp = 0;
+                for (int vv : evicted) evicted_bp += static_cast<long long>(node_sizes_[vv]);
+                std::cerr << "[QualityLeiden] Phase 4G: evicted " << evicted.size()
+                          << " contigs (" << evicted_bp / 1000 << "kb) from cluster " << c
+                          << " (cont " << parent_q.contamination << "% -> "
+                          << remaining_q.contamination << "%, comp "
+                          << parent_q.completeness << "% -> " << remaining_q.completeness
+                          << "%, top_cross=" << cross_scores[0].first << ")\n";
+                break;
+            }
+        }
+
+        if (!found) continue;
+
+        int new_label = n_communities + n_split;
+        for (int v : evicted) labels[v] = new_label;
+        n_split++;
+    }
+
+    std::cerr << "[QualityLeiden] Phase 4G: " << n_split << " bins cleaned, "
               << (n_communities + n_split) << " total\n";
 
     return {std::move(labels), n_communities + n_split};
