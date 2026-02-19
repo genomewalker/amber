@@ -54,6 +54,11 @@ struct QualityLeidenConfig {
     // 0 = disabled, 3.0 = ~95% reduction per shared marker.
     float marker_edge_penalty = 3.0f;
 
+    // Phase 1: complementary edge bonus for marker-bearing contig pairs that share
+    // NO markers (complementary sets → likely same genome, different contigs).
+    // Multiplies w by (1 + scg_complement_bonus). 0 = disabled, 0.3 = +30%.
+    float scg_complement_bonus = 0.3f;
+
     // Phase 1b: marker-guided map equation refinement after libleidenalg.
     // Replaces modularity delta with the map equation delta (parameter-free,
     // MDL-based), combined with the marker quality penalty. This avoids the
@@ -308,6 +313,13 @@ protected:
         std::vector<int> labels,
         int n_communities,
         const LeidenConfig& effective_config);
+
+    // Phase 3: targeted rescue for near-HQ bins (CheckM path only).
+    // For each bin 75-90% completeness / <5% contamination (internal CheckM),
+    // finds marker-bearing kNN neighbors that have markers absent from the bin
+    // and no markers already present (safe to recruit without adding contamination).
+    // Modifies labels in-place; n_communities is unchanged (no new clusters).
+    void run_phase3_rescue(std::vector<int>& labels, int n_communities);
 
     // Evaluate one (bandwidth, seed) candidate.
     // raw_edges: edges with original_bandwidth applied (exp(-dist/bw_orig)).

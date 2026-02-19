@@ -109,7 +109,7 @@ float QualityLeidenBackend::scg_score_labels(
         for (int i = 0; i < n_nodes_; ++i)
             cluster_nodes[labels[i]].push_back(i);
 
-        int   num_hq = 0, num_mq = 0, num_nhq = 0;
+        int   num_strict_hq = 0, num_hq = 0, num_pre_hq = 0, num_mq = 0, num_nhq = 0;
         float total_comp = 0.0f, total_cont = 0.0f;
         int   n_viable = 0;
 
@@ -120,7 +120,14 @@ float QualityLeidenBackend::scg_score_labels(
             for (int v : cluster_nodes[c]) names.push_back((*node_names_)[v]);
             auto q = checkm_est_->estimate_bin_quality(names);
 
+            // Calibrated thresholds: internal CheckM colocation underestimates CheckM2
+            // by ~10-15pp due to aDNA fragmentation; 75/5 internal ≈ CheckM2 90/5.
+            // strict_hq (≥90/5 internal ≈ CheckM2 100%): very solid, rarely hit.
+            // hq       (≥75/5 internal ≈ CheckM2 90%):   primary HQ tier.
+            // pre_hq   (≥72/5 internal ≈ CheckM2 87%):   gradient toward HQ boundary.
+            if (q.completeness >= 90.0f && q.contamination <=  5.0f) num_strict_hq++;
             if (q.completeness >= 75.0f && q.contamination <=  5.0f) num_hq++;
+            if (q.completeness >= 72.0f && q.contamination <=  5.0f) num_pre_hq++;
             if (q.completeness >= 50.0f && q.contamination <= 10.0f) num_mq++;
             if (q.completeness >= 30.0f && q.contamination <=  5.0f) num_nhq++;
             total_comp += q.completeness;
@@ -136,7 +143,8 @@ float QualityLeidenBackend::scg_score_labels(
         // Divided by 1e4 to stay safely below the 1e2 * num_nhq step.
         float soft = (total_comp - 5.0f * total_cont) / 1e4f;
 
-        return 1e6f * num_hq + 1e4f * num_mq + 1e2f * num_nhq + soft;
+        return 1e8f * num_strict_hq + 1e6f * num_hq + 5e5f * num_pre_hq
+             + 1e4f * num_mq + 1e2f * num_nhq + soft;
     }
 
     // --- Proxy path (fallback when CheckM estimator not available) ---
@@ -483,6 +491,104 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
     return {std::move(labels), n_communities};
 }
 
+void QualityLeidenBackend::run_phase3_rescue(
+    std::vector<int>& labels, int n_communities) {
+
+    if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets()) return;
+    if (!marker_index_ || marker_index_->num_marker_contigs() == 0) return;
+
+    // Build cluster membership and bp.
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    std::vector<long long> cluster_bp(n_communities, 0);
+    for (int i = 0; i < n_nodes_; ++i) {
+        if (labels[i] < 0 || labels[i] >= n_communities) continue;
+        cluster_nodes[labels[i]].push_back(i);
+        cluster_bp[labels[i]] += static_cast<long long>(node_sizes_[i]);
+    }
+
+    // Build CommQuality per cluster.
+    std::vector<CommQuality> comm_q(n_communities);
+    init_comm_quality(labels, n_communities, comm_q);
+
+    // Identify near-HQ rescue targets: 75-90% internal completeness, <5% cont.
+    // 75% internal ≈ CheckM2 90% (empirically calibrated); these bins are just
+    // below the threshold and could be pushed over by recruiting 1-2 contigs.
+    std::vector<int> rescue_targets;
+    for (int c = 0; c < n_communities; ++c) {
+        if (cluster_bp[c] < qconfig_.restart_min_viable_bp) continue;
+        std::vector<std::string> names;
+        names.reserve(cluster_nodes[c].size());
+        for (int v : cluster_nodes[c]) names.push_back((*node_names_)[v]);
+        auto q = checkm_est_->estimate_bin_quality(names);
+        if (q.completeness >= 75.0f && q.completeness < 90.0f && q.contamination < 5.0f)
+            rescue_targets.push_back(c);
+    }
+
+    if (rescue_targets.empty()) {
+        std::cerr << "[QualityLeiden] Phase 3: no near-HQ targets\n";
+        return;
+    }
+    std::cerr << "[QualityLeiden] Phase 3: " << rescue_targets.size() << " near-HQ rescue targets\n";
+
+    int n_moves = 0;
+    for (int c : rescue_targets) {
+        // Collect marker-bearing border nodes: not in c, adjacent to c via kNN.
+        std::unordered_map<int, double> border_weight;
+        for (int v : cluster_nodes[c]) {
+            for (const auto& [u, w] : adj_[v]) {
+                if (labels[u] != c && marker_index_->has_markers(u))
+                    border_weight[u] += w;
+            }
+        }
+
+        // A candidate is safe to recruit if ALL its markers are absent from c
+        // (adds completeness without any contamination risk).
+        std::vector<std::pair<double, int>> candidates;
+        for (const auto& [node, w] : border_weight) {
+            bool adds_missing = false, adds_dup = false;
+            for (const auto& me : marker_index_->get_markers(node)) {
+                if (comm_q[c].cnt[me.id] == 0) adds_missing = true;
+                else                            adds_dup = true;
+            }
+            if (adds_missing && !adds_dup)
+                candidates.push_back({w, node});
+        }
+
+        // Process candidates in descending kNN edge-weight order.
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        for (const auto& [w, node] : candidates) {
+            int old_label = labels[node];
+
+            // Donor protection: don't steal from large viable bins unless the
+            // contig is a duplicate in the donor (removes donor contamination).
+            if (cluster_bp[old_label] >= qconfig_.restart_min_viable_bp) {
+                bool removes_donor_dup = false;
+                for (const auto& me : marker_index_->get_markers(node)) {
+                    if (comm_q[old_label].cnt[me.id] > 1) { removes_donor_dup = true; break; }
+                }
+                if (!removes_donor_dup) continue;
+            }
+
+            // Accept the move.
+            labels[node] = c;
+            update_comm_quality(node, old_label, c, comm_q);
+            // Keep cluster_nodes consistent for subsequent iterations.
+            auto& donor = cluster_nodes[old_label];
+            donor.erase(std::find(donor.begin(), donor.end(), node));
+            cluster_nodes[c].push_back(node);
+            n_moves++;
+
+            std::cerr << "[QualityLeiden] Phase 3: node " << node
+                      << " cluster " << old_label << " -> " << c
+                      << " (edge_w=" << w << ")\n";
+        }
+    }
+
+    std::cerr << "[QualityLeiden] Phase 3 rescue: " << n_moves << " contigs moved\n";
+}
+
 CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
     const std::vector<WeightedEdge>& raw_edges,
     int n_nodes,
@@ -503,8 +609,8 @@ CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
     trial_edges.reserve(raw_edges.size());
     for (const auto& e : raw_edges) {
         float w = std::pow(e.w, bw_ratio);
-        // Apply marker edge penalization
-        if (qconfig_.marker_edge_penalty > 0.0f) {
+        // Apply marker edge penalization and complementary edge bonus.
+        if (qconfig_.marker_edge_penalty > 0.0f || qconfig_.scg_complement_bonus > 0.0f) {
             const auto& mu = marker_index_->get_markers(e.u);
             const auto& mv = marker_index_->get_markers(e.v);
             if (!mu.empty() && !mv.empty()) {
@@ -512,8 +618,10 @@ CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
                 for (const auto& a : mu)
                     for (const auto& b : mv)
                         if (a.id == b.id) { shared++; break; }
-                if (shared > 0)
+                if (shared > 0 && qconfig_.marker_edge_penalty > 0.0f)
                     w *= std::exp(-qconfig_.marker_edge_penalty * shared);
+                else if (shared == 0 && qconfig_.scg_complement_bonus > 0.0f)
+                    w *= (1.0f + qconfig_.scg_complement_bonus);
             }
         }
         trial_edges.push_back({e.u, e.v, w});
@@ -691,27 +799,35 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     }
     const LeidenConfig& effective_config = calibrated_config;
 
-    // Phase 1 edge penalization (single-run path only; restart path does it per-candidate).
+    // Phase 1 edge penalization + complement bonus (single-run path; restart does it per-candidate).
     std::vector<WeightedEdge> phase1_edges;
-    if (!do_restarts && qconfig_.marker_edge_penalty > 0.0f) {
-        std::cerr << "[QualityLeiden-MT] Phase 1: edge penalization + libleidenalg...\n";
+    if (!do_restarts && (qconfig_.marker_edge_penalty > 0.0f || qconfig_.scg_complement_bonus > 0.0f)) {
+        std::cerr << "[QualityLeiden-MT] Phase 1: edge penalization + complement bonus + libleidenalg...\n";
         phase1_edges.reserve(edges.size());
-        int penalized = 0;
+        int penalized = 0, boosted = 0;
         for (const auto& e : edges) {
             const auto& mu = marker_index_->get_markers(e.u);
             const auto& mv = marker_index_->get_markers(e.v);
-            int shared = 0;
+            float w = e.w;
             if (!mu.empty() && !mv.empty()) {
+                int shared = 0;
                 for (const auto& a : mu)
                     for (const auto& b : mv)
                         if (a.id == b.id) { shared++; break; }
+                if (shared > 0 && qconfig_.marker_edge_penalty > 0.0f) {
+                    w *= std::exp(-qconfig_.marker_edge_penalty * shared);
+                    penalized++;
+                } else if (shared == 0 && qconfig_.scg_complement_bonus > 0.0f) {
+                    w *= (1.0f + qconfig_.scg_complement_bonus);
+                    boosted++;
+                }
             }
-            float w = e.w;
-            if (shared > 0) { w *= std::exp(-qconfig_.marker_edge_penalty * shared); penalized++; }
             phase1_edges.push_back({e.u, e.v, w});
         }
         if (penalized > 0)
             std::cerr << "[QualityLeiden-MT] Penalized " << penalized << " edges\n";
+        if (boosted > 0)
+            std::cerr << "[QualityLeiden-MT] Boosted " << boosted << " complementary edges\n";
     }
     const std::vector<WeightedEdge>& p1_edges = phase1_edges.empty() ? edges : phase1_edges;
 
@@ -869,6 +985,14 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
         }
 
         std::cerr << "[QualityLeiden-MT] Phase 1b done: " << n_communities << " clusters\n";
+    }
+
+    // Phase 3: targeted rescue for near-HQ bins.
+    // Recruits missing-marker contigs from kNN neighbors to push borderline bins
+    // over the completeness threshold. Only enabled when CheckM estimator is set.
+    if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
+        n_communities = compact_labels(labels);
+        run_phase3_rescue(labels, n_communities);
     }
 
     // Compact labels and compute final modularity
