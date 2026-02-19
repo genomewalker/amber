@@ -1728,6 +1728,19 @@ int run_bin2(const Bin2Config& config) {
             // (the variable name is misleading; the seed generator returns this orientation)
             const auto& contig_to_markers = marker_hits_by_contig;
 
+            // Build valid marker set from bacteria.ms — only single-copy CheckM markers
+            // participate in colocation scoring.  The HMM database has 206 profiles but
+            // bacteria.ms only lists the single-copy subset; we must filter hits to avoid
+            // treating non-single-copy HMM hits as contamination signals.
+            std::unordered_set<std::string> valid_markers;
+            {
+                bin2::CheckMMarkerParser ms_parser;
+                ms_parser.load(bacteria_ms, "");
+                for (const auto& ms : ms_parser.bacteria().sets)
+                    for (const auto& m : ms)
+                        valid_markers.insert(m);
+            }
+
             // For each seed cluster: track how many copies of each marker it holds.
             // Initially populated from the seed contigs themselves.
             // Layout: seed_marker_counts[cluster_id][marker_name] = copy_count
@@ -1741,30 +1754,41 @@ int run_bin2(const Bin2Config& config) {
                 auto sit = contig_to_markers.find(contigs[i].first);
                 if (sit != contig_to_markers.end())
                     for (const auto& m : sit->second)
-                        seed_marker_counts[sc][m]++;
+                        if (valid_markers.count(m))
+                            seed_marker_counts[sc][m]++;
             }
+
+            // Helper: extract only valid (bacteria.ms) markers for a contig
+            auto get_valid_markers = [&](const std::vector<std::string>& all_markers) {
+                std::vector<std::string> result;
+                for (const auto& m : all_markers)
+                    if (valid_markers.count(m))
+                        result.push_back(m);
+                return result;
+            };
 
             // Collect non-seed marker contigs and sort most-constrained first
             // (ascending compatible-seed count → deterministic, reproducible)
-            struct Candidate { int idx; int n_compatible; };
+            // Only contigs with ≥1 valid bacteria.ms marker are candidates.
+            struct Candidate { int idx; int n_compatible; std::vector<std::string> vmarkers; };
             std::vector<Candidate> candidates;
             for (size_t i = 0; i < contigs.size(); i++) {
                 if (is_membership_fixed[i]) continue;
-                if (contigs[i].second.size() < 1001) continue;  // same length filter as seed generator
                 const auto it = contig_to_markers.find(contigs[i].first);
                 if (it == contig_to_markers.end()) continue;
-                const auto& cmarkers = it->second;
+                auto vmarkers = get_valid_markers(it->second);
+                if (vmarkers.empty()) continue;
                 int n_compat = 0;
                 for (int sc = 0; sc < seed_cluster_id; sc++) {
                     bool ok = true;
-                    for (const auto& m : cmarkers) {
+                    for (const auto& m : vmarkers) {
                         auto jt = seed_marker_counts[sc].find(m);
                         if (jt != seed_marker_counts[sc].end() && jt->second > 0) { ok = false; break; }
                     }
                     if (ok) n_compat++;
                 }
                 if (n_compat > 0)
-                    candidates.push_back({static_cast<int>(i), n_compat});
+                    candidates.push_back({static_cast<int>(i), n_compat, std::move(vmarkers)});
             }
             std::sort(candidates.begin(), candidates.end(),
                       [](const Candidate& a, const Candidate& b) {
@@ -1775,13 +1799,13 @@ int run_bin2(const Bin2Config& config) {
             const int D = static_cast<int>(embeddings[0].size());
             for (const auto& cand : candidates) {
                 int ci = cand.idx;
-                const auto& cmarkers = contig_to_markers.at(contigs[ci].first);
+                const auto& vmarkers = cand.vmarkers;
 
                 int best_sc = -1;
                 float best_dist = std::numeric_limits<float>::max();
                 for (int sc = 0; sc < seed_cluster_id; sc++) {
                     bool ok = true;
-                    for (const auto& m : cmarkers) {
+                    for (const auto& m : vmarkers) {
                         auto jt = seed_marker_counts[sc].find(m);
                         if (jt != seed_marker_counts[sc].end() && jt->second > 0) { ok = false; break; }
                     }
@@ -1800,7 +1824,7 @@ int run_bin2(const Bin2Config& config) {
                 // Assign to best seed cluster (not fixed — Leiden can still move it,
                 // but it starts co-located with its genome anchor rather than isolated)
                 initial_membership[ci] = best_sc;
-                for (const auto& m : cmarkers)
+                for (const auto& m : vmarkers)
                     seed_marker_counts[best_sc][m]++;
                 n_preassigned++;
             }
