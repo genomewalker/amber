@@ -708,12 +708,16 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
 
     CandidateSnapshot global_best;
 
+    // Collect all P1 partitions for consensus computation after Stage 3.
+    std::vector<std::vector<int>> all_partitions;
+
     // Stage 1: one pull per arm, Phase 1 SCG score only
     std::cerr << "[QualityLeiden] Restart Stage 1: " << N_BW << " bandwidths"
               << " (res=" << base_cfg.resolution << ")...\n";
     for (auto& arm : arms) {
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
                                     arm.bandwidth, next_seed(), false);
+        all_partitions.push_back(c.p1_result.labels);
         arm.add(c);
         if (c.selection_score() > global_best.selection_score()) global_best = c;
         std::cerr << "  bw=" << arm.bandwidth
@@ -747,6 +751,7 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
         bool do_p2 = (arms[ai].best_p1 >= global_best_p1 - qconfig_.contamination_penalty);
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
                                     arms[ai].bandwidth, next_seed(), do_p2);
+        all_partitions.push_back(c.p1_result.labels);
         arms[ai].add(c);
         if (c.score_p1 > global_best_p1) global_best_p1 = c.score_p1;
         if (c.selection_score() > global_best.selection_score()) global_best = c;
@@ -770,6 +775,7 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
     for (int i = 0; i < qconfig_.restart_stage3_extra; ++i) {
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
                                     arms[best_arm].bandwidth, next_seed(), true);
+        all_partitions.push_back(c.p1_result.labels);
         arms[best_arm].add(c);
         if (c.selection_score() > global_best.selection_score()) {
             global_best = c;
@@ -787,6 +793,75 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
               << " seed=" << global_best.seed
               << " score=" << global_best.selection_score()
               << (global_best.has_p2 ? " (P2-scored)" : " (P1-scored)") << "\n";
+
+    // Consensus Leiden: build co-occurrence-weighted edges from all collected
+    // partitions. Partition-boundary contigs (contaminating genomes that sometimes
+    // end up in the primary bin, sometimes in the garbage bin) have low co-occurrence
+    // with the primary genome → their edges are down-weighted → Leiden reliably
+    // finds the correct cut regardless of seed.
+    //
+    // w_consensus[u,v] = pow(raw_w, bw_orig/best_bw) * (co_count / n_partitions)
+    // Applies same marker penalization as individual candidates.
+    const int n_part = static_cast<int>(all_partitions.size());
+    if (n_part >= 2) {
+        const float best_bw  = global_best.bandwidth;
+        const float bw_ratio = qconfig_.original_bandwidth / best_bw;
+
+        std::vector<WeightedEdge> consensus_edges;
+        consensus_edges.reserve(raw_edges.size());
+        for (const auto& e : raw_edges) {
+            int co_count = 0;
+            for (const auto& part : all_partitions)
+                if (part[e.u] == part[e.v]) co_count++;
+            if (co_count == 0) continue;
+            float co_frac = static_cast<float>(co_count) / n_part;
+            float w = std::pow(e.w, bw_ratio) * co_frac;
+            if (qconfig_.marker_edge_penalty > 0.0f || qconfig_.scg_complement_bonus > 0.0f) {
+                const auto& mu = marker_index_->get_markers(e.u);
+                const auto& mv = marker_index_->get_markers(e.v);
+                if (!mu.empty() && !mv.empty()) {
+                    int shared = 0;
+                    for (const auto& a : mu)
+                        for (const auto& b : mv)
+                            if (a.id == b.id) { shared++; break; }
+                    if (shared > 0 && qconfig_.marker_edge_penalty > 0.0f)
+                        w *= std::exp(-qconfig_.marker_edge_penalty * shared);
+                    else if (shared == 0 && qconfig_.scg_complement_bonus > 0.0f)
+                        w *= (1.0f + qconfig_.scg_complement_bonus);
+                }
+            }
+            consensus_edges.push_back({e.u, e.v, w});
+        }
+
+        std::cerr << "[QualityLeiden] Consensus: " << n_part << " partitions, "
+                  << consensus_edges.size() << " edges (bw=" << best_bw << ")...\n";
+
+        LeidenConfig consensus_cfg = base_cfg;
+        consensus_cfg.resolution = global_best.resolution;
+        for (int s = 0; s < 3; ++s) {
+            consensus_cfg.random_seed = spread_seed(base_cfg.random_seed, 2000 + s);
+            CandidateSnapshot c;
+            c.resolution = consensus_cfg.resolution;
+            c.bandwidth  = best_bw;
+            c.seed       = consensus_cfg.random_seed;
+#ifdef USE_LIBLEIDENALG
+            LibLeidenalgBackend cl;
+            cl.set_seed(consensus_cfg.random_seed);
+            c.p1_result = cl.cluster(consensus_edges, n_nodes, consensus_cfg);
+#else
+            LeidenBackend cl;
+            cl.set_seed(consensus_cfg.random_seed);
+            c.p1_result = cl.cluster(consensus_edges, n_nodes, consensus_cfg);
+#endif
+            c.score_p1 = scg_score_labels(c.p1_result.labels, c.p1_result.num_clusters);
+            std::cerr << "  [consensus s=" << s << "] clusters=" << c.p1_result.num_clusters
+                      << " score=" << c.score_p1 << "\n";
+            if (c.score_p1 > global_best.score_p1) {
+                global_best = c;
+                std::cerr << "  [consensus] NEW BEST\n";
+            }
+        }
+    }
 
     return global_best;
 }
