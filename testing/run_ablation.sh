@@ -7,9 +7,9 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=2:00:00
-#SBATCH --array=1-24
+#SBATCH --array=1-36
 
-# Ablation ladder: 11 configs × 3 reps
+# Ablation ladder: 12 configs × 3 reps
 # Config 1: Baseline (standard)
 # Config 2: + DamageInfoNCE
 # Config 3: + QualityLeiden
@@ -21,6 +21,7 @@
 # Config 9: DamageInfoNCE + MultiscaleCGR + BW restarts
 # Config 10: DamageInfoNCE + MultiscaleCGR + Seed sweep (N=25, fixed bw=0.20)
 # Config 11: DamageInfoNCE + Seed sweep (N=25, no CGR)
+# Config 12: DamageInfoNCE + Consensus kNN (N=3 encoder restarts)
 
 set -e
 AMBER_DIR=/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber
@@ -61,6 +62,8 @@ case $CONFIG_ID in
        EXTRA_FLAGS="--damage-infonce --multiscale-cgr --leiden-restarts 25" ;;
    11) CONFIG_NAME="damage_infonce_seeds25"
        EXTRA_FLAGS="--damage-infonce --leiden-restarts 25" ;;
+   12) CONFIG_NAME="damage_infonce_consensus3"
+       EXTRA_FLAGS="--damage-infonce --encoder-restarts 3" ;;
     *) echo "Unknown config $CONFIG_ID"; exit 1 ;;
 esac
 

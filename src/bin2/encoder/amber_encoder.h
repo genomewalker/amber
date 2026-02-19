@@ -1,4 +1,4 @@
-// AMBER bin2 - COMEBin-compatible Encoder
+// AMBER Contrastive Encoder
 // Exact port of COMEBin's EmbeddingNet architecture
 // Architecture: Input -> Linear -> LeakyReLU -> [BN -> Dropout -> Linear -> LeakyReLU] x (n_layer-1) -> Linear
 #pragma once
@@ -117,7 +117,7 @@ struct FeatureTransformerBlockImpl : torch::nn::Module {
 };
 TORCH_MODULE(FeatureTransformerBlock);
 
-struct COMEBinEncoderImpl : torch::nn::Module {
+struct AmberEncoderImpl : torch::nn::Module {
     torch::nn::Sequential fc{nullptr};
     torch::nn::Sequential expert_a{nullptr};
     torch::nn::Sequential expert_b{nullptr};
@@ -137,7 +137,7 @@ struct COMEBinEncoderImpl : torch::nn::Module {
     bool use_ft_transformer_ = false;
     int ft_token_dim_ = 128;
 
-    COMEBinEncoderImpl(int in_sz, int out_sz, int hidden_sz = 2048,
+    AmberEncoderImpl(int in_sz, int out_sz, int hidden_sz = 2048,
                        int n_layer = 3, float dropout = 0.2f, bool use_bn = true,
                        bool use_residual_encoder = false,
                        bool use_moe_fusion = false,
@@ -340,7 +340,7 @@ struct COMEBinEncoderImpl : torch::nn::Module {
         return embeddings;
     }
 };
-TORCH_MODULE(COMEBinEncoder);
+TORCH_MODULE(AmberEncoder);
 
 // Compute top-1 accuracy for early stopping (COMEBin uses this)
 inline float compute_accuracy(torch::Tensor logits, torch::Tensor labels, int topk = 1) {
@@ -351,7 +351,7 @@ inline float compute_accuracy(torch::Tensor logits, torch::Tensor labels, int to
 
 // COMEBin-style contrastive training with substring augmentation
 // Exact match to simclr.py and train_CLmodel.py
-class COMEBinTrainer {
+class AmberTrainer {
 public:
     struct Config {
         int epochs = 200;
@@ -373,17 +373,20 @@ public:
         float damage_lambda = 0.5f;       // Max attenuation strength (0.4-0.6)
         float damage_wmin = 0.5f;         // Minimum negative weight (graph connectivity)
         int seed = 42;                    // Random seed for reproducibility
+        // Stochastic Weight Averaging: average model weights over last epochs
+        bool use_swa = true;
+        int swa_start_epoch = 70;         // Start accumulating from this epoch
     };
 
-    COMEBinTrainer(const Config& config)
+    AmberTrainer(const Config& config)
         : config_(config),
           device_(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU) {
         // Set random seed for reproducibility
         torch::manual_seed(config.seed);
         if (torch::cuda::is_available()) {
-            std::cerr << "[COMEBinTrainer] Using CUDA GPU (seed=" << config.seed << ")\n";
+            std::cerr << "[AmberTrainer] Using CUDA GPU (seed=" << config.seed << ")\n";
         } else {
-            std::cerr << "[COMEBinTrainer] CUDA not available, using CPU (seed=" << config.seed << ")\n";
+            std::cerr << "[AmberTrainer] CUDA not available, using CPU (seed=" << config.seed << ")\n";
         }
     }
 
@@ -436,14 +439,14 @@ public:
     // Train encoder with multi-view features (substring augmentation)
     // views[view_idx] contains features for all contigs in that view
     // Returns: best loss achieved during training
-    float train_multiview(COMEBinEncoder& encoder,
+    float train_multiview(AmberEncoder& encoder,
                           const std::vector<torch::Tensor>& views) {
 
         int n_views = views.size();
         int N = views[0].size(0);
         int D = views[0].size(1);
 
-        std::cerr << "[COMEBinTrainer] Training with " << n_views << " views, "
+        std::cerr << "[AmberTrainer] Training with " << n_views << " views, "
                   << N << " contigs, " << D << " features\n";
 
         // Move encoder to device (GPU if available)
@@ -469,12 +472,20 @@ public:
         if (n_full_batches == 0) {
             n_full_batches = 1;  // At least one batch
         }
-        std::cerr << "[COMEBinTrainer] Training on " << n_full_batches
+        std::cerr << "[AmberTrainer] Training on " << n_full_batches
                   << " minibatches (drop_last=True), epochs=" << config_.epochs << "\n";
 
         float best_loss = std::numeric_limits<float>::max();
         int best_epoch = 0;
         int earlystop_epoch = 0;
+
+        // SWA state
+        std::vector<torch::Tensor> swa_sums;
+        int swa_count = 0;
+        if (config_.use_swa) {
+            for (const auto& param : encoder->parameters())
+                swa_sums.push_back(torch::zeros_like(param));
+        }
 
         // Loss function
         auto criterion = torch::nn::CrossEntropyLoss();
@@ -548,6 +559,17 @@ public:
                 }
             }
 
+            // SWA accumulation
+            if (config_.use_swa && epoch >= config_.swa_start_epoch) {
+                torch::NoGradGuard no_grad;
+                int idx = 0;
+                for (const auto& param : encoder->parameters()) {
+                    swa_sums[idx].add_(param);
+                    idx++;
+                }
+                swa_count++;
+            }
+
             // Early stopping (COMEBin: if top1 > 99% for 3 consecutive epochs after epoch 10)
             if (config_.earlystop) {
                 if (epoch >= config_.warmup_epochs && last_accuracy > 99.0f) {
@@ -570,7 +592,10 @@ public:
             }
         }
 
-        std::cerr << "[COMEBinTrainer] Training complete. Best loss: "
+        // Apply SWA averaged weights
+        if (config_.use_swa) apply_swa(encoder, swa_sums, swa_count);
+
+        std::cerr << "[AmberTrainer] Training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
         return best_loss;
     }
@@ -578,7 +603,7 @@ public:
     // Damage-aware training: weights negative pairs by damage compatibility
     // Uses DamageAwareInfoNCE instead of standard InfoNCE when damage_profiles provided
     // Returns: best loss achieved during training
-    float train_multiview(COMEBinEncoder& encoder,
+    float train_multiview(AmberEncoder& encoder,
                           const std::vector<torch::Tensor>& views,
                           const std::vector<DamageProfile>& damage_profiles) {
 
@@ -591,9 +616,9 @@ public:
         int N = views[0].size(0);
         int D = views[0].size(1);
 
-        std::cerr << "[COMEBinTrainer] Damage-aware training with " << n_views << " views, "
+        std::cerr << "[AmberTrainer] Damage-aware training with " << n_views << " views, "
                   << N << " contigs, " << D << " features\n";
-        std::cerr << "[COMEBinTrainer] Damage params: lambda=" << config_.damage_lambda
+        std::cerr << "[AmberTrainer] Damage params: lambda=" << config_.damage_lambda
                   << ", wmin=" << config_.damage_wmin << "\n";
 
         // Move encoder to device (GPU if available)
@@ -623,12 +648,20 @@ public:
         if (n_full_batches == 0) {
             n_full_batches = 1;
         }
-        std::cerr << "[COMEBinTrainer] Training on " << n_full_batches
+        std::cerr << "[AmberTrainer] Training on " << n_full_batches
                   << " minibatches (drop_last=True), epochs=" << config_.epochs << "\n";
 
         float best_loss = std::numeric_limits<float>::max();
         int best_epoch = 0;
         int earlystop_epoch = 0;
+
+        // SWA state
+        std::vector<torch::Tensor> swa_sums;
+        int swa_count = 0;
+        if (config_.use_swa) {
+            for (const auto& param : encoder->parameters())
+                swa_sums.push_back(torch::zeros_like(param));
+        }
 
         auto criterion = torch::nn::CrossEntropyLoss();
 
@@ -701,6 +734,17 @@ public:
                 }
             }
 
+            // SWA accumulation
+            if (config_.use_swa && epoch >= config_.swa_start_epoch) {
+                torch::NoGradGuard no_grad;
+                int idx = 0;
+                for (const auto& param : encoder->parameters()) {
+                    swa_sums[idx].add_(param);
+                    idx++;
+                }
+                swa_count++;
+            }
+
             // Early stopping parity with standard training path:
             // stop if top-1 >99% for 3 consecutive epochs after warmup.
             if (config_.earlystop) {
@@ -724,13 +768,16 @@ public:
             }
         }
 
-        std::cerr << "[COMEBinTrainer] Damage-aware training complete. Best loss: "
+        // Apply SWA averaged weights
+        if (config_.use_swa) apply_swa(encoder, swa_sums, swa_count);
+
+        std::cerr << "[AmberTrainer] Damage-aware training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
         return best_loss;
     }
 
     // Legacy: Train encoder on TNF features with noise augmentation (fallback)
-    void train(COMEBinEncoder& encoder,
+    void train(AmberEncoder& encoder,
                const std::vector<std::vector<float>>& features) {
 
         int N = features.size();
@@ -753,12 +800,20 @@ public:
         int n_batches = N / config_.batch_size;  // drop_last=True
         if (n_batches == 0) n_batches = 1;
 
-        std::cerr << "[COMEBinTrainer] Training on " << n_batches
+        std::cerr << "[AmberTrainer] Training on " << n_batches
                   << " minibatches, epochs=" << config_.epochs << "\n";
 
         float best_loss = std::numeric_limits<float>::max();
         int best_epoch = 0;
         auto criterion = torch::nn::CrossEntropyLoss();
+
+        // SWA state
+        std::vector<torch::Tensor> swa_sums;
+        int swa_count = 0;
+        if (config_.use_swa) {
+            for (const auto& param : encoder->parameters())
+                swa_sums.push_back(torch::zeros_like(param));
+        }
 
         for (int epoch = 1; epoch <= config_.epochs; epoch++) {
             encoder->train();
@@ -813,6 +868,17 @@ public:
                 best_epoch = epoch;
             }
 
+            // SWA accumulation
+            if (config_.use_swa && epoch >= config_.swa_start_epoch) {
+                torch::NoGradGuard no_grad;
+                int idx = 0;
+                for (const auto& param : encoder->parameters()) {
+                    swa_sums[idx].add_(param);
+                    idx++;
+                }
+                swa_count++;
+            }
+
             if (epoch == 1 || epoch % 10 == 0 || epoch == config_.epochs) {
                 std::cerr << "  Epoch " << epoch << "/" << config_.epochs
                           << " - Loss: " << std::fixed << std::setprecision(5) << epoch_loss
@@ -820,8 +886,26 @@ public:
             }
         }
 
-        std::cerr << "[COMEBinTrainer] Training complete. Best loss: "
+        // Apply SWA averaged weights
+        if (config_.use_swa) apply_swa(encoder, swa_sums, swa_count);
+
+        std::cerr << "[AmberTrainer] Training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
+    }
+
+    // Apply SWA: average accumulated parameter sums into the model
+    void apply_swa(AmberEncoder& encoder,
+                   const std::vector<torch::Tensor>& swa_sums,
+                   int swa_count) {
+        if (swa_count <= 0) return;
+        torch::NoGradGuard no_grad;
+        int idx = 0;
+        for (auto& param : encoder->parameters()) {
+            param.copy_(swa_sums[idx] / static_cast<float>(swa_count));
+            idx++;
+        }
+        std::cerr << "[SWA] Averaged weights over " << swa_count
+                  << " epochs (swa_start=" << config_.swa_start_epoch << ")\n";
     }
 
 private:

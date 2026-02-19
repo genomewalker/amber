@@ -156,7 +156,7 @@ std::vector<WeightedEdge> AdaptiveBandwidthWeighter::compute_edges(
     return weighter.compute_symmetric_edges(neighbors, damage_features);
 }
 
-std::vector<WeightedEdge> DamageAwareEdgeWeighter::compute_comebin_edges(
+std::vector<WeightedEdge> DamageAwareEdgeWeighter::compute_edges(
     const NeighborList& neighbors,
     int partgraph_ratio) const {
 
@@ -216,10 +216,10 @@ std::vector<WeightedEdge> DamageAwareEdgeWeighter::compute_comebin_edges(
     return edges;
 }
 
-std::vector<WeightedEdge> DamageAwareEdgeWeighter::compute_comebin_edges_distances(
+std::vector<WeightedEdge> DamageAwareEdgeWeighter::compute_edge_distances(
     const NeighborList& neighbors,
     int partgraph_ratio) const {
-    // Same as compute_comebin_edges but returns raw distances instead of weights
+    // Same as compute_edges but returns raw distances instead of weights
     // For use in parameter sweeps where we need to recompute weights with different bandwidths
 
     size_t n = neighbors.size();

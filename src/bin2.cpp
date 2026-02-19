@@ -16,13 +16,14 @@
 
 // COMEBin-style encoder
 #include "bin2/encoder/encoder_types.h"
-#include "bin2/encoder/comebin_encoder.h"
+#include "bin2/encoder/amber_encoder.h"
 #include "bin2/encoder/substring_augmenter.h"
 #include "bin2/encoder/damage_aware_infonce.h"
 #include "bin2/encoder/multiscale_cgr.h"
 #include "algorithms/damage_likelihood.h"
 
 #include "bin2/clustering/clustering_types.h"
+#include "bin2/clustering/consensus_knn.h"
 #include "bin2/clustering/hnsw_knn_index.h"
 #include "bin2/clustering/edge_weighter.h"
 #include "bin2/clustering/leiden_backend.h"
@@ -103,6 +104,7 @@ struct Bin2Config {
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
+    int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
@@ -1041,7 +1043,7 @@ int run_bin2(const Bin2Config& config) {
         graph_config.bandwidth = config.bandwidth;
         graph_config.partgraph_ratio = config.partgraph_ratio;
         bin2::DamageAwareEdgeWeighter weighter(graph_config);
-        auto edges = weighter.compute_comebin_edges(neighbors, config.partgraph_ratio);
+        auto edges = weighter.compute_edges(neighbors, config.partgraph_ratio);
         log.info("Computed " + std::to_string(edges.size()) + " edges (partgraph_ratio=" +
                  std::to_string(config.partgraph_ratio) + ")");
 
@@ -1399,8 +1401,8 @@ int run_bin2(const Bin2Config& config) {
 
         // Temperature: COMEBin default is 0.1 (NOT N50-dependent!)
         // Previous code used N50-dependent (0.07/>10kb, 0.15/<=10kb) but that was wrong
-        float comebin_temperature = 0.1f;
-        log.info("  temperature=" + std::to_string(comebin_temperature) + " (COMEBin default)");
+        float encoder_temperature = 0.1f;
+        log.info("  temperature=" + std::to_string(encoder_temperature) + " (COMEBin default)");
         log.info("  epochs=" + std::to_string(config.epochs) +
                  ", hidden=" + std::to_string(config.hidden_dim) +
                  ", layers=" + std::to_string(config.n_layer));
@@ -1539,7 +1541,7 @@ int run_bin2(const Bin2Config& config) {
         }
 
         // Create COMEBin encoder
-        bin2::COMEBinEncoder comebin_encoder(
+        bin2::AmberEncoder amber_encoder(
             D,                        // input: var(1) + cov(1) + TNF(136) = 138 (COMEBin order)
             config.embedding_dim,     // output: 128
             config.hidden_dim,        // hidden: 2048
@@ -1549,11 +1551,11 @@ int run_bin2(const Bin2Config& config) {
         );
 
         // Train with multi-view COMEBin trainer
-        bin2::COMEBinTrainer::Config trainer_config;
+        bin2::AmberTrainer::Config trainer_config;
         trainer_config.epochs = config.epochs;
         trainer_config.batch_size = config.batch_size;
         trainer_config.lr = config.learning_rate;
-        trainer_config.temperature = comebin_temperature;  // N50-dependent
+        trainer_config.temperature = encoder_temperature;  // N50-dependent
         trainer_config.hidden_sz = config.hidden_dim;
         trainer_config.n_layer = config.n_layer;
         trainer_config.out_dim = config.embedding_dim;
@@ -1570,13 +1572,13 @@ int run_bin2(const Bin2Config& config) {
         // Encoder seed for reproducibility
         trainer_config.seed = config.encoder_seed;
 
-        bin2::COMEBinTrainer trainer(trainer_config);
+        bin2::AmberTrainer trainer(trainer_config);
         // Use damage-aware training if enabled and profiles available
         if (config.use_damage_infonce && !damage_profiles.empty()) {
             log.info("Using damage-aware InfoNCE training");
-            trainer.train_multiview(comebin_encoder, view_tensors, damage_profiles);
+            trainer.train_multiview(amber_encoder, view_tensors, damage_profiles);
         } else {
-            trainer.train_multiview(comebin_encoder, view_tensors);
+            trainer.train_multiview(amber_encoder, view_tensors);
         }
 
         // Encode using original features (view 0) - 138 dims
@@ -1592,7 +1594,7 @@ int run_bin2(const Bin2Config& config) {
                 encode_features[i][j + 2] = tnf_views[0][i][j];
             }
         }
-        embeddings = comebin_encoder->encode(encode_features);
+        embeddings = amber_encoder->encode(encode_features);
 
         // AMBER-specific: Concatenate aDNA features to embeddings AFTER encoding
         // This preserves contrastive learning while adding aDNA signal for clustering
@@ -1656,6 +1658,109 @@ int run_bin2(const Bin2Config& config) {
                 for (float& v : emb) v /= norm;
             }
         }
+    }
+
+    // Consensus kNN: train N-1 additional encoders (run 0 is already done above),
+    // aggregate edges across all N runs, suppress low-frequency cross-genome bridges.
+    std::vector<bin2::WeightedEdge> consensus_edges;
+    if (config.n_encoder_restarts > 1) {
+        log.info("Consensus kNN: " + std::to_string(config.n_encoder_restarts) +
+                 " encoder runs (seeds " + std::to_string(config.encoder_seed) + ".." +
+                 std::to_string(config.encoder_seed + config.n_encoder_restarts - 1) + ")");
+
+        // Pre-compute CGR features once (deterministic, identical for all encoder runs).
+        std::vector<bin2::MultiScaleCGRFeatures> cgr_feats_cached(N);
+        #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
+        for (int i = 0; i < N; i++)
+            cgr_feats_cached[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
+
+        bin2::ConsensusKnnConfig cknn_cfg;
+        cknn_cfg.k = config.k;
+        cknn_cfg.bandwidth = config.bandwidth;
+        cknn_cfg.partgraph_ratio = config.partgraph_ratio;
+        bin2::ConsensusKnnBuilder consensus_builder(cknn_cfg);
+
+        // Run 0: already L2-normalized in `embeddings` (128+20+9 = 157 dims).
+        consensus_builder.add_embeddings(embeddings);
+
+        // Runs 1..N-1: train fresh encoders with incremented seeds.
+        for (int run = 1; run < config.n_encoder_restarts; ++run) {
+            const int run_seed = config.encoder_seed + run;
+            log.info("  Encoder run " + std::to_string(run + 1) + "/" +
+                     std::to_string(config.n_encoder_restarts) +
+                     " (seed=" + std::to_string(run_seed) + ")");
+
+            bin2::AmberEncoder run_encoder(D, config.embedding_dim, config.hidden_dim,
+                                             config.n_layer, config.dropout, true);
+            bin2::AmberTrainer::Config run_tcfg;
+            run_tcfg.epochs          = config.epochs;
+            run_tcfg.batch_size      = config.batch_size;
+            run_tcfg.lr              = config.learning_rate;
+            run_tcfg.temperature     = 0.1f;
+            run_tcfg.hidden_sz       = config.hidden_dim;
+            run_tcfg.n_layer         = config.n_layer;
+            run_tcfg.out_dim         = config.embedding_dim;
+            run_tcfg.dropout         = config.dropout;
+            run_tcfg.n_views         = n_views;
+            run_tcfg.use_substring_aug = true;
+            run_tcfg.earlystop       = false;
+            run_tcfg.use_scheduler   = true;
+            run_tcfg.warmup_epochs   = 10;
+            run_tcfg.use_damage_infonce = config.use_damage_infonce;
+            run_tcfg.damage_lambda   = config.damage_lambda;
+            run_tcfg.damage_wmin     = config.damage_wmin;
+            run_tcfg.seed            = run_seed;
+
+            bin2::AmberTrainer run_trainer(run_tcfg);
+            if (config.use_damage_infonce && !damage_profiles.empty())
+                run_trainer.train_multiview(run_encoder, view_tensors, damage_profiles);
+            else
+                run_trainer.train_multiview(run_encoder, view_tensors);
+
+            // Encode using view-0 features (same encode_features as run 0).
+            auto run_embeddings = run_encoder->encode(encode_features);
+
+            // Append aDNA features (20 dims, identical offsets as run 0).
+            if (has_adna) {
+                for (int i = 0; i < N; i++) {
+                    const auto& dmg = damage_profiles[i];
+                    for (int j = 0; j < 5; j++) run_embeddings[i].push_back(dmg.ct_rate_5p[j]);
+                    for (int j = 0; j < 5; j++) run_embeddings[i].push_back(dmg.ga_rate_3p[j]);
+                    run_embeddings[i].push_back(dmg.lambda_5p / 2.0f);
+                    run_embeddings[i].push_back(dmg.lambda_3p / 2.0f);
+                    run_embeddings[i].push_back(dmg.frag_len_mean / 150.0f);
+                    run_embeddings[i].push_back(dmg.frag_len_std / 50.0f);
+                    run_embeddings[i].push_back(std::log1p(dmg.cov_damaged_reads) / 5.0f);
+                    run_embeddings[i].push_back(std::log1p(dmg.cov_undamaged_reads) / 5.0f);
+                    run_embeddings[i].push_back(dmg.mm_5p_tc);
+                    run_embeddings[i].push_back(dmg.mm_3p_ct);
+                    run_embeddings[i].push_back(dmg.mm_5p_other);
+                    run_embeddings[i].push_back(dmg.mm_3p_other);
+                }
+            }
+
+            // Append CGR features (9 dims).
+            for (int i = 0; i < N; i++)
+                for (float f : cgr_feats_cached[i].to_vector())
+                    run_embeddings[i].push_back(f);
+
+            // L2 normalize.
+            if (config.l2_normalize) {
+                for (auto& emb : run_embeddings) {
+                    float norm = 0.0f;
+                    for (float v : emb) norm += v * v;
+                    norm = std::sqrt(norm);
+                    if (norm > 1e-10f)
+                        for (float& v : emb) v /= norm;
+                }
+            }
+
+            consensus_builder.add_embeddings(run_embeddings);
+        }
+
+        consensus_edges = consensus_builder.build();
+        log.info("Consensus kNN: " + std::to_string(consensus_edges.size()) + " edges after freq>=" +
+                 std::to_string(cknn_cfg.min_freq) + " filter");
     }
 
     // contig_lengths already computed above (line ~1323) for N50 calc
@@ -1835,21 +1940,23 @@ int run_bin2(const Bin2Config& config) {
         }
     }
 
-    // Use new modular clustering pipeline
-    log.info("Building HNSW kNN index (k=" + std::to_string(config.k) + ")");
-    bin2::KnnConfig knn_config;
-    knn_config.k = config.k;
-    knn_config.ef_search = 200;
-    knn_config.M = 16;
+    // Build kNN graph (skipped when consensus_edges already built by encoder restarts).
+    bin2::NeighborList neighbors;
+    if (consensus_edges.empty()) {
+        log.info("Building HNSW kNN index (k=" + std::to_string(config.k) + ")");
+        bin2::KnnConfig knn_config;
+        knn_config.k = config.k;
+        knn_config.ef_search = 200;
+        knn_config.M = 16;
+        bin2::HnswKnnIndex knn_index(knn_config);
+        knn_index.build(embeddings);
+        neighbors = knn_index.query_all();
+        log.info("Built kNN graph with " + std::to_string(neighbors.size()) + " nodes");
+    }
 
-    bin2::HnswKnnIndex knn_index(knn_config);
-    knn_index.build(embeddings);
-
-    auto neighbors = knn_index.query_all();
-    log.info("Built kNN graph with " + std::to_string(neighbors.size()) + " nodes");
-
-    // COMEBin-style parameter sweep (3 x 5 x 8 = 120 configurations)
-    if (config.sweep) {
+    // COMEBin-style parameter sweep (3 x 5 x 8 = 120 configurations).
+    // Incompatible with consensus kNN (encoder restarts take priority).
+    if (config.sweep && consensus_edges.empty()) {
         log.info("Running COMEBin-exact parameter sweep");
 
         // COMEBin default sweep values
@@ -1869,9 +1976,9 @@ int run_bin2(const Bin2Config& config) {
             gc.partgraph_ratio = pgr;
             gc.damage_beta = 0.0f;  // Damage features disabled in COMEBin encoder
             bin2::DamageAwareEdgeWeighter weighter(gc);
-            // Use raw distances: compute_comebin_edges() already applies exp(-dist/bw),
+            // Use raw distances: compute_edges() already applies exp(-dist/bw),
             // so reusing its output in the bandwidth loop would double-transform.
-            auto pgr_edges = weighter.compute_comebin_edges_distances(neighbors, pgr);
+            auto pgr_edges = weighter.compute_edge_distances(neighbors, pgr);
             log.info("partgraph_ratio=" + std::to_string(pgr) + " -> " +
                      std::to_string(pgr_edges.size()) + " edges");
 
@@ -1968,16 +2075,22 @@ int run_bin2(const Bin2Config& config) {
         return 0;
     }
 
-    // Compute edges with COMEBin-exact method (partgraph_ratio=50 default)
-    bin2::GraphConfig graph_config;
-    graph_config.bandwidth = config.bandwidth;
-    graph_config.damage_beta = 0.0f;  // Damage features disabled in COMEBin encoder
-    graph_config.partgraph_ratio = 50;  // COMEBin default
-
-    bin2::DamageAwareEdgeWeighter weighter(graph_config);
-    // compute_comebin_edges already applies exp(-dist/bandwidth) internally
-    auto edges = weighter.compute_comebin_edges(neighbors, 50);
-    log.info("Computed " + std::to_string(edges.size()) + " edges (pgr=50)");
+    // Build weighted edges: use consensus kNN when encoder restarts were run,
+    // otherwise use the single-encoder kNN with pgr=50.
+    std::vector<bin2::WeightedEdge> edges;
+    if (!consensus_edges.empty()) {
+        edges = std::move(consensus_edges);
+        log.info("Using consensus kNN edges (" + std::to_string(edges.size()) + " edges, " +
+                 std::to_string(config.n_encoder_restarts) + " encoder runs)");
+    } else {
+        bin2::GraphConfig graph_config;
+        graph_config.bandwidth = config.bandwidth;
+        graph_config.damage_beta = 0.0f;
+        graph_config.partgraph_ratio = 50;
+        bin2::DamageAwareEdgeWeighter weighter(graph_config);
+        edges = weighter.compute_edges(neighbors, 50);
+        log.info("Computed " + std::to_string(edges.size()) + " edges (pgr=50)");
+    }
 
     // Run Leiden clustering with COMEBin-exact settings
     bin2::LeidenConfig leiden_config;

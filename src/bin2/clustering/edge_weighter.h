@@ -22,17 +22,17 @@ public:
         const NeighborList& neighbors,
         const std::vector<DamageFeatures>& damage_features) const;
 
-    // COMEBin-exact edge construction:
+    // AMBER edge construction:
     // 1. Percentile distance cutoff
-    // 2. exp(-dist²/bandwidth) weighting
+    // 2. exp(-dist/bandwidth) weighting
     // 3. Deduplicate with source > target (not symmetric merge)
-    std::vector<WeightedEdge> compute_comebin_edges(
+    std::vector<WeightedEdge> compute_edges(
         const NeighborList& neighbors,
         int partgraph_ratio) const;
 
-    // Same as compute_comebin_edges but returns raw distances instead of weights
-    // For use in parameter sweeps where we recompute weights with different bandwidths
-    std::vector<WeightedEdge> compute_comebin_edges_distances(
+    // Same as compute_edges but returns raw distances instead of weights.
+    // For use in parameter sweeps where we recompute weights with different bandwidths.
+    std::vector<WeightedEdge> compute_edge_distances(
         const NeighborList& neighbors,
         int partgraph_ratio) const;
 

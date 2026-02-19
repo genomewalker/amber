@@ -91,7 +91,9 @@ float QualityLeidenBackend::scg_score_labels(
         comm_bp[labels[i]] += static_cast<long long>(node_sizes_[i]);
 
     // --- CheckM path: lexicographic composite score ---
-    // Priority: HQ (90/5) > 70/10 MQ > 50/5 bins > avg soft quality.
+    // Priority: HQ (75/5) > MQ (50/10) > near-HQ (30/5) > avg soft quality.
+    // Calibrated thresholds: internal completeness underestimates by ~10-15pp
+    // due to aDNA fragmentation; 75/5 internal matches CheckM2 90/5 empirically.
     // Strict scale separation (1e6 / 1e4 / 1e2 / <1) ensures correctness even
     // when many clusters contribute to the soft term.
     if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
@@ -99,7 +101,7 @@ float QualityLeidenBackend::scg_score_labels(
         for (int i = 0; i < n_nodes_; ++i)
             cluster_nodes[labels[i]].push_back(i);
 
-        int   num_905 = 0, num_705 = 0, num_505 = 0;
+        int   num_hq = 0, num_mq = 0, num_nhq = 0;
         float total_comp = 0.0f, total_cont = 0.0f;
         int   n_viable = 0;
 
@@ -110,9 +112,9 @@ float QualityLeidenBackend::scg_score_labels(
             for (int v : cluster_nodes[c]) names.push_back((*node_names_)[v]);
             auto q = checkm_est_->estimate_bin_quality(names);
 
-            if (q.completeness >= 90.0f && q.contamination <=  5.0f) num_905++;
-            if (q.completeness >= 70.0f && q.contamination <= 10.0f) num_705++;
-            if (q.completeness >= 50.0f && q.contamination <=  5.0f) num_505++;
+            if (q.completeness >= 75.0f && q.contamination <=  5.0f) num_hq++;
+            if (q.completeness >= 50.0f && q.contamination <= 10.0f) num_mq++;
+            if (q.completeness >= 30.0f && q.contamination <=  5.0f) num_nhq++;
             total_comp += q.completeness;
             total_cont += q.contamination;
             n_viable++;
@@ -123,10 +125,10 @@ float QualityLeidenBackend::scg_score_labels(
         // (fewer large clusters score better than more small ones even though more
         // clusters at the right resolution produces more HQ bins). The sum correctly
         // rewards having more viable clusters with good quality.
-        // Divided by 1e4 to stay safely below the 1e2 * num_505 step.
+        // Divided by 1e4 to stay safely below the 1e2 * num_nhq step.
         float soft = (total_comp - 5.0f * total_cont) / 1e4f;
 
-        return 1e6f * num_905 + 1e4f * num_705 + 1e2f * num_505 + soft;
+        return 1e6f * num_hq + 1e4f * num_mq + 1e2f * num_nhq + soft;
     }
 
     // --- Proxy path (fallback when CheckM estimator not available) ---

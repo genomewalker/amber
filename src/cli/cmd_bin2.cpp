@@ -19,27 +19,27 @@ struct Bin2Config {
     std::string fraggenescan_path; // Path to FragGeneScan binary
     std::string embeddings_file;   // Pre-computed embeddings TSV (skip training)
     int threads = 16;
-    int min_length = 1001;         // COMEBin default (filters > 1000bp)
+    int min_length = 1001;         // AMBER default (filters > 1000bp)
     int min_bin_size = 200000;     // 200kb minimum bin size
     int epochs = 100;
-    int batch_size = 1024;         // COMEBin default
+    int batch_size = 1024;         // AMBER default
     int embedding_dim = 128;
     float learning_rate = 0.001f;
-    float temperature = 0.1f;      // COMEBin default
+    float temperature = 0.1f;      // AMBER default
     // Clustering parameters (tuned for 9 HQ bins)
-    int k = 100;                   // kNN neighbors (COMEBin default)
+    int k = 100;                   // kNN neighbors (AMBER default)
     int partgraph_ratio = 50;      // Percentile cutoff for edge pruning
     float resolution = 5.0f;       // Leiden resolution (optimal)
     float bandwidth = 0.2f;        // Edge weighting bandwidth (optimal)
     // Flags
     bool l2_normalize = true;      // L2 normalize embeddings before clustering
     bool verbose = false;
-    bool sweep = false;            // COMEBin-style parameter sweep
+    bool sweep = false;            // parameter sweep
     bool use_python_leiden = false; // Use Python leidenalg (exact COMEBin match)
     bool force_cpu = false;        // Force CPU mode even if GPU is available
-    int hidden_dim = 2048;         // Hidden layer size (COMEBin default: 2048)
-    int n_layer = 3;               // Number of hidden layers (COMEBin default: 3)
-    float dropout = 0.2f;          // Dropout rate (COMEBin default: 0.2)
+    int hidden_dim = 2048;         // Hidden layer size (AMBER default: 2048)
+    int n_layer = 3;               // Number of hidden layers (AMBER default: 3)
+    float dropout = 0.2f;          // Dropout rate (AMBER default: 0.2)
     int random_seed = 1006;        // Random seed for Leiden clustering (optimal)
     int encoder_seed = 42;         // Random seed for encoder training (optimal)
     // Damage-aware features (experimental)
@@ -59,6 +59,7 @@ struct Bin2Config {
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
+    int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
     std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
@@ -75,7 +76,7 @@ int cmd_bin2(int argc, char** argv) {
 
         if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: amber bin2 [options]\n\n"
-                      << "COMEBin-style contrastive binner (9 HQ bins on test dataset)\n\n"
+                      << "AMBER contrastive binner (ancient DNA-aware metagenomic binner)\n\n"
                       << "Required:\n"
                       << "  --contigs FILE         Input contigs FASTA\n"
                       << "  --bam FILE             BAM file (reads mapped to contigs)\n"
@@ -136,6 +137,10 @@ int cmd_bin2(int argc, char** argv) {
                       << "                         Selects best partition by internal SCG quality.\n"
                       << "                         Replaces fixed --resolution and --random-seed.\n"
                       << "                         N=1 (default, off). Recommended: N=25.\n"
+                      << "  --encoder-restarts N   Consensus kNN: train N encoders independently,\n"
+                      << "                         aggregate kNN edges (keep freq>= 2/3). Suppresses\n"
+                      << "                         brittle cross-genome bridges from encoder variance.\n"
+                      << "                         N=1 (default, off). Recommended: N=3.\n"
                       << "  --quality-alpha F      Quality weight in combined objective (default: 1.0)\n"
                       << "                         0=pure modularity, 1=balanced, >1=quality-dominant\n"
                       << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
@@ -272,6 +277,9 @@ int cmd_bin2(int argc, char** argv) {
             config.n_leiden_restarts = std::stoi(argv[++i]);
             // Does NOT imply --quality-leiden: restarts run bandwidth sweep over
             // plain Leiden. Use --quality-leiden --leiden-restarts N to combine both.
+        }
+        else if (arg == "--encoder-restarts" && i + 1 < argc) {
+            config.n_encoder_restarts = std::stoi(argv[++i]);
         }
         else if (arg == "--quality-alpha" && i + 1 < argc) {
             config.quality_alpha = std::stof(argv[++i]);
