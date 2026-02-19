@@ -199,6 +199,10 @@ public:
     int decontaminate(std::vector<int>& labels, const LeidenConfig& config,
                       float min_completeness = 85.0f);
 
+    // Set per-contig embedding matrix (must match node ordering used in cluster()).
+    // Used by Phase 4C curvature decontamination.
+    void set_embeddings(const std::vector<std::vector<float>>* emb) { embeddings_ = emb; }
+
 protected:
     // Override move_nodes_fast to add quality delta
     bool move_nodes_fast_quality(
@@ -330,6 +334,15 @@ protected:
         std::vector<int> labels,
         int n_communities);
 
+    // Phase 4C: Gaussian curvature-based decontamination.
+    // For each contaminated bin, computes per-contig off-tangent-plane score
+    // (local SVD of k-NN embedding neighborhood), ranks contigs by curvature,
+    // and greedily evicts the highest-curvature contigs until cont < 5%.
+    // Validated with CheckM; sole-carrier contigs are protected.
+    std::pair<std::vector<int>, int> run_phase4_curvature(
+        std::vector<int> labels,
+        int n_communities);
+
     // Phase 3: targeted rescue for near-HQ bins (CheckM path only).
     // For each bin 75-90% completeness / <5% contamination (internal CheckM),
     // finds marker-bearing kNN neighbors that have markers absent from the bin
@@ -372,6 +385,7 @@ private:
     const MarkerIndex* marker_index_ = nullptr;
     QualityLeidenConfig qconfig_;
     std::vector<uint8_t> has_marker_;
+    const std::vector<std::vector<float>>* embeddings_ = nullptr;
 
     // Optional: proper CheckM estimator for colocation-based scoring
     const CheckMQualityEstimator* checkm_est_ = nullptr;

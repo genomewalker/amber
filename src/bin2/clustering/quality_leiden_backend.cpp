@@ -12,6 +12,7 @@
 #include <thread>
 #include <unordered_set>
 #include <omp.h>
+#include <Eigen/Dense>
 
 namespace amber::bin2 {
 
@@ -1070,6 +1071,16 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
         n = new_n;
     }
 
+    // Phase 4C: Gaussian curvature eviction.
+    // Catches contaminating contigs that carry no duplicate SCG markers.
+    // Uses local SVD of kNN embedding neighborhoods: contaminating contigs
+    // sit at cluster boundaries → high off-tangent-plane curvature.
+    {
+        auto [new_labels, new_n] = run_phase4_curvature(std::move(labels), n);
+        labels = std::move(new_labels);
+        n = new_n;
+    }
+
     return n;
 }
 
@@ -1182,6 +1193,161 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
     }
 
     std::cerr << "[QualityLeiden] Phase 4M: " << n_split << " bins cleaned, "
+              << (n_communities + n_split) << " total\n";
+
+    return {std::move(labels), n_communities + n_split};
+}
+
+std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_curvature(
+    std::vector<int> labels,
+    int n_communities) {
+
+    if (!embeddings_ || !checkm_est_ || !node_names_ ||
+        !checkm_est_->has_marker_sets())
+        return {std::move(labels), n_communities};
+
+    const auto& emb = *embeddings_;
+    if (emb.empty() || (int)emb.size() != n_nodes_) return {std::move(labels), n_communities};
+    const int D = static_cast<int>(emb[0].size());
+
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    for (int i = 0; i < n_nodes_; ++i)
+        if (labels[i] >= 0 && labels[i] < n_communities)
+            cluster_nodes[labels[i]].push_back(i);
+
+    int n_split = 0;
+
+    for (int c = 0; c < n_communities; ++c) {
+        const auto& nodes = cluster_nodes[c];
+        int n = static_cast<int>(nodes.size());
+        if (n < 5) continue;
+
+        long long total_bp = 0;
+        for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+        if (total_bp < 400000LL) continue;
+
+        // Only process contaminated bins.
+        std::vector<std::string> cluster_names;
+        cluster_names.reserve(n);
+        for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
+        CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
+        if (parent_q.contamination <= 5.5f) continue;
+
+        // Sole-carrier protection.
+        std::unordered_set<int> sole_carriers;
+        if (marker_index_) {
+            std::unordered_map<int, std::vector<int>> marker_to_nodes;
+            for (int v : nodes)
+                for (const auto& entry : marker_index_->get_markers(v))
+                    marker_to_nodes[entry.id].push_back(v);
+            for (const auto& [mid, carriers] : marker_to_nodes)
+                if (carriers.size() == 1) sole_carriers.insert(carriers[0]);
+        }
+
+        // Compute per-contig Gaussian curvature proxy:
+        // off-tangent-plane energy = total deviation² − projection onto local tangent plane².
+        // Contaminating contigs lie at the boundary between two genome manifolds
+        // → their k-NN spans both clusters → local tangent plane is poorly defined
+        // → high off-tangent residual = high curvature.
+        const int k = std::max(3, std::min(10, n / 3));
+
+        std::vector<float> curvature(n, 0.0f);
+
+        for (int ii = 0; ii < n; ++ii) {
+            int vi = nodes[ii];
+
+            // Brute-force k-NN within bin.
+            std::vector<std::pair<float, int>> dists(n);
+            for (int jj = 0; jj < n; ++jj) {
+                int vj = nodes[jj];
+                float d2 = 0.0f;
+                for (int d = 0; d < D; ++d) {
+                    float diff = emb[vi][d] - emb[vj][d];
+                    d2 += diff * diff;
+                }
+                dists[jj] = {d2, jj};
+            }
+            // k+1 so index 0 (self) + k neighbors
+            std::partial_sort(dists.begin(), dists.begin() + k + 1, dists.end());
+
+            // Local centroid of k neighbors (exclude self at dists[0]).
+            Eigen::VectorXf centroid = Eigen::VectorXf::Zero(D);
+            for (int jj = 1; jj <= k; ++jj) {
+                int vj = nodes[dists[jj].second];
+                for (int d = 0; d < D; ++d) centroid(d) += emb[vj][d];
+            }
+            centroid /= static_cast<float>(k);
+
+            // k×D matrix X of centered neighbor vectors.
+            Eigen::MatrixXf X(k, D);
+            for (int jj = 1; jj <= k; ++jj) {
+                int vj = nodes[dists[jj].second];
+                for (int d = 0; d < D; ++d)
+                    X(jj - 1, d) = emb[vj][d] - centroid(d);
+            }
+
+            // Thin SVD → top-2 right singular vectors = local tangent plane basis.
+            const int d_tang = std::min(2, k - 1);
+            Eigen::BDCSVD<Eigen::MatrixXf> svd(X, Eigen::ComputeThinV);
+            Eigen::MatrixXf V_d = svd.matrixV().leftCols(d_tang);  // D × d_tang
+
+            // Deviation of contig i from local centroid.
+            Eigen::VectorXf dev(D);
+            for (int d = 0; d < D; ++d) dev(d) = emb[vi][d] - centroid(d);
+
+            // Off-tangent score = total energy − projected energy.
+            float proj_sq = (V_d.transpose() * dev).squaredNorm();
+            curvature[ii] = dev.squaredNorm() - proj_sq;
+        }
+
+        // Sort by curvature descending: highest = most likely contaminant.
+        std::vector<int> order(n);
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return curvature[a] > curvature[b]; });
+
+        // Greedy eviction: add contigs in curvature order until cont < 5%.
+        std::vector<int> evicted;
+        bool found = false;
+        for (int ii = 0; ii < n && (int)evicted.size() < n / 3; ++ii) {
+            int v = nodes[order[ii]];
+            if (sole_carriers.count(v)) continue;
+            evicted.push_back(v);
+
+            std::unordered_set<int> evict_set(evicted.begin(), evicted.end());
+            std::vector<std::string> remaining_names;
+            long long remaining_bp = 0;
+            for (int vv : nodes) {
+                if (!evict_set.count(vv)) {
+                    remaining_names.push_back((*node_names_)[vv]);
+                    remaining_bp += static_cast<long long>(node_sizes_[vv]);
+                }
+            }
+            if (remaining_bp < qconfig_.restart_min_viable_bp) break;
+
+            auto remaining_q = checkm_est_->estimate_bin_quality(remaining_names);
+            if (remaining_q.contamination < 5.0f &&
+                remaining_q.completeness >= parent_q.completeness - 5.0f) {
+                found = true;
+                long long evicted_bp = 0;
+                for (int vv : evicted) evicted_bp += static_cast<long long>(node_sizes_[vv]);
+                std::cerr << "[QualityLeiden] Phase 4C: evicted " << evicted.size()
+                          << " contigs (" << evicted_bp / 1000 << "kb) from cluster " << c
+                          << " (cont " << parent_q.contamination << "% -> "
+                          << remaining_q.contamination << "%, comp "
+                          << parent_q.completeness << "% -> " << remaining_q.completeness << "%)\n";
+                break;
+            }
+        }
+
+        if (!found) continue;
+
+        int new_label = n_communities + n_split;
+        for (int v : evicted) labels[v] = new_label;
+        n_split++;
+    }
+
+    std::cerr << "[QualityLeiden] Phase 4C: " << n_split << " bins cleaned, "
               << (n_communities + n_split) << " total\n";
 
     return {std::move(labels), n_communities + n_split};

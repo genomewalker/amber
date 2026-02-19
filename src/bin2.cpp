@@ -2244,6 +2244,7 @@ int run_bin2(const Bin2Config& config) {
     // Splits bins >= 85% completeness with > 5.5% contamination.
     if (qb_ptr && bin2_checkm_est.has_marker_sets()) {
         log.info("Phase 4: chimeric decontamination (iterative, no completeness floor)");
+        qb_ptr->set_embeddings(&embeddings);
         int n_after = qb_ptr->decontaminate(labels, leiden_config, 0.0f);
         log.info("Phase 4 done: " + std::to_string(n_after) + " clusters");
     }
