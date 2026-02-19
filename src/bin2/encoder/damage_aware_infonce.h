@@ -255,33 +255,31 @@ public:
         labels = labels.masked_select(~mask).view({N, -1});
         similarity_matrix = similarity_matrix.masked_select(~mask).view({N, -1});
 
-        // Compute damage weights for negatives (only if enabled and profiles provided)
+        // Compute damage weights for negatives (only if enabled and profiles provided).
+        // Weights depend only on contig identity, not on view — weight(view_i, view_j)
+        // = f(damage[i % bs], damage[j % bs]).  Compute the bs×bs contig-level matrix
+        // (36× cheaper than the naive N×N view-level matrix), upload 4MB instead of
+        // 150MB, then tile on GPU.
         torch::Tensor neg_weights;
         if (params_.enabled && !damage_profiles.empty()) {
-            // Build weight matrix on CPU then move to device
-            std::vector<float> weights(N * (N - 1), 1.0f);
-
-            #pragma omp parallel for schedule(dynamic)
-            for (int i = 0; i < N; i++) {
-                int contig_i = i % batch_size;  // Which contig this view belongs to
-                int col = 0;
-                for (int j = 0; j < N; j++) {
-                    if (i == j) continue;  // Skip diagonal
-                    int contig_j = j % batch_size;
-
-                    // Only weight negatives (different contigs)
-                    if (contig_i != contig_j) {
-                        weights[i * (N - 1) + col] = compute_damage_compatibility(
-                            damage_profiles[contig_i],
-                            damage_profiles[contig_j],
-                            params_);
-                    }
-                    col++;
+            // Step 1: bs×bs contig-level weights on CPU (includes diagonal = 1.0)
+            std::vector<float> cw(batch_size * batch_size, 1.0f);
+            #pragma omp parallel for schedule(static)
+            for (int ci = 0; ci < batch_size; ci++) {
+                for (int cj = 0; cj < batch_size; cj++) {
+                    if (ci == cj) continue;
+                    cw[ci * batch_size + cj] = compute_damage_compatibility(
+                        damage_profiles[ci], damage_profiles[cj], params_);
                 }
             }
 
-            neg_weights = torch::from_blob(weights.data(), {N, N - 1},
+            // Step 2: upload bs×bs (4 MB), tile to N×N on GPU, apply diagonal mask
+            auto cw_gpu = torch::from_blob(cw.data(), {batch_size, batch_size},
                 torch::kFloat32).clone().to(device);
+            auto cw_tiled = cw_gpu.repeat({n_views, n_views});           // (N, N)
+            auto diag_mask = torch::eye(N, torch::TensorOptions()
+                .dtype(torch::kBool).device(device));
+            neg_weights = cw_tiled.masked_select(~diag_mask).view({N, N - 1});
         } else {
             neg_weights = torch::ones({N, N - 1}, device);
         }

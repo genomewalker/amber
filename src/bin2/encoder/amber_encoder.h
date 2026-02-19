@@ -492,7 +492,7 @@ public:
 
         for (int epoch = 1; epoch <= config_.epochs; epoch++) {
             encoder->train();
-            float epoch_loss = 0;
+            auto total_loss_gpu = torch::zeros({1}, torch::TensorOptions().device(device_));
             float last_accuracy = 0;
 
             // Shuffle indices
@@ -502,45 +502,33 @@ public:
 
             for (int b = 0; b < n_full_batches; b++) {
                 int start = b * config_.batch_size;
-                int bs = config_.batch_size;  // Always full batch (drop_last=True)
+                int bs = config_.batch_size;
 
-                // Skip if we don't have enough samples
                 if (start + bs > N) break;
 
-                // Get batch indices (on device for fast indexing)
                 std::vector<long> batch_idx(bs);
-                for (int i = 0; i < bs; i++) {
-                    batch_idx[i] = indices[start + i];
-                }
+                for (int i = 0; i < bs; i++) batch_idx[i] = indices[start + i];
                 auto idx_tensor = torch::tensor(batch_idx).to(device_);
 
-                // Get batches from each view and concatenate (all on GPU)
                 std::vector<torch::Tensor> batch_views;
-                for (int v = 0; v < n_views; v++) {
+                for (int v = 0; v < n_views; v++)
                     batch_views.push_back(views_gpu[v].index_select(0, idx_tensor));
-                }
-                auto all_features = torch::cat(batch_views, 0);  // Shape: (n_views * bs, D)
+                auto all_features = torch::cat(batch_views, 0);
 
-                // Forward pass through encoder (no normalization in encoder)
                 auto embeddings = encoder->forward(all_features);
-
-                // Compute InfoNCE loss (normalization happens inside)
                 auto [logits, target] = info_nce_loss(embeddings, bs, n_views);
-                target = target.to(device_);  // Move target to device
                 auto loss = criterion(logits, target);
 
-                // Backward
                 optimizer.zero_grad();
                 loss.backward();
                 optimizer.step();
 
-                epoch_loss += loss.item<float>();
-
-                // Compute accuracy for early stopping
-                last_accuracy = compute_accuracy(logits, target, 1);
+                total_loss_gpu += loss.detach();
+                if (b == n_full_batches - 1)
+                    last_accuracy = compute_accuracy(logits, target, 1);
             }
 
-            epoch_loss /= std::max(1, n_full_batches);
+            float epoch_loss = total_loss_gpu.item<float>() / std::max(1, n_full_batches);
 
             if (epoch_loss < best_loss) {
                 best_loss = epoch_loss;
@@ -667,7 +655,8 @@ public:
 
         for (int epoch = 1; epoch <= config_.epochs; epoch++) {
             encoder->train();
-            float epoch_loss = 0;
+            // Accumulate loss on GPU — sync to CPU once per epoch, not per batch.
+            auto total_loss_gpu = torch::zeros({1}, torch::TensorOptions().device(device_));
             float last_accuracy = 0;
 
             // Shuffle indices
@@ -713,11 +702,14 @@ public:
                 loss.backward();
                 optimizer.step();
 
-                epoch_loss += loss.item<float>();
-                last_accuracy = compute_accuracy(logits, target, 1);
+                total_loss_gpu += loss.detach();
+                // Only compute accuracy on last batch (used for early stopping)
+                if (b == n_full_batches - 1)
+                    last_accuracy = compute_accuracy(logits, target, 1);
             }
 
-            epoch_loss /= std::max(1, n_full_batches);
+            // Single CPU-GPU sync per epoch
+            float epoch_loss = total_loss_gpu.item<float>() / std::max(1, n_full_batches);
 
             if (epoch_loss < best_loss) {
                 best_loss = epoch_loss;
@@ -817,7 +809,7 @@ public:
 
         for (int epoch = 1; epoch <= config_.epochs; epoch++) {
             encoder->train();
-            float epoch_loss = 0;
+            auto total_loss_gpu = torch::zeros({1}, torch::TensorOptions().device(device_));
 
             // Shuffle indices
             std::vector<int> indices(N);
@@ -858,10 +850,10 @@ public:
                 loss.backward();
                 optimizer.step();
 
-                epoch_loss += loss.item<float>();
+                total_loss_gpu += loss.detach();
             }
 
-            epoch_loss /= std::max(1, n_batches);
+            float epoch_loss = total_loss_gpu.item<float>() / std::max(1, n_batches);
 
             if (epoch_loss < best_loss) {
                 best_loss = epoch_loss;
