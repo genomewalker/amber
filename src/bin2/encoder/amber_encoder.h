@@ -574,8 +574,26 @@ public:
             }
         }
 
-        // Apply SWA averaged weights
-        if (config_.use_swa) apply_swa(encoder, swa_sums, swa_count);
+        // Apply SWA averaged weights, then recalibrate BatchNorm running stats.
+        // BN buffers (running_mean/var) are from the last epoch's non-averaged model.
+        // Reset and re-estimate from data in train mode so they match the SWA mean.
+        if (config_.use_swa) {
+            apply_swa(encoder, swa_sums, swa_count);
+            for (auto& mod : encoder->modules())
+                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>())
+                    bn->reset_running_stats();
+            torch::NoGradGuard no_grad;
+            for (int b = 0; b < n_full_batches; b++) {
+                int start = b * config_.batch_size;
+                if (start + config_.batch_size > N) break;
+                std::vector<long> bidx(config_.batch_size);
+                for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
+                encoder->forward(views_gpu[0].index_select(
+                    0, torch::tensor(bidx).to(device_)));
+            }
+            std::cerr << "[SWA] BatchNorm recalibrated over "
+                      << n_full_batches << " batches\n";
+        }
 
         std::cerr << "[AmberTrainer] Training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
@@ -743,8 +761,24 @@ public:
             }
         }
 
-        // Apply SWA averaged weights
-        if (config_.use_swa) apply_swa(encoder, swa_sums, swa_count);
+        // Apply SWA averaged weights, then recalibrate BatchNorm running stats.
+        if (config_.use_swa) {
+            apply_swa(encoder, swa_sums, swa_count);
+            for (auto& mod : encoder->modules())
+                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>())
+                    bn->reset_running_stats();
+            torch::NoGradGuard no_grad;
+            for (int b = 0; b < n_full_batches; b++) {
+                int start = b * config_.batch_size;
+                if (start + config_.batch_size > N) break;
+                std::vector<long> bidx(config_.batch_size);
+                for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
+                encoder->forward(views_gpu[0].index_select(
+                    0, torch::tensor(bidx).to(device_)));
+            }
+            std::cerr << "[SWA] BatchNorm recalibrated over "
+                      << n_full_batches << " batches\n";
+        }
 
         std::cerr << "[AmberTrainer] Damage-aware training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
