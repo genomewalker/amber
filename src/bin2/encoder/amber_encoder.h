@@ -943,7 +943,11 @@ public:
                 if (has_damage) {
                     auto dw = damage_infonce.compute_weights(batch_damage, device_);
                     auto sw = compute_scg_weights(scg_lookup, batch_idx, device_);
-                    final_weights = dw.mul(sw);
+                    // Use max, not mul: damage attenuates (≤1.0), SCG boosts (>1.0).
+                    // mul() cancels both signals for same-ancient SCG pairs (0.5×2=1).
+                    // max() lets SCG take priority: confirmed-different-genome pairs
+                    // get the boost regardless of their damage similarity.
+                    final_weights = torch::max(dw, sw);
                 } else {
                     final_weights = compute_scg_weights(scg_lookup, batch_idx, device_);
                 }
