@@ -9,7 +9,7 @@
 #SBATCH --time=2:00:00
 #SBATCH --array=1-24
 
-# Ablation ladder: 8 configs × 3 reps
+# Ablation ladder: 10 configs × 3 reps
 # Config 1: Baseline (standard)
 # Config 2: + DamageInfoNCE
 # Config 3: + QualityLeiden
@@ -17,6 +17,9 @@
 # Config 5: + MapEquation (QualityLeiden + map equation Phase 1b)
 # Config 6: DamageInfoNCE + MapEquation
 # Config 7: DamageInfoNCE + MapEquation + MultiscaleCGR
+# Config 8: DamageInfoNCE + MapEquation + MultiscaleCGR + BW restarts
+# Config 9: DamageInfoNCE + MultiscaleCGR + BW restarts
+# Config 10: DamageInfoNCE + MultiscaleCGR + Seed sweep (N=25, fixed bw=0.20)
 
 set -e
 AMBER_DIR=/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber
@@ -52,6 +55,8 @@ case $CONFIG_ID in
     8) CONFIG_NAME="damage_map_cgr_restarts"
        EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr --leiden-restarts 25" ;;
     9) CONFIG_NAME="damage_infonce_cgr_restarts"
+       EXTRA_FLAGS="--damage-infonce --multiscale-cgr --leiden-restarts 25" ;;
+   10) CONFIG_NAME="damage_infonce_cgr_seeds25"
        EXTRA_FLAGS="--damage-infonce --multiscale-cgr --leiden-restarts 25" ;;
     *) echo "Unknown config $CONFIG_ID"; exit 1 ;;
 esac

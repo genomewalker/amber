@@ -705,12 +705,38 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     }
     const std::vector<WeightedEdge>& p1_edges = phase1_edges.empty() ? edges : phase1_edges;
 
-    // Initial clustering: single run or adaptive bandwidth restart search.
+    // Initial clustering: single run, pure seed sweep, or bandwidth+seed search.
     std::vector<int> labels;
     int n_communities;
     bool phase2_already_done = false;
 
-    if (do_restarts) {
+    if (do_restarts && qconfig_.skip_phase2) {
+        // Pure seed sweep: N Leiden runs at fixed bw=original_bandwidth, no Phase 2.
+        // Selection is lexicographic by CheckM colocation score (HQ count primary,
+        // quality sum secondary) — no bandwidth variation, no marker edge penalty.
+        const int N = qconfig_.n_leiden_restarts;
+        std::cerr << "[QualityLeiden-MT] Seed sweep (N=" << N
+                  << ", bw=" << qconfig_.original_bandwidth
+                  << ", res=" << effective_config.resolution << ")...\n";
+
+        CandidateSnapshot best;
+        for (int i = 0; i < N; ++i) {
+            const int seed = effective_config.random_seed + i;
+            auto c = evaluate_candidate(edges, n_nodes, effective_config,
+                                        qconfig_.original_bandwidth, seed, false);
+            const bool improved = c.score_p1 > best.score_p1;
+            std::cerr << "  [seed " << seed << "] clusters=" << c.p1_result.num_clusters
+                      << " score=" << c.score_p1 << (improved ? " *" : "") << "\n";
+            if (improved) best = std::move(c);
+        }
+
+        labels       = std::move(best.p1_result.labels);
+        n_communities = best.p1_result.num_clusters;
+        std::cerr << "[QualityLeiden-MT] Seed sweep done: best seed=" << best.seed
+                  << " clusters=" << n_communities
+                  << " score=" << best.score_p1 << "\n";
+
+    } else if (do_restarts) {
         std::cerr << "[QualityLeiden-MT] Bandwidth restart search (K=" << qconfig_.n_leiden_restarts
                   << ", S1=" << qconfig_.restart_stage1_bw
                   << ", S2=" << qconfig_.restart_stage2_extra
@@ -731,6 +757,7 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
             n_communities = best.p1_result.num_clusters;
         }
         std::cerr << "[QualityLeiden-MT] Best restart: res=" << best.resolution
+                  << " bw=" << best.bandwidth
                   << " seed=" << best.seed
                   << " score=" << best.selection_score() << "\n";
     } else {

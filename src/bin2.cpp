@@ -2051,8 +2051,10 @@ int run_bin2(const Bin2Config& config) {
             && marker_index.num_marker_contigs() > 0) {
         const bool plain_restarts = !config.use_quality_leiden && config.n_leiden_restarts > 1;
         if (plain_restarts)
-            log.info("Using bandwidth restart search over plain Leiden (K="
-                     + std::to_string(config.n_leiden_restarts) + ", no marker penalization)");
+            log.info("Using seed sweep over plain Leiden (K="
+                     + std::to_string(config.n_leiden_restarts)
+                     + ", bw=" + std::to_string(config.bandwidth)
+                     + ", CheckM lexicographic scoring)");
         else
             log.info("Using QualityLeiden (alpha=" + std::to_string(config.quality_alpha) + ")");
 
