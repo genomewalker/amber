@@ -957,22 +957,73 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
                   << ", bw=" << qconfig_.original_bandwidth
                   << ", res=" << effective_config.resolution << ")...\n";
 
+        std::vector<std::vector<int>> all_partitions;
+        all_partitions.reserve(N);
         CandidateSnapshot best;
         for (int i = 0; i < N; ++i) {
             const int seed = spread_seed(effective_config.random_seed, i);
             auto c = evaluate_candidate(edges, n_nodes, effective_config,
                                         qconfig_.original_bandwidth, seed, false);
+            all_partitions.push_back(c.p1_result.labels);
             const bool improved = c.score_p1 > best.score_p1;
             std::cerr << "  [seed " << seed << "] clusters=" << c.p1_result.num_clusters
                       << " score=" << c.score_p1 << (improved ? " *" : "") << "\n";
             if (improved) best = std::move(c);
         }
 
-        labels       = std::move(best.p1_result.labels);
-        n_communities = best.p1_result.num_clusters;
         std::cerr << "[QualityLeiden-MT] Seed sweep done: best seed=" << best.seed
-                  << " clusters=" << n_communities
+                  << " clusters=" << best.p1_result.num_clusters
                   << " score=" << best.score_p1 << "\n";
+
+        // Consensus Leiden: build co-occurrence-weighted edges from all N partitions.
+        // Partition-boundary contigs (contaminating genomes oscillating between the
+        // primary bin and garbage cluster) get co_frac << 1 → edges down-weighted
+        // → Leiden reliably finds the correct cut regardless of seed.
+        // bw_ratio=1 since all sweeps used the same bandwidth.
+        const int n_part = static_cast<int>(all_partitions.size());
+        std::vector<WeightedEdge> consensus_edges;
+        consensus_edges.reserve(edges.size());
+        for (const auto& e : edges) {
+            int co_count = 0;
+            for (const auto& part : all_partitions)
+                if (part[e.u] == part[e.v]) co_count++;
+            if (co_count == 0) continue;
+            float w = e.w * (static_cast<float>(co_count) / n_part);
+            consensus_edges.push_back({e.u, e.v, w});
+        }
+        std::cerr << "[QualityLeiden] Consensus: " << n_part << " partitions, "
+                  << consensus_edges.size() << "/" << edges.size() << " edges retained...\n";
+
+        LeidenConfig consensus_cfg = effective_config;
+        for (int s = 0; s < 3; ++s) {
+            consensus_cfg.random_seed = spread_seed(effective_config.random_seed, 2000 + s);
+            CandidateSnapshot c;
+            c.resolution = consensus_cfg.resolution;
+            c.bandwidth  = qconfig_.original_bandwidth;
+            c.seed       = consensus_cfg.random_seed;
+#ifdef USE_LIBLEIDENALG
+            LibLeidenalgBackend cl;
+            cl.set_seed(consensus_cfg.random_seed);
+            c.p1_result = cl.cluster(consensus_edges, n_nodes, consensus_cfg);
+#else
+            LeidenBackend cl;
+            cl.set_seed(consensus_cfg.random_seed);
+            c.p1_result = cl.cluster(consensus_edges, n_nodes, consensus_cfg);
+#endif
+            c.score_p1 = scg_score_labels(c.p1_result.labels, c.p1_result.num_clusters);
+            std::cerr << "  [consensus s=" << s << "] clusters=" << c.p1_result.num_clusters
+                      << " score=" << c.score_p1;
+            if (c.score_p1 > best.score_p1) {
+                best = std::move(c);
+                std::cerr << " NEW BEST";
+            }
+            std::cerr << "\n";
+        }
+
+        labels        = std::move(best.p1_result.labels);
+        n_communities = best.p1_result.num_clusters;
+        std::cerr << "[QualityLeiden-MT] Final partition: " << n_communities
+                  << " clusters, score=" << best.score_p1 << "\n";
 
     } else if (do_restarts) {
         std::cerr << "[QualityLeiden-MT] Bandwidth restart search (K=" << qconfig_.n_leiden_restarts
