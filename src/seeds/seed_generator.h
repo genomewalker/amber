@@ -73,8 +73,16 @@ private:
     // Contig lengths loaded from FASTA
     std::unordered_map<std::string, size_t> contig_lengths_;
 
+    // HMM NAME -> normalized accession (e.g. "Ribosomal_L39" -> "PF00832")
+    // Populated by load_hmm_accessions(); used to translate hit names to
+    // Pfam/TIGRFAM accessions so they match bacteria.ms marker names.
+    std::unordered_map<std::string, std::string> hmm_name_to_acc_;
+
     // Load contig lengths from FASTA file
     void load_contig_lengths(const std::string& fasta_path);
+
+    // Parse HMM file to build NAME->normalized-accession map
+    void load_hmm_accessions(const std::string& hmm_path);
 
     // Run FragGeneScan to predict ORFs
     bool run_fraggenescan(const std::string& contigs_path,

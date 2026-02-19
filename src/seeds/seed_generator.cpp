@@ -69,14 +69,20 @@ std::vector<std::string> SeedGenerator::generate(const std::string& contigs_path
 
     // Step 3: Parse results
     std::cerr << "[seeds] Parsing HMMER results...\n";
+    // Load NAME->accession map from HMM file so downstream colocation scoring
+    // (bacteria.ms uses PF/TIGRFAM accessions) matches hit names correctly.
+    load_hmm_accessions(hmm_path_);
     auto hits = parse_domtblout(domtblout_path);
     total_hits_ = hits.size();
     std::cerr << "[seeds] Found " << total_hits_ << " raw hits\n";
 
-    // Build hits_by_contig index for downstream use (e.g. QualityLeidenBackend)
+    // Build hits_by_contig index, translating HMM profile NAMEs to normalized
+    // accessions (e.g. "Ribosomal_L39" -> "PF00832") so they align with bacteria.ms.
     hits_by_contig_.clear();
     for (const auto& hit : hits) {
-        hits_by_contig_[hit.contig].push_back(hit.marker);
+        auto it = hmm_name_to_acc_.find(hit.marker);
+        const std::string& acc = (it != hmm_name_to_acc_.end()) ? it->second : hit.marker;
+        hits_by_contig_[hit.contig].push_back(acc);
     }
 
     // Step 4: Select seeds
@@ -265,6 +271,34 @@ std::vector<HMMHit> SeedGenerator::parse_domtblout(const std::string& domtblout_
     }
 
     return hits;
+}
+
+void SeedGenerator::load_hmm_accessions(const std::string& hmm_path) {
+    hmm_name_to_acc_.clear();
+    std::ifstream f(hmm_path);
+    if (!f.is_open()) return;
+
+    std::string line, current_name;
+    while (std::getline(f, line)) {
+        if (line.rfind("NAME", 0) == 0 && line.size() > 5) {
+            current_name = line.substr(4);
+            // trim leading whitespace
+            auto p = current_name.find_first_not_of(" \t");
+            current_name = (p == std::string::npos) ? "" : current_name.substr(p);
+        } else if (line.rfind("ACC", 0) == 0 && line.size() > 4 && !current_name.empty()) {
+            std::string acc = line.substr(3);
+            auto p = acc.find_first_not_of(" \t");
+            acc = (p == std::string::npos) ? "" : acc.substr(p);
+            // Strip version suffix from Pfam accessions (PF00832.15 -> PF00832)
+            if (acc.rfind("PF", 0) == 0) {
+                auto dot = acc.find('.');
+                if (dot != std::string::npos) acc = acc.substr(0, dot);
+            }
+            if (!acc.empty()) hmm_name_to_acc_[current_name] = acc;
+            current_name.clear();
+        }
+    }
+    std::cerr << "[seeds] HMM accession map: " << hmm_name_to_acc_.size() << " entries\n";
 }
 
 std::string SeedGenerator::check_marker(const std::string& marker) {
