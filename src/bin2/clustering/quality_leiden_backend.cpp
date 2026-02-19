@@ -566,16 +566,19 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
                   << " score=" << c.score_p1 << "\n";
     }
 
-    // Rank top-K arms by stage 1 best score
+    // Rank top-K arms by Stage 1 best P1 score (stationary, not inflated by P2).
+    float global_best_p1 = global_best.score_p1;
     std::vector<int> idx(N_BW);
     std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](int a, int b) {
-        return arms[a].best.selection_score() > arms[b].best.selection_score();
+        return arms[a].best_p1 > arms[b].best_p1;
     });
     int topk = std::min(qconfig_.restart_stage2_topk, N_BW);
     std::vector<int> top(idx.begin(), idx.begin() + topk);
 
-    // Stage 2: UCB bandit across top arms
+    // Stage 2: UCB bandit across top arms.
+    // UCB priority and do_p2 gate both use P1 scores to keep statistics stationary.
+    // P2 scores update global_best only (for final partition selection).
     std::cerr << "[QualityLeiden] Restart Stage 2: top " << topk
               << " bw arms, " << qconfig_.restart_stage2_extra << " runs...\n";
     for (int t = 0; t < qconfig_.restart_stage2_extra; ++t) {
@@ -585,11 +588,12 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
             double p = arms[a].priority(qconfig_.restart_ucb_beta);
             if (p > best_pri) { best_pri = p; ai = a; }
         }
-        float margin = qconfig_.contamination_penalty;
-        bool do_p2 = (arms[ai].best.selection_score() >= global_best.selection_score() - margin);
+        // Gate P2 in P1 space: contamination_penalty is ~1 SCG unit, consistent scale.
+        bool do_p2 = (arms[ai].best_p1 >= global_best_p1 - qconfig_.contamination_penalty);
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
                                     arms[ai].bandwidth, next_seed(), do_p2);
         arms[ai].add(c);
+        if (c.score_p1 > global_best_p1) global_best_p1 = c.score_p1;
         if (c.selection_score() > global_best.selection_score()) global_best = c;
         std::cerr << "  [S2/" << t << "] bw=" << arms[ai].bandwidth
                   << " score=" << c.selection_score()
@@ -597,10 +601,11 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
                   << " global_best=" << global_best.selection_score() << "\n";
     }
 
-    // Stage 3: exploit best bandwidth arm
+    // Stage 3: exploit arm with highest best P1 score (best-of-budget objective,
+    // not best expected value — correct for heavy-tailed Leiden stochasticity).
     int best_arm = top[0];
     for (int a : top) {
-        if (arms[a].mean > arms[best_arm].mean) best_arm = a;
+        if (arms[a].best_p1 > arms[best_arm].best_p1) best_arm = a;
     }
     std::cerr << "[QualityLeiden] Restart Stage 3: exploiting bw="
               << arms[best_arm].bandwidth << ", up to "
@@ -654,7 +659,10 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] alpha=" << qconfig_.alpha
               << ", penalty=" << qconfig_.contamination_penalty << "\n";
 
-    // Build adjacency now — needed by run_phase2() and evaluate_candidate().
+    // Build adjacency from the original (unpenalized, original-bandwidth) edges.
+    // Phase 2 contamination splitting uses this adjacency intentionally: bandwidth
+    // trials only affect how Leiden forms initial clusters; the base similarity graph
+    // is the correct substrate for splitting contaminated clusters.
     build_adjacency(edges, n_nodes, config);
     has_marker_.resize(n_nodes_);
     for (int i = 0; i < n_nodes_; ++i)
