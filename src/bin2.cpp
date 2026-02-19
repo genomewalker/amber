@@ -1724,11 +1724,9 @@ int run_bin2(const Bin2Config& config) {
                                 ? "scripts/checkm_ms/bacteria.ms"
                                 : config.bacteria_ms_file;
         if (std::filesystem::exists(bacteria_ms)) {
-            // Build contig → markers reverse map
-            std::unordered_map<std::string, std::vector<std::string>> contig_to_markers;
-            for (const auto& [marker, clist] : marker_hits_by_contig)
-                for (const auto& cname : clist)
-                    contig_to_markers[cname].push_back(marker);
+            // marker_hits_by_contig is keyed by contig name → list of markers
+            // (the variable name is misleading; the seed generator returns this orientation)
+            const auto& contig_to_markers = marker_hits_by_contig;
 
             // For each seed cluster: track how many copies of each marker it holds.
             // Initially populated from the seed contigs themselves.
