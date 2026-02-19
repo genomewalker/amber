@@ -425,16 +425,23 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
             if (viable_children < 2) continue;
             if (static_cast<float>(spill_bp) / total_bp > 0.25f) continue;
 
-            // --- CheckM acceptance: consistent with trigger objective ---
-            // Primary: any new viable HQ child that wasn't there before.
-            // Secondary: weighted-average contamination drops by >= 1%, completeness
-            //            stays within 2% (anti-regression).
+            // --- CheckM acceptance ---
+            // Two modes based on parent contamination level:
+            //
+            // Near-HQ preservation (cont < 15%): conservative — require HQ gain or
+            //   contamination drops >=1% without completeness regression >2%.
+            //
+            // Chimeric purification (cont >= 15%): aggressive — accept if any viable
+            //   child is clean (cont < 5%) OR weighted contamination drops by >=10%.
+            //   Completeness loss is accepted since parent completeness is inflated by
+            //   the union of multiple genomes' markers.
             int parent_hq = (parent_q.completeness >= 90.0f &&
                              parent_q.contamination <=  5.0f &&
                              total_bp >= qconfig_.restart_min_viable_bp) ? 1 : 0;
 
             float wcont = 0.0f, wcomp = 0.0f;
             int child_hq = 0;
+            bool any_clean_child = false;
             for (int sc = 0; sc < sub_result.num_clusters; ++sc) {
                 if (sub_bp[sc] < qconfig_.restart_min_viable_bp) continue;
                 std::vector<std::string> sub_names;
@@ -446,11 +453,21 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
                 wcont += frac * sq.contamination;
                 wcomp += frac * sq.completeness;
                 if (sq.completeness >= 90.0f && sq.contamination <= 5.0f) child_hq++;
+                if (sq.contamination < 5.0f) any_clean_child = true;
             }
 
-            bool accept = (child_hq > parent_hq) ||
-                          (wcont <= parent_q.contamination - 1.0f &&
-                           wcomp >= parent_q.completeness - 2.0f);
+            bool accept;
+            if (parent_q.contamination >= 15.0f) {
+                // Chimeric purification: accept if we produce a clean child or
+                // achieve a large absolute contamination reduction.
+                accept = any_clean_child ||
+                         (wcont <= parent_q.contamination - 10.0f);
+            } else {
+                // Near-HQ preservation: conservative.
+                accept = (child_hq > parent_hq) ||
+                         (wcont <= parent_q.contamination - 1.0f &&
+                          wcomp >= parent_q.completeness - 2.0f);
+            }
             if (!accept) continue;
 
             std::vector<int> sc_to_global(sub_result.num_clusters);
@@ -1033,10 +1050,18 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
                                         float min_completeness) {
     if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets())
         return compact_labels(labels);
+
+    // Iterative splitting: keep splitting contaminated bins until no progress.
+    // min_completeness=0: no completeness floor — chimeric purification mode handles
+    // heavily contaminated bins regardless of parent completeness.
     int n = compact_labels(labels);
-    auto [new_labels, new_n] = run_phase2(std::move(labels), n, config, min_completeness);
-    labels = std::move(new_labels);
-    return new_n;
+    for (int iter = 0; iter < 3; ++iter) {
+        auto [new_labels, new_n] = run_phase2(std::move(labels), n, config, 0.0f);
+        labels = std::move(new_labels);
+        if (new_n == n) break;  // no progress
+        n = new_n;
+    }
+    return n;
 }
 
 bool QualityLeidenBackend::move_nodes_fast_quality(

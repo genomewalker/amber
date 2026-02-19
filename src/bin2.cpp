@@ -2243,8 +2243,8 @@ int run_bin2(const Bin2Config& config) {
     // QualityLeidenBackend (restarts or quality-leiden) and CheckM marker sets.
     // Splits bins >= 85% completeness with > 5.5% contamination.
     if (qb_ptr && bin2_checkm_est.has_marker_sets()) {
-        log.info("Phase 4: targeted decontamination (min_completeness=85%)");
-        int n_after = qb_ptr->decontaminate(labels, leiden_config, 85.0f);
+        log.info("Phase 4: chimeric decontamination (iterative, no completeness floor)");
+        int n_after = qb_ptr->decontaminate(labels, leiden_config, 0.0f);
         log.info("Phase 4 done: " + std::to_string(n_after) + " clusters");
     }
     log.info("Leiden found " + std::to_string(result.num_clusters) + " clusters (modularity=" +
