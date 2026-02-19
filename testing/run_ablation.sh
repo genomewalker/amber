@@ -18,8 +18,8 @@
 # Config 6: DamageInfoNCE + MapEquation
 # Config 7: DamageInfoNCE + MapEquation + MultiscaleCGR
 # Config 8: DamageInfoNCE + MapEquation + MultiscaleCGR + BW restarts
-# Config 9: DamageInfoNCE + MultiscaleCGR + BW restarts
-# Config 10: DamageInfoNCE + MultiscaleCGR + Seed sweep (N=25, fixed bw=0.20)
+# Config 9: DamageInfoNCE + MultiscaleCGR + BW restarts (quality-leiden + adaptive bw search)
+# Config 10: DamageInfoNCE + MultiscaleCGR + Seed sweep (N=25, fixed bw=0.20, no quality-leiden)
 # Config 11: DamageInfoNCE + Seed sweep (N=25, no CGR)
 # Config 12: DamageInfoNCE + Consensus kNN (N=3 encoder restarts)
 
@@ -56,8 +56,8 @@ case $CONFIG_ID in
        EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr" ;;
     8) CONFIG_NAME="damage_map_cgr_restarts"
        EXTRA_FLAGS="--damage-infonce --map-equation --multiscale-cgr --leiden-restarts 25" ;;
-    9) CONFIG_NAME="damage_infonce_cgr_restarts"
-       EXTRA_FLAGS="--damage-infonce --multiscale-cgr --leiden-restarts 25" ;;
+    9) CONFIG_NAME="damage_infonce_cgr_bwrestarts"
+       EXTRA_FLAGS="--damage-infonce --multiscale-cgr --quality-leiden --leiden-restarts 25" ;;
    10) CONFIG_NAME="damage_infonce_cgr_seeds25"
        EXTRA_FLAGS="--damage-infonce --multiscale-cgr --leiden-restarts 25" ;;
    11) CONFIG_NAME="damage_infonce_seeds25"
