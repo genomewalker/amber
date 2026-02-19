@@ -334,6 +334,16 @@ protected:
         std::vector<int> labels,
         int n_communities);
 
+    // Phase 4E: extended-neighborhood Leiden re-clustering.
+    // Unlike Phase 4A (isolated subgraph), includes 1-hop kNN neighbors from
+    // other bins. External neighbors anchor contaminating contigs to their true
+    // genome cluster → Leiden finds the cut that Phase 4A misses.
+    // Tries multiple seeds × resolutions; accepts if any gives a clean sub-group.
+    std::pair<std::vector<int>, int> run_phase4_extended(
+        std::vector<int> labels,
+        int n_communities,
+        const LeidenConfig& base_config);
+
     // Phase 4G: cross-cluster graph-boundary eviction.
     // Contaminating contigs sit at the kNN boundary between the primary genome
     // cluster and other clusters → they have high out-of-bin edge weight.

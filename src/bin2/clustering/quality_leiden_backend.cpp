@@ -1062,8 +1062,18 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
         n = new_n;
     }
 
+    // Phase 4E: extended-neighborhood Leiden re-clustering.
+    // Runs Leiden on bin contigs + 1-hop kNN neighbors. External neighbors
+    // anchor contaminating contigs to their true genome cluster, letting Leiden
+    // find cuts that Phase 4A (isolated subgraph) misses. Multiple seeds tried.
+    {
+        auto [new_labels, new_n] = run_phase4_extended(std::move(labels), n, config);
+        labels = std::move(new_labels);
+        n = new_n;
+    }
+
     // Phase 4M: marker-direct eviction.
-    // For bins that survive 4A, directly evict the lowest-connectivity contig
+    // For bins that survive 4A+4E, directly evict the lowest-connectivity contig
     // carrying each duplicated SCG marker. Validated with CheckM.
     if (marker_index_) {
         auto [new_labels, new_n] = run_phase4_marker(std::move(labels), n);
@@ -1203,6 +1213,168 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
     }
 
     std::cerr << "[QualityLeiden] Phase 4M: " << n_split << " bins cleaned, "
+              << (n_communities + n_split) << " total\n";
+
+    return {std::move(labels), n_communities + n_split};
+}
+
+std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
+    std::vector<int> labels,
+    int n_communities,
+    const LeidenConfig& base_config) {
+
+    if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets())
+        return {std::move(labels), n_communities};
+
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    for (int i = 0; i < n_nodes_; ++i)
+        if (labels[i] >= 0 && labels[i] < n_communities)
+            cluster_nodes[labels[i]].push_back(i);
+
+    int n_split = 0;
+
+    for (int c = 0; c < n_communities; ++c) {
+        const auto& nodes = cluster_nodes[c];
+        if ((int)nodes.size() <= 1) continue;
+
+        long long total_bp = 0;
+        for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+        if (total_bp < 400000LL) continue;
+
+        std::vector<std::string> cluster_names;
+        cluster_names.reserve(nodes.size());
+        for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
+        CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
+        if (parent_q.contamination <= 5.5f) continue;
+
+        // Extended node set: bin contigs + their 1-hop kNN neighbors.
+        // External neighbors serve as anchors: contaminating contigs have edges
+        // to their true genome cluster's contigs outside this bin → Leiden finds
+        // the cut that Phase 4A (isolated subgraph) misses entirely.
+        std::unordered_set<int> bin_set(nodes.begin(), nodes.end());
+        std::vector<int> ext_nodes(nodes.begin(), nodes.end());
+        for (int v : nodes) {
+            for (const auto& [u, w] : adj_[v]) {
+                if (!bin_set.count(u)) {
+                    bin_set.insert(u);  // use bin_set as seen-set for dedup
+                    ext_nodes.push_back(u);
+                }
+            }
+        }
+        // Restore bin_set to only bin members for group extraction below.
+        bin_set.clear();
+        for (int v : nodes) bin_set.insert(v);
+
+        std::unordered_map<int, int> local_id;
+        local_id.reserve(ext_nodes.size());
+        for (int i = 0; i < (int)ext_nodes.size(); ++i) local_id[ext_nodes[i]] = i;
+
+        std::vector<WeightedEdge> sub_edges;
+        for (int v : ext_nodes) {
+            for (const auto& [u, w] : adj_[v]) {
+                auto it = local_id.find(u);
+                if (it != local_id.end() && u > v)
+                    sub_edges.push_back({local_id[v], it->second, static_cast<float>(w)});
+            }
+        }
+        if (sub_edges.empty()) continue;
+
+        LeidenConfig sub_config = base_config;
+        sub_config.use_initial_membership = false;
+        sub_config.initial_membership.clear();
+        sub_config.use_fixed_membership = false;
+        sub_config.is_membership_fixed.clear();
+        if (base_config.use_node_sizes) {
+            sub_config.node_sizes.resize(ext_nodes.size());
+            for (int i = 0; i < (int)ext_nodes.size(); ++i)
+                sub_config.node_sizes[i] = node_sizes_[ext_nodes[i]];
+        }
+
+        // Sole-carrier set: bin contigs that are the sole carrier of some marker.
+        // These are always kept in the primary group regardless of Leiden assignment.
+        std::unordered_set<int> sole_carriers;
+        if (marker_index_) {
+            std::unordered_map<int, std::vector<int>> marker_to_nodes;
+            for (int v : nodes)
+                for (const auto& entry : marker_index_->get_markers(v))
+                    marker_to_nodes[entry.id].push_back(v);
+            for (const auto& [mid, carriers] : marker_to_nodes)
+                if (carriers.size() == 1) sole_carriers.insert(carriers[0]);
+        }
+
+        // Try multiple seeds × resolutions. For near-HQ contaminated bins the
+        // correct cut is findable but sensitive to seed — a few tries suffice.
+        const float res_scales[] = {0.05f, 0.1f, 0.2f, 0.5f, 1.0f};
+        const int n_seeds = 5;
+        bool accepted = false;
+
+        for (float rs : res_scales) {
+            if (accepted) break;
+            sub_config.resolution = base_config.resolution * rs;
+
+            for (int s = 0; s < n_seeds && !accepted; ++s) {
+                sub_config.random_seed = spread_seed(base_config.random_seed, s + c * n_seeds);
+
+                ClusteringResult sub_result;
+#ifdef USE_LIBLEIDENALG
+                LibLeidenalgBackend sub_leiden;
+                sub_leiden.set_seed(sub_config.random_seed);
+                sub_result = sub_leiden.cluster(sub_edges, ext_nodes.size(), sub_config);
+#else
+                LeidenBackend sub_leiden;
+                sub_leiden.set_seed(sub_config.random_seed);
+                sub_result = sub_leiden.cluster(sub_edges, ext_nodes.size(), sub_config);
+#endif
+                if (sub_result.num_clusters < 2) continue;
+
+                // Group original bin contigs by Leiden sub-label.
+                std::map<int, std::vector<int>> bin_by_sublabel;
+                for (int v : nodes)
+                    bin_by_sublabel[sub_result.labels[local_id[v]]].push_back(v);
+                if ((int)bin_by_sublabel.size() < 2) continue;
+
+                // Find a group that's clean and large enough to be the primary genome.
+                for (auto& [sublabel, group] : bin_by_sublabel) {
+                    long long group_bp = 0;
+                    for (int v : group) group_bp += static_cast<long long>(node_sizes_[v]);
+                    if (group_bp < qconfig_.restart_min_viable_bp) continue;
+
+                    // Promote sole carriers from other groups into this group.
+                    std::unordered_set<int> keep_set(group.begin(), group.end());
+                    for (int v : sole_carriers) keep_set.insert(v);
+
+                    std::vector<std::string> kept_names;
+                    std::vector<int> evicted;
+                    long long evicted_bp = 0;
+                    for (int v : nodes) {
+                        if (keep_set.count(v)) kept_names.push_back((*node_names_)[v]);
+                        else { evicted.push_back(v); evicted_bp += static_cast<long long>(node_sizes_[v]); }
+                    }
+                    if (evicted.empty()) continue;
+
+                    auto final_q = checkm_est_->estimate_bin_quality(kept_names);
+                    if (final_q.contamination >= 5.0f ||
+                        final_q.completeness < parent_q.completeness - 5.0f) continue;
+
+                    // Accept this split.
+                    int new_label = n_communities + n_split;
+                    for (int v : evicted) labels[v] = new_label;
+                    n_split++;
+                    std::cerr << "[QualityLeiden] Phase 4E: evicted " << evicted.size()
+                              << " contigs (" << evicted_bp / 1000 << "kb) from cluster " << c
+                              << " (cont " << parent_q.contamination << "% -> "
+                              << final_q.contamination << "%, comp "
+                              << parent_q.completeness << "% -> " << final_q.completeness
+                              << "%, ext=" << ext_nodes.size()
+                              << " res_scale=" << rs << " seed=" << s << ")\n";
+                    accepted = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    std::cerr << "[QualityLeiden] Phase 4E: " << n_split << " bins cleaned, "
               << (n_communities + n_split) << " total\n";
 
     return {std::move(labels), n_communities + n_split};
