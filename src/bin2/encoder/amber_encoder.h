@@ -575,24 +575,50 @@ public:
         }
 
         // Apply SWA averaged weights, then recalibrate BatchNorm running stats.
-        // BN buffers (running_mean/var) are from the last epoch's non-averaged model.
-        // Reset and re-estimate from data in train mode so they match the SWA mean.
+        // Use cumulative BN updates (momentum=None) so one pass computes exact
+        // running means/vars over the recalibration batches.
         if (config_.use_swa) {
             apply_swa(encoder, swa_sums, swa_count);
-            for (auto& mod : encoder->modules())
-                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>())
-                    bn->reset_running_stats();
-            torch::NoGradGuard no_grad;
-            for (int b = 0; b < n_full_batches; b++) {
-                int start = b * config_.batch_size;
-                if (start + config_.batch_size > N) break;
-                std::vector<long> bidx(config_.batch_size);
-                for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
-                encoder->forward(views_gpu[0].index_select(
-                    0, torch::tensor(bidx).to(device_)));
+
+            std::vector<torch::nn::BatchNorm1dImpl*> bn_layers;
+            for (auto& mod : encoder->modules()) {
+                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>()) {
+                    bn_layers.push_back(bn);
+                }
             }
-            std::cerr << "[SWA] BatchNorm recalibrated over "
-                      << n_full_batches << " batches\n";
+
+            if (!bn_layers.empty()) {
+                std::vector<c10::optional<double>> old_momenta;
+                old_momenta.reserve(bn_layers.size());
+                for (auto* bn : bn_layers) {
+                    old_momenta.push_back(bn->options.momentum());
+                    bn->reset_running_stats();
+                    bn->options.momentum(c10::nullopt);  // cumulative average
+                }
+
+                encoder->train();
+                torch::NoGradGuard no_grad;
+                int recalib_batches = 0;
+                for (int b = 0; b < n_full_batches; b++) {
+                    int start = b * config_.batch_size;
+                    if (start + config_.batch_size > N) break;
+                    std::vector<long> bidx(config_.batch_size);
+                    for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
+                    encoder->forward(views_gpu[0].index_select(
+                        0, torch::tensor(bidx).to(device_)));
+                    recalib_batches++;
+                }
+
+                for (size_t i = 0; i < bn_layers.size(); i++) {
+                    bn_layers[i]->options.momentum(old_momenta[i]);
+                }
+
+                encoder->eval();
+                std::cerr << "[SWA] BatchNorm recalibrated over "
+                          << recalib_batches << " batches (cumulative momentum)\n";
+            } else {
+                std::cerr << "[SWA] No BatchNorm layers found, skipping BN recalibration\n";
+            }
         }
 
         std::cerr << "[AmberTrainer] Training complete. Best loss: "
@@ -762,22 +788,50 @@ public:
         }
 
         // Apply SWA averaged weights, then recalibrate BatchNorm running stats.
+        // Use cumulative BN updates (momentum=None) so one pass computes exact
+        // running means/vars over the recalibration batches.
         if (config_.use_swa) {
             apply_swa(encoder, swa_sums, swa_count);
-            for (auto& mod : encoder->modules())
-                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>())
-                    bn->reset_running_stats();
-            torch::NoGradGuard no_grad;
-            for (int b = 0; b < n_full_batches; b++) {
-                int start = b * config_.batch_size;
-                if (start + config_.batch_size > N) break;
-                std::vector<long> bidx(config_.batch_size);
-                for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
-                encoder->forward(views_gpu[0].index_select(
-                    0, torch::tensor(bidx).to(device_)));
+
+            std::vector<torch::nn::BatchNorm1dImpl*> bn_layers;
+            for (auto& mod : encoder->modules()) {
+                if (auto* bn = mod->as<torch::nn::BatchNorm1dImpl>()) {
+                    bn_layers.push_back(bn);
+                }
             }
-            std::cerr << "[SWA] BatchNorm recalibrated over "
-                      << n_full_batches << " batches\n";
+
+            if (!bn_layers.empty()) {
+                std::vector<c10::optional<double>> old_momenta;
+                old_momenta.reserve(bn_layers.size());
+                for (auto* bn : bn_layers) {
+                    old_momenta.push_back(bn->options.momentum());
+                    bn->reset_running_stats();
+                    bn->options.momentum(c10::nullopt);  // cumulative average
+                }
+
+                encoder->train();
+                torch::NoGradGuard no_grad;
+                int recalib_batches = 0;
+                for (int b = 0; b < n_full_batches; b++) {
+                    int start = b * config_.batch_size;
+                    if (start + config_.batch_size > N) break;
+                    std::vector<long> bidx(config_.batch_size);
+                    for (int i = 0; i < config_.batch_size; i++) bidx[i] = start + i;
+                    encoder->forward(views_gpu[0].index_select(
+                        0, torch::tensor(bidx).to(device_)));
+                    recalib_batches++;
+                }
+
+                for (size_t i = 0; i < bn_layers.size(); i++) {
+                    bn_layers[i]->options.momentum(old_momenta[i]);
+                }
+
+                encoder->eval();
+                std::cerr << "[SWA] BatchNorm recalibrated over "
+                          << recalib_batches << " batches (cumulative momentum)\n";
+            } else {
+                std::cerr << "[SWA] No BatchNorm layers found, skipping BN recalibration\n";
+            }
         }
 
         std::cerr << "[AmberTrainer] Damage-aware training complete. Best loss: "
