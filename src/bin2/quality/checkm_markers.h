@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "marker_quality.h"  // For COMEBinScore
+#include "marker_quality.h"  // For BinQualityScore
 
 #include <string>
 #include <vector>
@@ -104,8 +104,8 @@ public:
                       const std::vector<std::pair<std::string, std::string>>& contigs,
                       int min_bin_size = 200000) const;
 
-    // COMEBin-style 6-category scoring (uses shared COMEBinScore from marker_quality.h)
-    COMEBinScore compute_comebin_score(
+    // 6-category quality scoring (uses shared BinQualityScore from marker_quality.h)
+    BinQualityScore compute_bin_quality_score(
         const std::vector<int>& labels,
         const std::vector<std::pair<std::string, std::string>>& contigs,
         int min_bin_size = 200000) const;

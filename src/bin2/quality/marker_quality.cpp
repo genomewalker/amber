@@ -307,7 +307,7 @@ int MarkerQualityEstimator::compute_score(
     return 3 * hq + mq;
 }
 
-COMEBinScore MarkerQualityEstimator::compute_comebin_score(
+BinQualityScore MarkerQualityEstimator::compute_bin_quality_score(
     const std::vector<int>& labels,
     const std::vector<std::pair<std::string, std::string>>& contigs,
     int min_bin_size) const {
@@ -322,7 +322,7 @@ COMEBinScore MarkerQualityEstimator::compute_comebin_score(
         }
     }
 
-    COMEBinScore score;
+    BinQualityScore score;
     for (const auto& [cluster_id, contig_names] : cluster_contigs) {
         // Skip small bins
         if (static_cast<int>(cluster_sizes[cluster_id]) < min_bin_size) continue;

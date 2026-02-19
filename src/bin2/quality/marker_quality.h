@@ -54,7 +54,7 @@ struct SweepResult {
 
 // COMEBin-style 6-category quality scoring
 // Categories: (completeness > 50/70/90%) × (contamination < 10/5%)
-struct COMEBinScore {
+struct BinQualityScore {
     int num_5010 = 0;  // comp > 50%, cont < 10%
     int num_7010 = 0;  // comp > 70%, cont < 10%
     int num_9010 = 0;  // comp > 90%, cont < 10%
@@ -76,7 +76,7 @@ struct COMEBinScore {
     // COMEBin selection order:
     // 1) max(sum of all 6 categories)
     // 2) tiebreak by max(sum of <5% contamination categories)
-    bool better_than(const COMEBinScore& other) const {
+    bool better_than(const BinQualityScore& other) const {
         // Priority 1: Higher total sum
         if (sum() != other.sum()) return sum() > other.sum();
         // Priority 2: More <5% contamination bins
@@ -133,7 +133,7 @@ public:
     // COMEBin-style 6-category scoring
     // Primary: max(sum of all 6 categories)
     // Tiebreaker: max(sum of <5% contamination bins)
-    COMEBinScore compute_comebin_score(
+    BinQualityScore compute_bin_quality_score(
         const std::vector<int>& labels,
         const std::vector<std::pair<std::string, std::string>>& contigs,
         int min_bin_size = 200000) const;

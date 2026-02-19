@@ -259,7 +259,7 @@ int CheckMQualityEstimator::count_hq_bins(
     return hq_count;
 }
 
-COMEBinScore CheckMQualityEstimator::compute_comebin_score(
+BinQualityScore CheckMQualityEstimator::compute_bin_quality_score(
     const std::vector<int>& labels,
     const std::vector<std::pair<std::string, std::string>>& contigs,
     int min_bin_size) const {
@@ -274,7 +274,7 @@ COMEBinScore CheckMQualityEstimator::compute_comebin_score(
         }
     }
 
-    COMEBinScore score;
+    BinQualityScore score;
     for (const auto& [cluster_id, contig_names] : cluster_contigs) {
         if (static_cast<int>(cluster_sizes[cluster_id]) < min_bin_size) continue;
 

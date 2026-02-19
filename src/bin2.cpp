@@ -87,7 +87,7 @@ struct Bin2Config {
     float learning_rate = 0.001f;
     float temperature = 0.1f;      // COMEBin default
     // Clustering parameters
-    int k = 100;                   // kNN neighbors (COMEBin default)
+    int k = 100;                   // kNN neighbors (AMBER default)
     int partgraph_ratio = 50;      // Percentile cutoff for edge pruning
     float resolution = 1.0f;       // Leiden resolution
     float bandwidth = 0.1f;        // Edge weighting bandwidth
@@ -143,7 +143,7 @@ std::vector<std::string> load_seed_markers(const std::string& path) {
     return seeds;
 }
 
-// Call Python leidenalg for exact COMEBin matching
+// Call Python leidenalg for Python leidenalg matching
 bin2::ClusteringResult run_python_leiden(
     const std::vector<bin2::WeightedEdge>& edges,
     int n_nodes,
@@ -1014,7 +1014,7 @@ int run_bin2(const Bin2Config& config) {
                 n_seeds++;
             }
         }
-        log.info("COMEBin-style init: " + std::to_string(emb_names.size()) + " nodes, " +
+        log.info("AMBER kNN init: " + std::to_string(emb_names.size()) + " nodes, " +
                  std::to_string(n_seeds) + " fixed seeds");
 
         // Build kNN index
@@ -1082,7 +1082,7 @@ int run_bin2(const Bin2Config& config) {
 
         bin2::ClusteringResult result;
         if (config.use_python_leiden) {
-            log.info("Using Python leidenalg for exact COMEBin matching");
+            log.info("Using Python leidenalg for Python leidenalg matching");
             result = run_python_leiden(edges, static_cast<int>(embeddings.size()), contig_lengths);
         } else {
             auto leiden = bin2::create_leiden_backend(true);  // Use libleidenalg if available
@@ -1186,7 +1186,7 @@ int run_bin2(const Bin2Config& config) {
     // Load coverage and variance using COMEBin-style (no identity filter, like bedtools genomecov)
     std::unordered_map<std::string, CoverageWithVariance> cov_map;
     if (!config.bam_path.empty() && std::filesystem::exists(config.bam_path)) {
-        log.info("Loading coverage from BAM (COMEBin-style: no identity filter, all reads)");
+        log.info("Loading coverage from BAM (AMBER BAM loading: no identity filter, all reads)");
         cov_map = load_coverage_comebin_style(config.bam_path, contigs, config.threads);
         for (size_t i = 0; i < contigs.size(); i++) {
             auto it = cov_map.find(contigs[i].first);
@@ -1410,12 +1410,12 @@ int run_bin2(const Bin2Config& config) {
              ", var_max=" + std::to_string(var_max));
 
     // COMEBin-compatible encoder with substring augmentation
-    log.info("Training COMEBin-compatible encoder with substring augmentation");
+    log.info("Training AMBER contrastive encoder with substring augmentation");
 
         // Temperature: COMEBin default is 0.1 (NOT N50-dependent!)
         // Previous code used N50-dependent (0.07/>10kb, 0.15/<=10kb) but that was wrong
         float encoder_temperature = 0.1f;
-        log.info("  temperature=" + std::to_string(encoder_temperature) + " (COMEBin default)");
+        log.info("  temperature=" + std::to_string(encoder_temperature) + " (AMBER default)");
         log.info("  epochs=" + std::to_string(config.epochs) +
                  ", hidden=" + std::to_string(config.hidden_dim) +
                  ", layers=" + std::to_string(config.n_layer));
@@ -1660,7 +1660,7 @@ int run_bin2(const Bin2Config& config) {
     log.info("Encoded " + std::to_string(embeddings.size()) + " contigs to " +
              std::to_string(config.embedding_dim) + " dimensions");
 
-    // L2 normalize embeddings (COMEBin default)
+    // L2 normalize embeddings (AMBER default)
     if (config.l2_normalize) {
         log.info("L2 normalizing embeddings");
         for (auto& emb : embeddings) {
@@ -1678,8 +1678,7 @@ int run_bin2(const Bin2Config& config) {
     std::vector<bin2::WeightedEdge> consensus_edges;
     if (config.n_encoder_restarts > 1) {
         log.info("Consensus kNN: " + std::to_string(config.n_encoder_restarts) +
-                 " encoder runs (seeds " + std::to_string(config.encoder_seed) + ".." +
-                 std::to_string(config.encoder_seed + config.n_encoder_restarts - 1) + ")");
+                 " encoder runs (base seed=" + std::to_string(config.encoder_seed) + ", hash-spread)");
 
         // Pre-compute CGR features once (deterministic, identical for all encoder runs).
         std::vector<bin2::MultiScaleCGRFeatures> cgr_feats_cached(N);
@@ -1976,7 +1975,7 @@ int run_bin2(const Bin2Config& config) {
     // COMEBin-style parameter sweep (3 x 5 x 8 = 120 configurations).
     // Incompatible with consensus kNN (encoder restarts take priority).
     if (config.sweep && consensus_edges.empty()) {
-        log.info("Running COMEBin-exact parameter sweep");
+        log.info("Running AMBER parameter sweep");
 
         // COMEBin default sweep values
         std::vector<int> partgraph_ratios = {50, 100, 80};  // COMEBin pgr values
