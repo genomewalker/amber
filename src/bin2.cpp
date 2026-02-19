@@ -1750,6 +1750,7 @@ int run_bin2(const Bin2Config& config) {
             std::vector<Candidate> candidates;
             for (size_t i = 0; i < contigs.size(); i++) {
                 if (is_membership_fixed[i]) continue;
+                if (contigs[i].second.size() < 1001) continue;  // same length filter as seed generator
                 const auto it = contig_to_markers.find(contigs[i].first);
                 if (it == contig_to_markers.end()) continue;
                 const auto& cmarkers = it->second;
