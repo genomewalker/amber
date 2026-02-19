@@ -1051,17 +1051,150 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
     if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets())
         return compact_labels(labels);
 
-    // Iterative splitting: keep splitting contaminated bins until no progress.
-    // min_completeness=0: no completeness floor — chimeric purification mode handles
-    // heavily contaminated bins regardless of parent completeness.
+    // Phase 4A: iterative graph-based Leiden splitting (up to 3 rounds).
+    // min_completeness=0: no completeness floor — chimeric mode handles heavily
+    // contaminated bins regardless of parent completeness.
     int n = compact_labels(labels);
     for (int iter = 0; iter < 3; ++iter) {
         auto [new_labels, new_n] = run_phase2(std::move(labels), n, config, 0.0f);
         labels = std::move(new_labels);
-        if (new_n == n) break;  // no progress
+        if (new_n == n) break;
         n = new_n;
     }
+
+    // Phase 4B: TNF signature-based decontamination for bins that survived 4A.
+    // Uses per-contig tetranucleotide frequency cosine-similarity connectivity
+    // to identify contigs from a contaminating genome and split the bin.
+    if (tnf_features_) {
+        auto [new_labels, new_n] = run_phase4_tnf(std::move(labels), n);
+        labels = std::move(new_labels);
+        n = new_n;
+    }
+
     return n;
+}
+
+std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_tnf(
+    std::vector<int> labels,
+    int n_communities) {
+
+    if (!tnf_features_ || !checkm_est_ || !node_names_ ||
+        !checkm_est_->has_marker_sets())
+        return {std::move(labels), n_communities};
+
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    for (int i = 0; i < n_nodes_; ++i)
+        if (labels[i] >= 0 && labels[i] < n_communities)
+            cluster_nodes[labels[i]].push_back(i);
+
+    int n_contaminated = 0, n_split = 0;
+
+    for (int c = 0; c < n_communities; ++c) {
+        const auto& nodes = cluster_nodes[c];
+        if ((int)nodes.size() < 10) continue;
+
+        long long total_bp = 0;
+        for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+        if (total_bp < 400000LL) continue;
+
+        // Trigger: CheckM contamination > 5.5%
+        std::vector<std::string> cluster_names;
+        cluster_names.reserve(nodes.size());
+        for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
+        CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
+        if (parent_q.contamination <= 5.5f) continue;
+
+        n_contaminated++;
+
+        // Collect TNF vectors for contigs with reliable signature (>= 2kb).
+        std::vector<std::array<float, 136>> bin_tnf;
+        std::vector<size_t> global_indices;
+        bin_tnf.reserve(nodes.size());
+        global_indices.reserve(nodes.size());
+        for (int v : nodes) {
+            if (node_sizes_[v] >= 2000) {
+                bin_tnf.push_back((*tnf_features_)[v]);
+                global_indices.push_back(static_cast<size_t>(v));
+            }
+        }
+        if ((int)bin_tnf.size() < 10) continue;
+
+        // TNF connectivity analysis — lower outlier_factor for more contaminated bins.
+        float outlier_factor = (parent_q.contamination >= 15.0f) ? 0.55f : 0.45f;
+        auto refine = amber::tnf_graph::refine_bin_tnf(
+            bin_tnf, global_indices,
+            /*similarity_threshold=*/0.95,
+            outlier_factor,
+            /*min_bin_size=*/10);
+
+        if (refine.contigs_to_remove.empty()) continue;
+
+        // Build the proposed split:
+        //   Group A (core)    → keep label c
+        //   Group B (outliers) → new label n_communities + n_split
+        std::set<size_t> outlier_set(refine.contigs_to_remove.begin(),
+                                     refine.contigs_to_remove.end());
+
+        std::vector<long long> split_bp(2, 0);
+        std::vector<std::vector<std::string>> split_names(2);
+        for (int v : nodes) {
+            int grp = outlier_set.count(static_cast<size_t>(v)) ? 1 : 0;
+            split_bp[grp] += static_cast<long long>(node_sizes_[v]);
+            split_names[grp].push_back((*node_names_)[v]);
+        }
+
+        // Both halves must be viable.
+        if (split_bp[0] < qconfig_.restart_min_viable_bp) continue;
+        if (split_bp[1] < qconfig_.restart_min_viable_bp) continue;
+
+        // CheckM acceptance — same dual criterion as Phase 4A.
+        int parent_hq = (parent_q.completeness >= 90.0f &&
+                         parent_q.contamination <=  5.0f &&
+                         total_bp >= qconfig_.restart_min_viable_bp) ? 1 : 0;
+
+        float wcont = 0.0f, wcomp = 0.0f;
+        int child_hq = 0;
+        bool any_clean_child = false;
+        for (int grp = 0; grp < 2; ++grp) {
+            if (split_bp[grp] < qconfig_.restart_min_viable_bp) continue;
+            auto sq = checkm_est_->estimate_bin_quality(split_names[grp]);
+            float frac = static_cast<float>(split_bp[grp]) / total_bp;
+            wcont += frac * sq.contamination;
+            wcomp += frac * sq.completeness;
+            if (sq.completeness >= 90.0f && sq.contamination <= 5.0f) child_hq++;
+            if (sq.contamination < 5.0f) any_clean_child = true;
+        }
+
+        bool accept;
+        if (parent_q.contamination >= 15.0f) {
+            accept = any_clean_child || (wcont <= parent_q.contamination - 10.0f);
+        } else {
+            accept = (child_hq > parent_hq) ||
+                     (wcont <= parent_q.contamination - 1.0f &&
+                      wcomp >= parent_q.completeness - 2.0f);
+        }
+        if (!accept) continue;
+
+        int new_label = n_communities + n_split;
+        for (int v : nodes) {
+            if (outlier_set.count(static_cast<size_t>(v)))
+                labels[v] = new_label;
+        }
+        n_split++;
+
+        std::cerr << "[QualityLeiden] Phase 4B TNF split cluster " << c
+                  << " (cont " << parent_q.contamination
+                  << "% -> wcont " << wcont
+                  << "%, hq " << parent_hq << "->" << child_hq
+                  << ", flagged " << refine.flagged_contigs
+                  << "/" << bin_tnf.size() << " contigs)\n";
+    }
+
+    std::cerr << "[QualityLeiden] Phase 4B: " << n_contaminated
+              << " contaminated, " << n_split << " split, "
+              << (n_communities + n_split) << " total\n";
+
+    return {std::move(labels), n_communities + n_split};
 }
 
 bool QualityLeidenBackend::move_nodes_fast_quality(

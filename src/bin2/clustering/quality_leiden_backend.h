@@ -6,6 +6,7 @@
 
 #include "leiden_backend.h"
 #include "marker_index.h"
+#include "../../algorithms/tnf_graph.h"
 
 #include <array>
 #include <deque>
@@ -187,6 +188,13 @@ public:
         node_names_ = node_names;
     }
 
+    // Set per-contig TNF feature vectors for signature-based decontamination.
+    // tnf[i] must be L2-normalised 136-dim TNF indexed by node order.
+    // Must be called before decontaminate() if Phase 4B (TNF split) is desired.
+    void set_tnf_features(const std::vector<std::array<float, 136>>* tnf) {
+        tnf_features_ = tnf;
+    }
+
     // Override cluster to add quality-weighted optimization
     ClusteringResult cluster(const std::vector<WeightedEdge>& edges,
                           int n_nodes,
@@ -323,6 +331,16 @@ protected:
         const LeidenConfig& effective_config,
         float min_completeness = 0.0f);
 
+    // Phase 4B: TNF signature-based decontamination.
+    // For each contaminated bin, uses TNF cosine-similarity connectivity to
+    // identify outlier contigs (from the contaminating genome), then splits
+    // the bin into a core group + outlier group and validates with CheckM.
+    // Falls back to graph-based splitting if tnf_features_ is nullptr.
+    // Returns {updated_labels, updated_n_communities}.
+    std::pair<std::vector<int>, int> run_phase4_tnf(
+        std::vector<int> labels,
+        int n_communities);
+
     // Phase 3: targeted rescue for near-HQ bins (CheckM path only).
     // For each bin 75-90% completeness / <5% contamination (internal CheckM),
     // finds marker-bearing kNN neighbors that have markers absent from the bin
@@ -369,6 +387,9 @@ private:
     // Optional: proper CheckM estimator for colocation-based scoring
     const CheckMQualityEstimator* checkm_est_ = nullptr;
     const std::vector<std::string>* node_names_ = nullptr;
+
+    // Optional: per-contig TNF features for Phase 4B signature-based decontamination
+    const std::vector<std::array<float, 136>>* tnf_features_ = nullptr;
 };
 
 // Factory function
