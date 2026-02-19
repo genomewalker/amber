@@ -323,6 +323,13 @@ protected:
         const LeidenConfig& effective_config,
         float min_completeness = 0.0f);
 
+    // Phase 4M: marker-direct contig eviction.
+    // For each contaminated bin, finds duplicate SCG marker carriers and evicts
+    // the lowest-connectivity contig per duplicated marker. Validated with CheckM.
+    std::pair<std::vector<int>, int> run_phase4_marker(
+        std::vector<int> labels,
+        int n_communities);
+
     // Phase 3: targeted rescue for near-HQ bins (CheckM path only).
     // For each bin 75-90% completeness / <5% contamination (internal CheckM),
     // finds marker-bearing kNN neighbors that have markers absent from the bin

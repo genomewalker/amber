@@ -10,6 +10,7 @@
 #include <cmath>
 #include <deque>
 #include <thread>
+#include <unordered_set>
 #include <omp.h>
 
 namespace amber::bin2 {
@@ -1051,17 +1052,136 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
     if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets())
         return compact_labels(labels);
 
-    // Iterative splitting: keep splitting contaminated bins until no progress.
-    // min_completeness=0: no completeness floor — chimeric purification mode handles
-    // heavily contaminated bins regardless of parent completeness.
+    // Phase 4A: iterative graph-based Leiden splitting.
     int n = compact_labels(labels);
     for (int iter = 0; iter < 3; ++iter) {
         auto [new_labels, new_n] = run_phase2(std::move(labels), n, config, 0.0f);
         labels = std::move(new_labels);
-        if (new_n == n) break;  // no progress
+        if (new_n == n) break;
         n = new_n;
     }
+
+    // Phase 4M: marker-direct eviction.
+    // For bins that survive 4A, directly evict the lowest-connectivity contig
+    // carrying each duplicated SCG marker. Validated with CheckM.
+    if (marker_index_) {
+        auto [new_labels, new_n] = run_phase4_marker(std::move(labels), n);
+        labels = std::move(new_labels);
+        n = new_n;
+    }
+
     return n;
+}
+
+std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
+    std::vector<int> labels,
+    int n_communities) {
+
+    if (!marker_index_ || !checkm_est_ || !node_names_ ||
+        !checkm_est_->has_marker_sets())
+        return {std::move(labels), n_communities};
+
+    std::vector<std::vector<int>> cluster_nodes(n_communities);
+    for (int i = 0; i < n_nodes_; ++i)
+        if (labels[i] >= 0 && labels[i] < n_communities)
+            cluster_nodes[labels[i]].push_back(i);
+
+    int n_split = 0;
+
+    for (int c = 0; c < n_communities; ++c) {
+        const auto& nodes = cluster_nodes[c];
+        if (nodes.empty()) continue;
+
+        long long total_bp = 0;
+        for (int v : nodes) total_bp += static_cast<long long>(node_sizes_[v]);
+        if (total_bp < 400000LL) continue;
+
+        // Trigger: CheckM contamination > 5.5%
+        std::vector<std::string> cluster_names;
+        cluster_names.reserve(nodes.size());
+        for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
+        CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
+        if (parent_q.contamination <= 5.5f) continue;
+
+        // Build marker → carrier contigs map for this bin.
+        std::unordered_map<int, std::vector<int>> marker_to_nodes;
+        for (int v : nodes)
+            for (const auto& entry : marker_index_->get_markers(v))
+                marker_to_nodes[entry.id].push_back(v);
+
+        // Find duplicated markers (present in >= 2 contigs).
+        std::vector<std::pair<int, std::vector<int>>> dup_markers;
+        for (auto& [mid, carriers] : marker_to_nodes)
+            if ((int)carriers.size() >= 2)
+                dup_markers.push_back({mid, std::move(carriers)});
+
+        if (dup_markers.empty()) continue;
+
+        // Compute mean intra-bin edge weight per node (connectivity proxy).
+        std::unordered_set<int> bin_set(nodes.begin(), nodes.end());
+        std::unordered_map<int, double> intra_mean;
+        for (int v : nodes) {
+            double wsum = 0.0;
+            int cnt = 0;
+            for (const auto& [u, w] : adj_[v]) {
+                if (bin_set.count(u)) { wsum += w; cnt++; }
+            }
+            intra_mean[v] = cnt > 0 ? wsum / cnt : 0.0;
+        }
+
+        // For each duplicated marker, vote the weakest-connected carrier for eviction.
+        std::unordered_map<int, int> evict_votes;
+        for (const auto& [mid, carriers] : dup_markers) {
+            int weakest = carriers[0];
+            for (int v : carriers)
+                if (intra_mean[v] < intra_mean[weakest]) weakest = v;
+            evict_votes[weakest]++;
+        }
+
+        std::vector<int> candidates;
+        candidates.reserve(evict_votes.size());
+        for (const auto& [v, votes] : evict_votes)
+            candidates.push_back(v);
+
+        // Score the remaining bin without evicted contigs.
+        std::unordered_set<int> evict_set(candidates.begin(), candidates.end());
+        std::vector<std::string> remaining_names;
+        long long remaining_bp = 0, evicted_bp = 0;
+        for (int v : nodes) {
+            if (evict_set.count(v)) evicted_bp  += static_cast<long long>(node_sizes_[v]);
+            else                   { remaining_names.push_back((*node_names_)[v]);
+                                     remaining_bp += static_cast<long long>(node_sizes_[v]); }
+        }
+        if (remaining_bp < qconfig_.restart_min_viable_bp) continue;
+
+        auto remaining_q = checkm_est_->estimate_bin_quality(remaining_names);
+
+        // Accept if contamination drops meaningfully without large completeness loss.
+        bool accept;
+        if (parent_q.contamination >= 10.0f) {
+            accept = remaining_q.contamination < 5.0f ||
+                     remaining_q.contamination <= parent_q.contamination - 8.0f;
+        } else {
+            accept = remaining_q.contamination <= parent_q.contamination - 1.5f &&
+                     remaining_q.completeness  >= parent_q.completeness  - 3.0f;
+        }
+        if (!accept) continue;
+
+        int new_label = n_communities + n_split;
+        for (int v : candidates) labels[v] = new_label;
+        n_split++;
+
+        std::cerr << "[QualityLeiden] Phase 4M: evicted " << candidates.size()
+                  << " contigs (" << evicted_bp / 1000 << "kb) from cluster " << c
+                  << " (cont " << parent_q.contamination << "% -> "
+                  << remaining_q.contamination << "%, comp "
+                  << parent_q.completeness << "% -> " << remaining_q.completeness << "%)\n";
+    }
+
+    std::cerr << "[QualityLeiden] Phase 4M: " << n_split << " bins cleaned, "
+              << (n_communities + n_split) << " total\n";
+
+    return {std::move(labels), n_communities + n_split};
 }
 
 bool QualityLeidenBackend::move_nodes_fast_quality(
