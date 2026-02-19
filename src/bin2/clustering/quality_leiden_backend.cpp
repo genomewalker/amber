@@ -366,9 +366,6 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
         if (sub_edges.empty()) continue;
 
         LeidenConfig sub_config = effective_config;
-        float size_scale = std::max(1.0f, static_cast<float>(nodes.size()) / 100.0f);
-        sub_config.resolution = effective_config.resolution
-                               * std::min(3.0f, 3.0f / std::sqrt(size_scale));
         sub_config.use_initial_membership = false;
         sub_config.initial_membership.clear();
         sub_config.use_fixed_membership = false;
@@ -379,21 +376,39 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
                 sub_config.node_sizes[i] = node_sizes_[nodes[i]];
         }
 
+        // Resolution sweep: try from very low to high, stop at first attempt that
+        // lands within the fragmentation guard. Large contaminated bins (weak internal
+        // edges) need low resolution to find the 2-genome split; small bins need
+        // higher resolution to avoid merging everything into one cluster.
+        int max_children_pre = std::min(12, 2 + static_cast<int>(
+            total_bp / static_cast<long long>(qconfig_.restart_min_viable_bp)));
+        const float size_scale = std::max(1.0f, static_cast<float>(nodes.size()) / 100.0f);
+        const float res_scales[] = {0.05f, 0.1f, 0.2f, 0.5f, 1.0f,
+                                    std::min(3.0f, 3.0f / std::sqrt(size_scale)), 3.0f};
+
+        ClusteringResult sub_result;
+        bool found = false;
+        for (float rs : res_scales) {
+            sub_config.resolution = effective_config.resolution * rs;
 #ifdef USE_LIBLEIDENALG
-        LibLeidenalgBackend sub_leiden;
-        ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
+            LibLeidenalgBackend sub_leiden;
+            sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
 #else
-        LeidenBackend sub_leiden;
-        ClusteringResult sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
+            LeidenBackend sub_leiden;
+            sub_result = sub_leiden.cluster(sub_edges, nodes.size(), sub_config);
 #endif
-        if (sub_result.num_clusters <= 1) continue;
+            if (sub_result.num_clusters >= 2 && sub_result.num_clusters <= max_children_pre) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) continue;
 
         // --- Fragmentation guard (same objective family as trigger) ---
         if (use_checkm) {
             // Guard in bp-space: limit children to 2 + floor(parent_bp / min_viable_bp),
             // capped at 12. Also require >= 2 children above the size threshold.
-            int max_children = std::min(12, 2 + static_cast<int>(
-                total_bp / static_cast<long long>(qconfig_.restart_min_viable_bp)));
+            int max_children = max_children_pre;
             if (sub_result.num_clusters > max_children) continue;
 
             // Count viable children and spill bp.
