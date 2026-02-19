@@ -19,6 +19,14 @@ static inline double hlog(double x) {
     return (x > 1e-300) ? x * std::log(x) : 0.0;
 }
 
+// Knuth multiplicative hash: maps (base, counter) → well-spread 31-bit seed.
+// Avoids RNG correlation that occurs when using sequential base+i seeds.
+static inline int spread_seed(int base, int counter) {
+    uint32_t h = static_cast<uint32_t>(base) ^ (static_cast<uint32_t>(counter) * 2654435761u);
+    h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16;
+    return static_cast<int>(h & 0x7fffffffu);
+}
+
 // Map equation delta for moving node from curr to tgt.
 // gain = -ΔL (positive = the move reduces description length = improvement).
 //
@@ -551,7 +559,7 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
     }
 
     int seed_counter = 0;
-    auto next_seed = [&]() { return base_cfg.random_seed + seed_counter++; };
+    auto next_seed = [&]() { return spread_seed(base_cfg.random_seed, seed_counter++); };
 
     CandidateSnapshot global_best;
 
@@ -723,7 +731,7 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
 
         CandidateSnapshot best;
         for (int i = 0; i < N; ++i) {
-            const int seed = effective_config.random_seed + i;
+            const int seed = spread_seed(effective_config.random_seed, i);
             auto c = evaluate_candidate(edges, n_nodes, effective_config,
                                         qconfig_.original_bandwidth, seed, false);
             const bool improved = c.score_p1 > best.score_p1;

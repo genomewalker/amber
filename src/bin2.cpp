@@ -1683,9 +1683,15 @@ int run_bin2(const Bin2Config& config) {
         // Run 0: already L2-normalized in `embeddings` (128+20+9 = 157 dims).
         consensus_builder.add_embeddings(embeddings);
 
-        // Runs 1..N-1: train fresh encoders with incremented seeds.
+        // Runs 1..N-1: train fresh encoders with hash-spread seeds.
+        // Sequential encoder_seed+i has RNG correlation; spread_seed avoids this.
+        auto spread_seed = [](int base, int i) -> int {
+            uint32_t h = static_cast<uint32_t>(base) ^ (static_cast<uint32_t>(i) * 2654435761u);
+            h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16;
+            return static_cast<int>(h & 0x7fffffffu);
+        };
         for (int run = 1; run < config.n_encoder_restarts; ++run) {
-            const int run_seed = config.encoder_seed + run;
+            const int run_seed = spread_seed(config.encoder_seed, run);
             log.info("  Encoder run " + std::to_string(run + 1) + "/" +
                      std::to_string(config.n_encoder_restarts) +
                      " (seed=" + std::to_string(run_seed) + ")");
