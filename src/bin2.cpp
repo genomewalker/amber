@@ -1738,8 +1738,10 @@ int run_bin2(const Bin2Config& config) {
                 if (!is_membership_fixed[i]) continue;
                 int sc = initial_membership[i];
                 seed_emb_idx[sc] = static_cast<int>(i);
-                for (const auto& m : contig_to_markers[contigs[i].first])
-                    seed_marker_counts[sc][m]++;
+                auto sit = contig_to_markers.find(contigs[i].first);
+                if (sit != contig_to_markers.end())
+                    for (const auto& m : sit->second)
+                        seed_marker_counts[sc][m]++;
             }
 
             // Collect non-seed marker contigs and sort most-constrained first
