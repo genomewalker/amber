@@ -627,7 +627,7 @@ void QualityLeidenBackend::run_phase3_rescue(
 
             std::cerr << "[QualityLeiden] Phase 3: node " << node
                       << " cluster " << old_label << " -> " << c
-                      << " (edge_w=" << w << ")\n";
+                      << " (edge_w=" << w_to_target << ")\n";
         }
     }
 
