@@ -2210,7 +2210,6 @@ int run_bin2(const Bin2Config& config) {
             qcfg.skip_phase2         = true;
         }
         qb->set_quality_config(qcfg);
-        qb->set_tnf_features(&tnf_features);
         qb_ptr = qb.get();
         backend = std::move(qb);
     } else if (config.use_ensemble_leiden) {
