@@ -1129,6 +1129,12 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
             intra_mean[v] = cnt > 0 ? wsum / cnt : 0.0;
         }
 
+        // Sole carriers: contigs that are the ONLY carrier of some marker in this bin.
+        // Never evict these — doing so would permanently lose those markers.
+        std::unordered_set<int> sole_carriers;
+        for (const auto& [mid, carriers] : marker_to_nodes)
+            if (carriers.size() == 1) sole_carriers.insert(carriers[0]);
+
         // For each duplicated marker, vote the weakest-connected carrier for eviction.
         std::unordered_map<int, int> evict_votes;
         for (const auto& [mid, carriers] : dup_markers) {
@@ -1138,10 +1144,11 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
             evict_votes[weakest]++;
         }
 
+        // Only evict contigs that are not sole carriers of any marker.
         std::vector<int> candidates;
-        candidates.reserve(evict_votes.size());
         for (const auto& [v, votes] : evict_votes)
-            candidates.push_back(v);
+            if (!sole_carriers.count(v)) candidates.push_back(v);
+        if (candidates.empty()) continue;
 
         // Score the remaining bin without evicted contigs.
         std::unordered_set<int> evict_set(candidates.begin(), candidates.end());
@@ -1156,15 +1163,11 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_marker(
 
         auto remaining_q = checkm_est_->estimate_bin_quality(remaining_names);
 
-        // Accept if contamination drops meaningfully without large completeness loss.
-        bool accept;
-        if (parent_q.contamination >= 10.0f) {
-            accept = remaining_q.contamination < 5.0f ||
-                     remaining_q.contamination <= parent_q.contamination - 8.0f;
-        } else {
-            accept = remaining_q.contamination <= parent_q.contamination - 1.5f &&
-                     remaining_q.completeness  >= parent_q.completeness  - 3.0f;
-        }
+        // Only accept if we actually achieve a clean bin (<5% cont) without
+        // significant completeness loss (≤5% drop). This ensures Phase 4M
+        // is net-positive: contaminated → clean, not clean → slightly less contaminated.
+        bool accept = remaining_q.contamination < 5.0f &&
+                      remaining_q.completeness >= parent_q.completeness - 5.0f;
         if (!accept) continue;
 
         int new_label = n_communities + n_split;
