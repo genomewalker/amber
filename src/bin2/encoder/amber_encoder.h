@@ -342,13 +342,6 @@ struct AmberEncoderImpl : torch::nn::Module {
 };
 TORCH_MODULE(AmberEncoder);
 
-// Compute top-1 accuracy for early stopping (COMEBin uses this)
-inline float compute_accuracy(torch::Tensor logits, torch::Tensor labels, int topk = 1) {
-    auto [values, indices] = logits.topk(topk, 1, true, true);
-    auto correct = indices.eq(labels.view({-1, 1}).expand_as(indices));
-    return correct.to(torch::kFloat).sum().item<float>() / labels.size(0) * 100.0f;
-}
-
 // COMEBin-style contrastive training with substring augmentation
 // Exact match to simclr.py and train_CLmodel.py
 class AmberTrainer {
@@ -390,50 +383,55 @@ public:
         }
     }
 
-    // COMEBin-exact InfoNCE loss (simclr.py lines 34-65)
-    std::pair<torch::Tensor, torch::Tensor> info_nce_loss(
-        torch::Tensor features, int batch_size, int n_views) {
+    // InfoNCE loss via logsumexp+gather — no masked_select, no N×N weight allocation.
+    // features:       (N, D) raw embeddings (L2-normalized internally)
+    // batch_size:     contigs per view
+    // n_views:        number of augmented views; N = n_views * batch_size
+    // need_acc:       if true, compute and return top-1 accuracy (1 GPU sync)
+    // damage_weights: optional (bs, bs) float tensor on device; applied via
+    //                 block-broadcast before temperature scaling — no 144 MB repeat()
+    // Returns: (loss_scalar, accuracy_pct)
+    std::pair<torch::Tensor, float> info_nce_loss(
+        torch::Tensor features, int batch_size, int n_views,
+        bool need_acc = false, torch::Tensor damage_weights = {}) {
 
-        // Labels: each sample matches with its corresponding sample in other views
-        // COMEBin: labels = torch.cat([torch.arange(self.args.batch_size) for i in range(self.args.n_views)], dim=0)
-        std::vector<torch::Tensor> label_parts;
-        for (int v = 0; v < n_views; v++) {
-            label_parts.push_back(torch::arange(batch_size, device_));
-        }
-        auto labels = torch::cat(label_parts, 0);
+        ensure_pos_idx(batch_size, n_views);
 
-        // COMEBin: labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
-        labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).to(torch::kFloat);
-
-        // L2 normalize features (COMEBin: features = F.normalize(features, dim=1))
+        // L2 normalize (COMEBin: features = F.normalize(features, dim=1))
         features = torch::nn::functional::normalize(features,
             torch::nn::functional::NormalizeFuncOptions().dim(1));
 
-        // Similarity matrix
-        auto similarity_matrix = torch::mm(features, features.t());
+        // Similarity matrix (N×N)
+        auto sim = torch::mm(features, features.t());
 
-        // Discard main diagonal from both labels and similarities
-        auto mask = torch::eye(labels.size(0), features.options().dtype(torch::kBool));
-        labels = labels.masked_select(~mask).view({labels.size(0), -1});
-        similarity_matrix = similarity_matrix.masked_select(~mask).view({similarity_matrix.size(0), -1});
+        // Apply damage weights via block-broadcast: avoids materialising N×N weight tensor.
+        // sim reshaped (n_views, bs, n_views, bs); cw broadcast as (1, bs, 1, bs).
+        // Positive pairs share the same contig index, so cw diagonal (= 1) leaves them intact.
+        if (damage_weights.defined()) {
+            sim.view({n_views, batch_size, n_views, batch_size})
+               .mul_(damage_weights.view({1, batch_size, 1, batch_size}));
+        }
 
-        // Select and combine positives
-        auto positives = similarity_matrix.masked_select(labels.to(torch::kBool)).view({-1, 1});
+        sim.div_(config_.temperature);
+        sim.fill_diagonal_(-1e9f);
 
-        // Select negatives
-        auto negatives = similarity_matrix.masked_select(~labels.to(torch::kBool))
-            .view({similarity_matrix.size(0), -1});
+        // Denominator: log(sum_{k≠i} exp(sim[i,k]))
+        auto log_Z = torch::logsumexp(sim, 1);            // (N,)
 
-        // Expand negatives for each positive
-        // COMEBin: negatives = negatives[:, None].expand(-1, self.args.n_views - 1, -1).flatten(0, 1)
-        negatives = negatives.index({torch::indexing::Slice(), torch::indexing::None})
-            .expand({-1, n_views - 1, -1}).flatten(0, 1);
+        // Numerator: mean sim over positives per sample
+        auto pos_sims = torch::gather(sim, 1, pos_idx_);  // (N, n_views-1)
+        auto loss = (log_Z - pos_sims.mean(1)).mean();
 
-        // Logits: [positives, negatives]
-        auto logits = torch::cat({positives, negatives}, 1) / config_.temperature;
-        auto target = torch::zeros(logits.size(0), torch::TensorOptions().dtype(torch::kLong).device(device_));
+        // Optional top-1 accuracy (1 GPU sync — call only on last batch per epoch)
+        float acc = 0.0f;
+        if (need_acc) {
+            torch::NoGradGuard ng;
+            auto pred = sim.detach().argmax(1);  // (N,)
+            acc = (pred.unsqueeze(1) == pos_idx_).any(1)
+                      .to(torch::kFloat).mean().item<float>() * 100.0f;
+        }
 
-        return {logits, target};
+        return {loss, acc};
     }
 
     // Train encoder with multi-view features (substring augmentation)
@@ -487,9 +485,6 @@ public:
                 swa_sums.push_back(torch::zeros_like(param));
         }
 
-        // Loss function
-        auto criterion = torch::nn::CrossEntropyLoss();
-
         for (int epoch = 1; epoch <= config_.epochs; epoch++) {
             encoder->train();
             auto total_loss_gpu = torch::zeros({1}, torch::TensorOptions().device(device_));
@@ -516,16 +511,15 @@ public:
                 auto all_features = torch::cat(batch_views, 0);
 
                 auto embeddings = encoder->forward(all_features);
-                auto [logits, target] = info_nce_loss(embeddings, bs, n_views);
-                auto loss = criterion(logits, target);
+                bool last_batch = (b == n_full_batches - 1);
+                auto [loss, batch_acc] = info_nce_loss(embeddings, bs, n_views, last_batch);
 
                 optimizer.zero_grad();
                 loss.backward();
                 optimizer.step();
 
                 total_loss_gpu += loss.detach();
-                if (b == n_full_batches - 1)
-                    last_accuracy = compute_accuracy(logits, target, 1);
+                if (last_batch) last_accuracy = batch_acc;
             }
 
             float epoch_loss = total_loss_gpu.item<float>() / std::max(1, n_full_batches);
@@ -651,11 +645,8 @@ public:
                 swa_sums.push_back(torch::zeros_like(param));
         }
 
-        auto criterion = torch::nn::CrossEntropyLoss();
-
         for (int epoch = 1; epoch <= config_.epochs; epoch++) {
             encoder->train();
-            // Accumulate loss on GPU — sync to CPU once per epoch, not per batch.
             auto total_loss_gpu = torch::zeros({1}, torch::TensorOptions().device(device_));
             float last_accuracy = 0;
 
@@ -670,7 +661,6 @@ public:
 
                 if (start + bs > N) break;
 
-                // Get batch indices
                 std::vector<long> batch_idx(bs);
                 std::vector<DamageProfile> batch_damage(bs);
                 for (int i = 0; i < bs; i++) {
@@ -679,33 +669,26 @@ public:
                 }
                 auto idx_tensor = torch::tensor(batch_idx).to(device_);
 
-                // Get batches from each view and concatenate
                 std::vector<torch::Tensor> batch_views;
-                for (int v = 0; v < n_views; v++) {
+                for (int v = 0; v < n_views; v++)
                     batch_views.push_back(views_gpu[v].index_select(0, idx_tensor));
-                }
                 auto all_features = torch::cat(batch_views, 0);
 
-                // Forward pass through encoder
                 auto embeddings = encoder->forward(all_features);
 
-                // L2 normalize for InfoNCE
-                embeddings = torch::nn::functional::normalize(embeddings,
-                    torch::nn::functional::NormalizeFuncOptions().dim(1));
+                // Damage weight matrix (bs×bs) — broadcast-applied inside info_nce_loss
+                auto damage_weights = damage_infonce.compute_weights(batch_damage, device_);
 
-                // Compute damage-aware InfoNCE loss
-                auto [logits, target] = damage_infonce.forward(embeddings, bs, n_views, batch_damage);
-                auto loss = criterion(logits, target);
+                bool last_batch = (b == n_full_batches - 1);
+                auto [loss, batch_acc] = info_nce_loss(
+                    embeddings, bs, n_views, last_batch, damage_weights);
 
-                // Backward
                 optimizer.zero_grad();
                 loss.backward();
                 optimizer.step();
 
                 total_loss_gpu += loss.detach();
-                // Only compute accuracy on last batch (used for early stopping)
-                if (b == n_full_batches - 1)
-                    last_accuracy = compute_accuracy(logits, target, 1);
+                if (last_batch) last_accuracy = batch_acc;
             }
 
             // Single CPU-GPU sync per epoch
@@ -797,7 +780,6 @@ public:
 
         float best_loss = std::numeric_limits<float>::max();
         int best_epoch = 0;
-        auto criterion = torch::nn::CrossEntropyLoss();
 
         // SWA state
         std::vector<torch::Tensor> swa_sums;
@@ -841,9 +823,8 @@ public:
                 auto z2 = encoder->forward(aug2);
                 auto embeddings = torch::cat({z1, z2}, 0);
 
-                // Use InfoNCE loss
-                auto [logits, target] = info_nce_loss(embeddings, bs, 2);
-                auto loss = criterion(logits, target);
+                auto [loss, loss_acc] = info_nce_loss(embeddings, bs, 2);
+                (void)loss_acc;
 
                 // Backward
                 optimizer.zero_grad();
@@ -903,6 +884,27 @@ public:
 private:
     Config config_;
     torch::Device device_;
+
+    // Cached positive-index tensor — rebuilt only when (bs, nv) changes.
+    // pos_idx_[i] = {c + v'*bs : v' in [0..nv-1], v'≠v}, where c=i%bs, v=i/bs.
+    torch::Tensor pos_idx_;
+    int cached_N_  = -1;
+    int cached_bs_ = -1;
+    int cached_nv_ = -1;
+
+    void ensure_pos_idx(int bs, int nv) {
+        int N = bs * nv;
+        if (cached_N_ == N && cached_bs_ == bs && cached_nv_ == nv) return;
+        std::vector<long> idx(static_cast<size_t>(N) * (nv - 1));
+        for (int i = 0; i < N; i++) {
+            int c = i % bs, v = i / bs, k = 0;
+            for (int vp = 0; vp < nv; vp++)
+                if (vp != v) idx[static_cast<size_t>(i) * (nv - 1) + k++] = c + vp * bs;
+        }
+        pos_idx_ = torch::from_blob(idx.data(), {N, nv - 1}, torch::kLong)
+                       .clone().to(device_);
+        cached_N_ = N; cached_bs_ = bs; cached_nv_ = nv;
+    }
 };
 
 } // namespace amber::bin2

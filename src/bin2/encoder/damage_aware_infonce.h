@@ -226,88 +226,27 @@ public:
     DamageAwareInfoNCE(float temperature = 0.1f, const DamageInfoNCEParams& params = {})
         : temperature_(temperature), params_(params) {}
 
-    // Compute loss with damage weighting
-    // features: [n_views * batch_size, embedding_dim] (L2 normalized)
-    // damage_profiles: [batch_size] (one per contig, same across views)
-    // Returns: (logits, target) for CrossEntropyLoss
-    std::pair<torch::Tensor, torch::Tensor> forward(
-        torch::Tensor features,
-        int batch_size,
-        int n_views,
-        const std::vector<DamageProfile>& damage_profiles) {
+    // Compute bs×bs damage weight matrix on the target device.
+    // w[ci][cj] = damage_compatibility(profiles[ci], profiles[cj]); diagonal = 1.
+    // Returns a (bs, bs) float32 tensor on `device`.
+    torch::Tensor compute_weights(
+        const std::vector<DamageProfile>& damage_profiles,
+        torch::Device device) const {
 
-        auto device = features.device();
-        int N = n_views * batch_size;
-
-        // Labels: each sample matches with its corresponding sample in other views
-        std::vector<torch::Tensor> label_parts;
-        for (int v = 0; v < n_views; v++) {
-            label_parts.push_back(torch::arange(batch_size, device));
-        }
-        auto labels = torch::cat(label_parts, 0);
-        labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).to(torch::kFloat);
-
-        // Similarity matrix
-        auto similarity_matrix = torch::mm(features, features.t());
-
-        // Discard main diagonal
-        auto mask = torch::eye(N, features.options().dtype(torch::kBool));
-        labels = labels.masked_select(~mask).view({N, -1});
-        similarity_matrix = similarity_matrix.masked_select(~mask).view({N, -1});
-
-        // Compute damage weights for negatives (only if enabled and profiles provided).
-        // Weights depend only on contig identity, not on view — weight(view_i, view_j)
-        // = f(damage[i % bs], damage[j % bs]).  Compute the bs×bs contig-level matrix
-        // (36× cheaper than the naive N×N view-level matrix), upload 4MB instead of
-        // 150MB, then tile on GPU.
-        torch::Tensor neg_weights;
-        if (params_.enabled && !damage_profiles.empty()) {
-            // Step 1: bs×bs contig-level weights on CPU (includes diagonal = 1.0)
-            std::vector<float> cw(batch_size * batch_size, 1.0f);
+        int bs = static_cast<int>(damage_profiles.size());
+        std::vector<float> cw(static_cast<size_t>(bs) * bs, 1.0f);
+        if (params_.enabled) {
             #pragma omp parallel for schedule(static)
-            for (int ci = 0; ci < batch_size; ci++) {
-                for (int cj = 0; cj < batch_size; cj++) {
+            for (int ci = 0; ci < bs; ci++) {
+                for (int cj = 0; cj < bs; cj++) {
                     if (ci == cj) continue;
-                    cw[ci * batch_size + cj] = compute_damage_compatibility(
+                    cw[ci * bs + cj] = compute_damage_compatibility(
                         damage_profiles[ci], damage_profiles[cj], params_);
                 }
             }
-
-            // Step 2: upload bs×bs (4 MB), tile to N×N on GPU, apply diagonal mask
-            auto cw_gpu = torch::from_blob(cw.data(), {batch_size, batch_size},
-                torch::kFloat32).clone().to(device);
-            auto cw_tiled = cw_gpu.repeat({n_views, n_views});           // (N, N)
-            auto diag_mask = torch::eye(N, torch::TensorOptions()
-                .dtype(torch::kBool).device(device));
-            neg_weights = cw_tiled.masked_select(~diag_mask).view({N, N - 1});
-        } else {
-            neg_weights = torch::ones({N, N - 1}, device);
         }
-
-        // Select positives (same contig, different views)
-        auto positives = similarity_matrix.masked_select(labels.to(torch::kBool)).view({-1, 1});
-
-        // Select negatives (different contigs)
-        auto neg_mask = ~labels.to(torch::kBool);
-        auto negatives = similarity_matrix.masked_select(neg_mask).view({N, -1});
-        auto neg_w = neg_weights.masked_select(neg_mask).view({N, -1});
-
-        // Apply damage weighting to negatives
-        negatives = negatives * neg_w;
-
-        // Expand negatives for each positive
-        negatives = negatives.index({torch::indexing::Slice(), torch::indexing::None})
-            .expand({-1, n_views - 1, -1}).flatten(0, 1);
-
-        // Logits: [positives, negatives]
-        auto logits = torch::cat({positives, negatives}, 1) / temperature_;
-        auto target = torch::zeros(logits.size(0),
-            torch::TensorOptions().dtype(torch::kLong).device(device));
-
-        // Optionally weight whole loss by anchor confidence
-        // (done externally by caller if needed)
-
-        return {logits, target};
+        return torch::from_blob(cw.data(), {bs, bs}, torch::kFloat32)
+                   .clone().to(device);
     }
 
 private:
