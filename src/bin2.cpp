@@ -2178,6 +2178,7 @@ int run_bin2(const Bin2Config& config) {
     }
 
     std::unique_ptr<bin2::ILeidenBackend> backend;
+    bin2::QualityLeidenBackend* qb_ptr = nullptr;
     if ((config.use_quality_leiden || config.n_leiden_restarts > 1)
             && marker_index.num_marker_contigs() > 0) {
         const bool plain_restarts = !config.use_quality_leiden && config.n_leiden_restarts > 1;
@@ -2209,6 +2210,7 @@ int run_bin2(const Bin2Config& config) {
             qcfg.skip_phase2         = true;
         }
         qb->set_quality_config(qcfg);
+        qb_ptr = qb.get();
         backend = std::move(qb);
     } else if (config.use_ensemble_leiden) {
         log.info("Using EnsembleLeiden (" + std::to_string(config.n_ensemble_runs) +
@@ -2236,6 +2238,15 @@ int run_bin2(const Bin2Config& config) {
     auto result = backend->cluster(edges, static_cast<int>(contigs.size()), leiden_config);
 
     std::vector<int> labels = result.labels;
+
+    // Phase 4: targeted decontamination — runs for all configs that have the
+    // QualityLeidenBackend (restarts or quality-leiden) and CheckM marker sets.
+    // Splits bins >= 85% completeness with > 5.5% contamination.
+    if (qb_ptr && bin2_checkm_est.has_marker_sets()) {
+        log.info("Phase 4: targeted decontamination (min_completeness=85%)");
+        int n_after = qb_ptr->decontaminate(labels, leiden_config, 85.0f);
+        log.info("Phase 4 done: " + std::to_string(n_after) + " clusters");
+    }
     log.info("Leiden found " + std::to_string(result.num_clusters) + " clusters (modularity=" +
              std::to_string(result.modularity) + ")");
 

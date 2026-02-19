@@ -998,18 +998,6 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
         run_phase3_rescue(labels, n_communities);
     }
 
-    // Phase 4: targeted decontamination for HQ-completeness bins above 5% contamination.
-    // Runs regardless of skip_phase2 — Phase 3 may have just pushed bins to >=85%
-    // completeness, and those bins need contamination splitting, not fragmentation.
-    // Only triggers on bins >= 85% CheckM completeness AND > 5.5% contamination.
-    if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
-        n_communities = compact_labels(labels);
-        auto [p4_labels, p4_nc] = run_phase2(std::move(labels), n_communities,
-                                              effective_config, 85.0f);
-        labels        = std::move(p4_labels);
-        n_communities = p4_nc;
-    }
-
     // Compact labels and compute final modularity
     n_communities = compact_labels(labels);
     double modularity = 0.0;  // restart path doesn't track a single modularity value
@@ -1023,6 +1011,17 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
               << " clusters, modularity=" << modularity << "\n";
 
     return result;
+}
+
+int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
+                                        const LeidenConfig& config,
+                                        float min_completeness) {
+    if (!checkm_est_ || !node_names_ || !checkm_est_->has_marker_sets())
+        return compact_labels(labels);
+    int n = compact_labels(labels);
+    auto [new_labels, new_n] = run_phase2(std::move(labels), n, config, min_completeness);
+    labels = std::move(new_labels);
+    return new_n;
 }
 
 bool QualityLeidenBackend::move_nodes_fast_quality(
