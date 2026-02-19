@@ -69,6 +69,11 @@ struct QualityLeidenConfig {
     float res_search_min = 0.5f;
     float res_search_max = 50.0f;
 
+    // Skip Phase 2 contamination splitting entirely (both during candidate
+    // evaluation and in the final cluster() output). Set when using the
+    // bandwidth restart search WITHOUT --quality-leiden (plain Leiden restarts).
+    bool skip_phase2 = false;
+
     int n_threads = 0;  // 0 = use hardware concurrency
 
     // Best-of-K bandwidth × seed restart search.

@@ -521,7 +521,7 @@ CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
 #endif
     snap.score_p1 = scg_score_labels(snap.p1_result.labels, snap.p1_result.num_clusters);
 
-    if (run_phase2_for_score) {
+    if (run_phase2_for_score && !qconfig_.skip_phase2) {
         auto [p2_labels, p2_nc] = run_phase2(snap.p1_result.labels, snap.p1_result.num_clusters, trial);
         snap.has_p2             = true;
         snap.labels_after_p2    = std::move(p2_labels);
@@ -758,8 +758,9 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     std::cerr << "[QualityLeiden-MT] " << marker_index_->num_marker_contigs()
               << " contigs have markers across " << n_communities << " clusters\n";
 
-    // Phase 2: contamination splitting (skip if already done by restart search).
-    if (!phase2_already_done) {
+    // Phase 2: contamination splitting (skip if already done by restart search,
+    // or if skip_phase2 is set, e.g., plain bandwidth restarts without --quality-leiden).
+    if (!phase2_already_done && !qconfig_.skip_phase2) {
         auto [p2_labels, p2_nc] = run_phase2(std::move(labels), n_communities, effective_config);
         labels        = std::move(p2_labels);
         n_communities = p2_nc;

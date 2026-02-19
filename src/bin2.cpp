@@ -2008,13 +2008,14 @@ int run_bin2(const Bin2Config& config) {
         leiden_config.is_membership_fixed = is_membership_fixed;
     }
 
-    // Build marker index and CheckM estimator if quality Leiden is requested.
-    // Both must outlive the backend, so they are declared at this scope.
+    // Build marker index and CheckM estimator if quality Leiden or bandwidth
+    // restarts are requested. Both must outlive the backend.
     bin2::MarkerIndex marker_index;
     std::vector<std::string> bin2_contig_names;
     bin2::CheckMQualityEstimator bin2_checkm_est;
 
-    if (config.use_quality_leiden && !marker_hits_by_contig.empty()) {
+    const bool need_marker_index = (config.use_quality_leiden || config.n_leiden_restarts > 1);
+    if (need_marker_index && !marker_hits_by_contig.empty()) {
         bin2_contig_names.reserve(contigs.size());
         for (const auto& [name, seq] : contigs)
             bin2_contig_names.push_back(name);
@@ -2046,20 +2047,34 @@ int run_bin2(const Bin2Config& config) {
     }
 
     std::unique_ptr<bin2::ILeidenBackend> backend;
-    if (config.use_quality_leiden && marker_index.num_marker_contigs() > 0) {
-        log.info("Using QualityLeiden (alpha=" + std::to_string(config.quality_alpha) + ")");
+    if ((config.use_quality_leiden || config.n_leiden_restarts > 1)
+            && marker_index.num_marker_contigs() > 0) {
+        const bool plain_restarts = !config.use_quality_leiden && config.n_leiden_restarts > 1;
+        if (plain_restarts)
+            log.info("Using bandwidth restart search over plain Leiden (K="
+                     + std::to_string(config.n_leiden_restarts) + ", no marker penalization)");
+        else
+            log.info("Using QualityLeiden (alpha=" + std::to_string(config.quality_alpha) + ")");
+
         auto qb = std::make_unique<bin2::QualityLeidenBackend>();
         qb->set_marker_index(&marker_index);
         if (bin2_checkm_est.has_marker_sets()) {
             qb->set_checkm_estimator(&bin2_checkm_est, &bin2_contig_names);
-            log.info("QualityLeiden: CheckM colocation scoring enabled");
+            if (!plain_restarts)
+                log.info("QualityLeiden: CheckM colocation scoring enabled");
         }
         bin2::QualityLeidenConfig qcfg;
-        qcfg.alpha = config.quality_alpha;
-        qcfg.use_map_equation = config.use_map_equation;
-        qcfg.n_leiden_restarts = config.n_leiden_restarts;
-        qcfg.original_bandwidth = config.bandwidth;
-        qcfg.n_threads = config.threads;
+        qcfg.alpha               = config.quality_alpha;
+        qcfg.use_map_equation    = config.use_map_equation;
+        qcfg.n_leiden_restarts   = config.n_leiden_restarts;
+        qcfg.original_bandwidth  = config.bandwidth;
+        qcfg.n_threads           = config.threads;
+        if (plain_restarts) {
+            // Plain bandwidth restarts: no marker edge penalization, no Phase 2.
+            // The SCG score is still used to guide bandwidth arm selection.
+            qcfg.marker_edge_penalty = 0.0f;
+            qcfg.skip_phase2         = true;
+        }
         qb->set_quality_config(qcfg);
         backend = std::move(qb);
     } else if (config.use_ensemble_leiden) {

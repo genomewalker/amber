@@ -270,7 +270,8 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--leiden-restarts" && i + 1 < argc) {
             config.n_leiden_restarts = std::stoi(argv[++i]);
-            if (config.n_leiden_restarts > 1) config.use_quality_leiden = true;
+            // Does NOT imply --quality-leiden: restarts run bandwidth sweep over
+            // plain Leiden. Use --quality-leiden --leiden-restarts N to combine both.
         }
         else if (arg == "--quality-alpha" && i + 1 < argc) {
             config.quality_alpha = std::stof(argv[++i]);
