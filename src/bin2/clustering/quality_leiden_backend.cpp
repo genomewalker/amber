@@ -312,7 +312,8 @@ float QualityLeidenBackend::calibrate_resolution(
 std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
     std::vector<int> labels,
     int n_communities,
-    const LeidenConfig& effective_config) {
+    const LeidenConfig& effective_config,
+    float min_completeness) {
 
     std::vector<CommQuality> comm_q;
     init_comm_quality(labels, n_communities, comm_q);
@@ -343,6 +344,8 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase2(
             parent_q = checkm_est_->estimate_bin_quality(cluster_names);
             // +0.5 hysteresis to avoid splitting near-clean clusters under estimator noise
             if (parent_q.contamination <= 5.5f) continue;
+            // Targeted mode: skip bins below the completeness floor
+            if (min_completeness > 0.0f && parent_q.completeness < min_completeness) continue;
         } else {
             if (comm_q[c].dup_excess == 0) continue;
         }
@@ -993,6 +996,18 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
         n_communities = compact_labels(labels);
         run_phase3_rescue(labels, n_communities);
+    }
+
+    // Phase 4: targeted decontamination for HQ-completeness bins above 5% contamination.
+    // Runs regardless of skip_phase2 — Phase 3 may have just pushed bins to >=85%
+    // completeness, and those bins need contamination splitting, not fragmentation.
+    // Only triggers on bins >= 85% CheckM completeness AND > 5.5% contamination.
+    if (checkm_est_ && node_names_ && checkm_est_->has_marker_sets()) {
+        n_communities = compact_labels(labels);
+        auto [p4_labels, p4_nc] = run_phase2(std::move(labels), n_communities,
+                                              effective_config, 85.0f);
+        labels        = std::move(p4_labels);
+        n_communities = p4_nc;
     }
 
     // Compact labels and compute final modularity

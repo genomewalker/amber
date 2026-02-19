@@ -309,10 +309,12 @@ protected:
     // Run Phase 2 contamination splitting on a label vector.
     // Returns {updated_labels, updated_n_communities}.
     // Requires build_adjacency() to have been called.
+    // min_completeness: skip bins with CheckM completeness < this (0 = all contaminated bins).
     std::pair<std::vector<int>, int> run_phase2(
         std::vector<int> labels,
         int n_communities,
-        const LeidenConfig& effective_config);
+        const LeidenConfig& effective_config,
+        float min_completeness = 0.0f);
 
     // Phase 3: targeted rescue for near-HQ bins (CheckM path only).
     // For each bin 75-90% completeness / <5% contamination (internal CheckM),
