@@ -975,26 +975,50 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
                   << " clusters=" << best.p1_result.num_clusters
                   << " score=" << best.score_p1 << "\n";
 
-        // Consensus Leiden: build co-occurrence-weighted edges from all N partitions.
-        // Partition-boundary contigs (contaminating genomes oscillating between the
-        // primary bin and garbage cluster) get co_frac << 1 → edges down-weighted
-        // → Leiden reliably finds the correct cut regardless of seed.
-        // bw_ratio=1 since all sweeps used the same bandwidth.
+        // Consensus Leiden: modal partition as initial_membership on ORIGINAL edges.
+        // Each node is assigned to its most-frequent cluster across N partitions.
+        // Boundary contigs that oscillate between the primary bin and a garbage cluster
+        // will have their modal cluster determined by majority vote — if more seeds
+        // place them in the garbage cluster, they start there and Leiden keeps them
+        // separated. Running on ORIGINAL (unscaled) edges preserves the modularity
+        // landscape at the calibrated resolution=5.0, avoiding over-fragmentation.
         const int n_part = static_cast<int>(all_partitions.size());
-        std::vector<WeightedEdge> consensus_edges;
-        consensus_edges.reserve(edges.size());
-        for (const auto& e : edges) {
-            int co_count = 0;
-            for (const auto& part : all_partitions)
-                if (part[e.u] == part[e.v]) co_count++;
-            if (co_count == 0) continue;
-            float w = e.w * (static_cast<float>(co_count) / n_part);
-            consensus_edges.push_back({e.u, e.v, w});
+
+        // Vote counting: for each node, count occurrences of each cluster ID.
+        std::vector<std::unordered_map<int,int>> vote_counts(n_nodes);
+        for (const auto& part : all_partitions)
+            for (int v = 0; v < n_nodes; ++v)
+                vote_counts[v][part[v]]++;
+
+        // Pick modal (most-voted) cluster per node; break ties by lower cluster ID.
+        std::vector<int> modal_labels(n_nodes);
+        for (int v = 0; v < n_nodes; ++v) {
+            int best_c = -1, best_cnt = 0;
+            for (const auto& [c, cnt] : vote_counts[v]) {
+                if (cnt > best_cnt || (cnt == best_cnt && c < best_c)) {
+                    best_c = c; best_cnt = cnt;
+                }
+            }
+            modal_labels[v] = best_c;
         }
-        std::cerr << "[QualityLeiden] Consensus: " << n_part << " partitions, "
-                  << consensus_edges.size() << "/" << edges.size() << " edges retained...\n";
+
+        // Compact-relabel cluster IDs to 0,1,2,...
+        {
+            std::unordered_map<int,int> remap;
+            int next_id = 0;
+            for (int v = 0; v < n_nodes; ++v) {
+                auto [it, inserted] = remap.emplace(modal_labels[v], next_id);
+                if (inserted) ++next_id;
+                modal_labels[v] = it->second;
+            }
+        }
+        const int modal_clusters = *std::max_element(modal_labels.begin(), modal_labels.end()) + 1;
+        std::cerr << "[QualityLeiden] Consensus modal init: " << n_part
+                  << " partitions → " << modal_clusters << " modal clusters\n";
 
         LeidenConfig consensus_cfg = effective_config;
+        consensus_cfg.use_initial_membership = true;
+        consensus_cfg.initial_membership = modal_labels;
         for (int s = 0; s < 3; ++s) {
             consensus_cfg.random_seed = spread_seed(effective_config.random_seed, 2000 + s);
             CandidateSnapshot c;
@@ -1004,11 +1028,11 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
 #ifdef USE_LIBLEIDENALG
             LibLeidenalgBackend cl;
             cl.set_seed(consensus_cfg.random_seed);
-            c.p1_result = cl.cluster(consensus_edges, n_nodes, consensus_cfg);
+            c.p1_result = cl.cluster(edges, n_nodes, consensus_cfg);
 #else
             LeidenBackend cl;
             cl.set_seed(consensus_cfg.random_seed);
-            c.p1_result = cl.cluster(consensus_edges, n_nodes, consensus_cfg);
+            c.p1_result = cl.cluster(edges, n_nodes, consensus_cfg);
 #endif
             c.score_p1 = scg_score_labels(c.p1_result.labels, c.p1_result.num_clusters);
             std::cerr << "  [consensus s=" << s << "] clusters=" << c.p1_result.num_clusters
