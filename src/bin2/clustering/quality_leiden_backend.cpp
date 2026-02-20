@@ -578,48 +578,66 @@ void QualityLeidenBackend::run_phase3_rescue(
             }
         }
 
-        // A candidate is safe to recruit if ALL its markers are absent from c
-        // (adds completeness without any contamination risk).
-        std::vector<std::pair<double, int>> candidates;
+        // Candidates: contigs whose net marker contribution is positive (more new
+        // markers added than duplicates created). Pure-missing contigs are preferred
+        // (tier 0); net-positive mixed contigs are also accepted (tier 1) provided
+        // the resulting contamination estimate stays < 5%.
+        std::vector<std::tuple<int, double, int>> candidates; // (tier, w, node)
         for (const auto& [node, w] : border_weight) {
-            bool adds_missing = false, adds_dup = false;
+            int n_missing = 0, n_dup = 0;
             for (const auto& me : marker_index_->get_markers(node)) {
-                if (comm_q[c].cnt[me.id] == 0) adds_missing = true;
-                else                            adds_dup = true;
+                if (comm_q[c].cnt[me.id] == 0) ++n_missing;
+                else                            ++n_dup;
             }
-            if (adds_missing && !adds_dup)
-                candidates.push_back({w, node});
+            if (n_missing == 0) continue;  // adds nothing new
+            int tier = (n_dup == 0) ? 0 : 1;
+            candidates.push_back({tier, w, node});
         }
 
-        // Process candidates in descending kNN edge-weight order.
+        // Sort: pure-missing first (tier 0), then mixed (tier 1); within tier by weight.
         std::sort(candidates.begin(), candidates.end(),
-                  [](const auto& a, const auto& b) { return a.first > b.first; });
+                  [](const auto& a, const auto& b) {
+                      if (std::get<0>(a) != std::get<0>(b)) return std::get<0>(a) < std::get<0>(b);
+                      return std::get<1>(a) > std::get<1>(b);
+                  });
 
-        for (const auto& [w_to_target, node] : candidates) {
+        for (const auto& [tier, w_to_target, node] : candidates) {
             int old_label = labels[node];
+
+            // For mixed-marker candidates (tier 1): build the hypothetical cluster
+            // name list and run a full quality estimate to verify contamination
+            // stays below 5% before committing the move.
+            if (tier == 1) {
+                std::vector<std::string> hyp_names;
+                hyp_names.reserve(cluster_nodes[c].size() + 1);
+                for (int v : cluster_nodes[c]) hyp_names.push_back((*node_names_)[v]);
+                hyp_names.push_back((*node_names_)[node]);
+                auto q = checkm_est_->estimate_bin_quality(hyp_names);
+                if (q.contamination >= 5.0f) continue;
+            }
 
             // Donor protection: don't steal from large viable bins unless:
             // (a) the contig is duplicated in the donor (removes contamination), OR
             // (b) the contig's kNN affinity to the target strongly exceeds its
             //     affinity to its current bin (it almost certainly belongs here).
+            // Threshold lowered to 2× for near-HQ rescue (was 3×).
             if (cluster_bp[old_label] >= qconfig_.restart_min_viable_bp) {
                 bool removes_donor_dup = false;
                 for (const auto& me : marker_index_->get_markers(node)) {
                     if (comm_q[old_label].cnt[me.id] > 1) { removes_donor_dup = true; break; }
                 }
                 if (!removes_donor_dup) {
-                    // Compute affinity to current bin; allow steal if target >> current.
                     double w_to_current = 0.0;
                     for (const auto& [nbr, ew] : adj_[node])
                         if (labels[nbr] == old_label) w_to_current += ew;
-                    if (w_to_target <= 3.0 * w_to_current) continue;
+                    if (w_to_target <= 2.0 * w_to_current) continue;
                 }
             }
 
             // Accept the move.
             labels[node] = c;
             update_comm_quality(node, old_label, c, comm_q);
-            // Keep cluster_nodes consistent for subsequent iterations.
+            // Keep cluster_nodes consistent for subsequent rescue iterations.
             auto& donor = cluster_nodes[old_label];
             donor.erase(std::find(donor.begin(), donor.end(), node));
             cluster_nodes[c].push_back(node);
@@ -627,7 +645,8 @@ void QualityLeidenBackend::run_phase3_rescue(
 
             std::cerr << "[QualityLeiden] Phase 3: node " << node
                       << " cluster " << old_label << " -> " << c
-                      << " (edge_w=" << w_to_target << ")\n";
+                      << " (edge_w=" << w_to_target
+                      << (tier == 1 ? ", mixed)\n" : ")\n");
         }
     }
 
