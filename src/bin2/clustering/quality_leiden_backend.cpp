@@ -550,21 +550,15 @@ void QualityLeidenBackend::run_phase3_rescue(
     // Identify near-HQ rescue targets: 75-90% internal completeness, <5% cont.
     // 75% internal ≈ CheckM2 90% (empirically calibrated); these bins are just
     // below the threshold and could be pushed over by recruiting 1-2 contigs.
-    struct RescueTarget { int c; int n_markers_est; };
-    std::vector<RescueTarget> rescue_targets;
+    std::vector<int> rescue_targets;
     for (int c = 0; c < n_communities; ++c) {
         if (cluster_bp[c] < qconfig_.restart_min_viable_bp) continue;
         std::vector<std::string> names;
         names.reserve(cluster_nodes[c].size());
         for (int v : cluster_nodes[c]) names.push_back((*node_names_)[v]);
         auto q = checkm_est_->estimate_bin_quality(names);
-        if (q.completeness >= 75.0f && q.completeness < 90.0f && q.contamination < 5.0f) {
-            // Estimate total expected markers from completeness and present count.
-            // Used for cheap forward-simulation of contamination impact.
-            int n_markers_est = (q.completeness > 0.1f && comm_q[c].present > 0) ?
-                static_cast<int>(std::round(comm_q[c].present * 100.0f / q.completeness)) : 206;
-            rescue_targets.push_back({c, n_markers_est});
-        }
+        if (q.completeness >= 75.0f && q.completeness < 90.0f && q.contamination < 5.0f)
+            rescue_targets.push_back(c);
     }
 
     if (rescue_targets.empty()) {
@@ -574,7 +568,7 @@ void QualityLeidenBackend::run_phase3_rescue(
     std::cerr << "[QualityLeiden] Phase 3: " << rescue_targets.size() << " near-HQ rescue targets\n";
 
     int n_moves = 0;
-    for (const auto& [c, n_markers_est] : rescue_targets) {
+    for (int c : rescue_targets) {
         // Collect marker-bearing border nodes: not in c, adjacent to c via kNN.
         std::unordered_map<int, double> border_weight;
         for (int v : cluster_nodes[c]) {
@@ -584,23 +578,17 @@ void QualityLeidenBackend::run_phase3_rescue(
             }
         }
 
-        // Accept candidates that add at least one missing marker and whose
-        // recruitment keeps the proxy contamination below 4.5%.
-        // Forward simulation uses comm_q arithmetic (O(markers) per candidate).
+        // A candidate is safe to recruit if ALL its markers are absent from c
+        // (adds completeness without any contamination risk).
         std::vector<std::pair<double, int>> candidates;
         for (const auto& [node, w] : border_weight) {
-            int delta_present = 0, delta_dup_excess = 0;
+            bool adds_missing = false, adds_dup = false;
             for (const auto& me : marker_index_->get_markers(node)) {
-                int old_cnt = comm_q[c].cnt[me.id];
-                int k = me.copy_count;
-                if (old_cnt == 0) delta_present++;
-                delta_dup_excess += std::max(0, old_cnt + k - 1) - std::max(0, old_cnt - 1);
+                if (comm_q[c].cnt[me.id] == 0) adds_missing = true;
+                else                            adds_dup = true;
             }
-            if (delta_present == 0) continue;  // no new markers gained
-            float proxy_cont = (n_markers_est > 0) ?
-                (comm_q[c].dup_excess + delta_dup_excess) * 100.0f / n_markers_est : 100.0f;
-            if (proxy_cont >= 4.5f) continue;   // would push contamination too high
-            candidates.push_back({w, node});
+            if (adds_missing && !adds_dup)
+                candidates.push_back({w, node});
         }
 
         // Process candidates in descending kNN edge-weight order.
@@ -613,26 +601,25 @@ void QualityLeidenBackend::run_phase3_rescue(
             // Donor protection: don't steal from large viable bins unless:
             // (a) the contig is duplicated in the donor (removes contamination), OR
             // (b) the contig's kNN affinity to the target strongly exceeds its
-            //     affinity to its current bin.
-            // Threshold relaxed to 2× (was 3×) since contamination is now gated
-            // by the proxy forward-simulation above.
+            //     affinity to its current bin (it almost certainly belongs here).
             if (cluster_bp[old_label] >= qconfig_.restart_min_viable_bp) {
                 bool removes_donor_dup = false;
                 for (const auto& me : marker_index_->get_markers(node)) {
                     if (comm_q[old_label].cnt[me.id] > 1) { removes_donor_dup = true; break; }
                 }
                 if (!removes_donor_dup) {
+                    // Compute affinity to current bin; allow steal if target >> current.
                     double w_to_current = 0.0;
                     for (const auto& [nbr, ew] : adj_[node])
                         if (labels[nbr] == old_label) w_to_current += ew;
-                    if (w_to_target <= 2.0 * w_to_current) continue;
+                    if (w_to_target <= 3.0 * w_to_current) continue;
                 }
             }
 
-            // Accept the move. comm_q is updated so subsequent candidates in this
-            // bin see the running contamination state.
+            // Accept the move.
             labels[node] = c;
             update_comm_quality(node, old_label, c, comm_q);
+            // Keep cluster_nodes consistent for subsequent iterations.
             auto& donor = cluster_nodes[old_label];
             donor.erase(std::find(donor.begin(), donor.end(), node));
             cluster_nodes[c].push_back(node);
