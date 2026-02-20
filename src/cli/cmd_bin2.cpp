@@ -74,6 +74,7 @@ struct Bin2Config {
     // Phase 4E tuning
     int phase4e_max_hops = 2;
     float phase4e_vote_threshold = 0.5f;
+    float phase4e_entry_contamination = 3.0f;
     // Gradient clipping and EMA
     float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
     bool use_ema = false;              // EMA of encoder weights for final embeddings
@@ -181,6 +182,9 @@ int cmd_bin2(int argc, char** argv) {
                       << "Phase 4E Tuning:\n"
                       << "  --phase4e-max-hops N   kNN expansion hops for extended neighborhood (default: 2)\n"
                       << "  --phase4e-vote-threshold F  Min fraction of good cuts for eviction (default: 0.5)\n"
+                      << "  --phase4e-entry-cont F Internal contamination % threshold to attempt Phase 4E\n"
+                      << "                         (default: 3.0; lower than CheckM2 5% because internal\n"
+                      << "                          estimator underestimates: ~3% internal ≈ ~6% CheckM2)\n"
                       << "Encoder Regularization:\n"
                       << "  --grad-clip FLOAT      Global gradient norm clip (default: 1.0, 0=disabled)\n"
                       << "  --encoder-ema          Enable EMA of encoder weights for final embeddings\n"
@@ -360,6 +364,9 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--phase4e-vote-threshold" && i + 1 < argc) {
             config.phase4e_vote_threshold = std::stof(argv[++i]);
+        }
+        else if (arg == "--phase4e-entry-cont" && i + 1 < argc) {
+            config.phase4e_entry_contamination = std::stof(argv[++i]);
         }
         else if (arg == "--grad-clip" && i + 1 < argc) {
             config.grad_clip = std::stof(argv[++i]);

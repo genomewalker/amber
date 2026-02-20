@@ -109,6 +109,9 @@ struct QualityLeidenConfig {
     // Phase 4E: extended-neighborhood eviction tuning
     int phase4e_max_hops = 2;             // kNN expansion hops (1 = current, 2 = include 2-hop neighbors)
     float phase4e_vote_threshold = 0.5f;  // Min fraction of good cuts a contig must appear in to be evicted
+    float phase4e_entry_contamination = 3.0f; // Internal-estimator contamination % to attempt Phase 4E
+                                              // (lower than CheckM2's 5% because our internal estimator
+                                              // underestimates: ~3% internal ≈ ~6% CheckM2)
 };
 
 // Snapshot of one (bandwidth, seed) candidate from the restart search.

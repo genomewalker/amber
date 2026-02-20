@@ -134,6 +134,7 @@ struct Bin2Config {
     // Phase 4E tuning
     int phase4e_max_hops = 2;
     float phase4e_vote_threshold = 0.5f;
+    float phase4e_entry_contamination = 3.0f;
     // Gradient clipping and EMA
     float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
     bool use_ema = false;              // EMA of encoder weights for final embeddings
@@ -2341,8 +2342,9 @@ int run_bin2(const Bin2Config& config) {
         qcfg.restart_stage1_bw   = config.restart_stage1_bw;
         qcfg.restart_stage1_res  = config.restart_stage1_res;
         qcfg.n_threads           = config.threads;
-        qcfg.phase4e_max_hops        = config.phase4e_max_hops;
-        qcfg.phase4e_vote_threshold  = config.phase4e_vote_threshold;
+        qcfg.phase4e_max_hops              = config.phase4e_max_hops;
+        qcfg.phase4e_vote_threshold        = config.phase4e_vote_threshold;
+        qcfg.phase4e_entry_contamination   = config.phase4e_entry_contamination;
         if (plain_restarts) {
             // Plain bandwidth restarts: no marker edge penalization, no Phase 2.
             // The SCG score is still used to guide bandwidth arm selection.

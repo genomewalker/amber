@@ -1484,7 +1484,7 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
         cluster_names.reserve(nodes.size());
         for (int v : nodes) cluster_names.push_back((*node_names_)[v]);
         CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
-        if (parent_q.contamination <= 5.0f) continue;
+        if (parent_q.contamination <= qconfig_.phase4e_entry_contamination) continue;
 
         // Extended node set: bin contigs + multi-hop kNN neighbors.
         // External neighbors serve as anchors: contaminating contigs have edges
