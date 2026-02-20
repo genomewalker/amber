@@ -2052,7 +2052,7 @@ int run_bin2(const Bin2Config& config) {
     // Per-bin damage summary: pool raw counts, re-fit damage model, classify
     if (!damage_profiles.empty()) {
         std::ofstream dmg_out(config.output_dir + "/damage_per_bin.tsv");
-        dmg_out << "bin_name\tp_ancient_mean\tlambda5\tlambda3\tamp5\tamp3\tct_1p\tga_1p\tdamage_class\n";
+        dmg_out << "bin\tp_ancient\tlambda5\tlambda3\tamplitude_5p\tamplitude_3p\tct_1p\tga_1p\tdamage_class\n";
         int dmg_bin_idx = 0;
         for (auto& [cluster_id, members] : clusters) {
             size_t bin_bp = 0;
@@ -2093,7 +2093,7 @@ int run_bin2(const Bin2Config& config) {
 
             dmg_out << "bin_" << dmg_bin_idx << "\t"
                     << std::fixed << std::setprecision(6) << p_anc << "\t"
-                    << model.curve_5p.lambda    << "\t" << model.curve_3p.lambda    << "\t"
+                    << model.curve_5p.lambda << "\t" << model.curve_3p.lambda << "\t"
                     << model.curve_5p.amplitude << "\t" << model.curve_3p.amplitude << "\t"
                     << ct1 << "\t" << ga1 << "\t" << cls << "\n";
             dmg_bin_idx++;
