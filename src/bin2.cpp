@@ -704,23 +704,22 @@ int run_bin2(const Bin2Config& config) {
 
     std::filesystem::create_directories(config.output_dir);
 
-    // Clean old bin files from previous runs
+    // Remove only bin_*.fa files from previous runs (not other user data in the directory)
     for (const auto& entry : std::filesystem::directory_iterator(config.output_dir)) {
-        if (entry.path().extension() == ".fa" || entry.path().extension() == ".fasta") {
-            std::filesystem::remove(entry.path());
+        const auto& p = entry.path();
+        const auto stem = p.stem().string();
+        if ((p.extension() == ".fa" || p.extension() == ".fasta") &&
+            stem.rfind("bin_", 0) == 0) {
+            std::filesystem::remove(p);
         }
     }
 
     // ========================================
     // CLUSTERING-ONLY MODE (pre-computed embeddings)
     // ========================================
-    std::cerr << "[DEBUG] Checking embeddings_file: '" << config.embeddings_file << "'\n" << std::flush;
     if (!config.embeddings_file.empty()) {
-        std::cerr << "[DEBUG] Embeddings mode\n" << std::flush;
         log.info("Loading pre-computed embeddings from " + config.embeddings_file);
-        std::cerr << "[DEBUG] Before loading\n" << std::flush;
         auto [emb_names, embeddings] = load_embeddings_tsv(config.embeddings_file);
-        std::cerr << "[DEBUG] Loaded " << emb_names.size() << " embeddings\n" << std::flush;
         if (embeddings.empty() || embeddings[0].empty()) {
             std::cerr << "Error: No embeddings loaded or empty dimensions\n";
             return 1;
@@ -1217,10 +1216,8 @@ int run_bin2(const Bin2Config& config) {
     // COMEBin-compatible encoder with substring augmentation
     log.info("Training AMBER contrastive encoder with substring augmentation");
 
-        // Temperature: COMEBin default is 0.1 (NOT N50-dependent!)
-        // Previous code used N50-dependent (0.07/>10kb, 0.15/<=10kb) but that was wrong
-        float encoder_temperature = 0.1f;
-        log.info("  temperature=" + std::to_string(encoder_temperature) + " (AMBER default)");
+        float encoder_temperature = config.temperature;
+        log.info("  temperature=" + std::to_string(encoder_temperature));
         log.info("  epochs=" + std::to_string(config.epochs) +
                  ", hidden=" + std::to_string(config.hidden_dim) +
                  ", layers=" + std::to_string(config.n_layer));
@@ -1557,7 +1554,7 @@ int run_bin2(const Bin2Config& config) {
             run_tcfg.epochs          = config.epochs;
             run_tcfg.batch_size      = config.batch_size;
             run_tcfg.lr              = config.learning_rate;
-            run_tcfg.temperature     = 0.1f;
+            run_tcfg.temperature     = config.temperature;
             run_tcfg.hidden_sz       = config.hidden_dim;
             run_tcfg.n_layer         = config.n_layer;
             run_tcfg.out_dim         = config.embedding_dim;
@@ -1881,10 +1878,11 @@ int run_bin2(const Bin2Config& config) {
         bin2::GraphConfig graph_config;
         graph_config.bandwidth = config.bandwidth;
         graph_config.damage_beta = 0.0f;
-        graph_config.partgraph_ratio = 50;
+        graph_config.partgraph_ratio = config.partgraph_ratio;
         bin2::DamageAwareEdgeWeighter weighter(graph_config);
-        edges = weighter.compute_edges(neighbors, 50);
-        log.info("Computed " + std::to_string(edges.size()) + " edges (pgr=50)");
+        edges = weighter.compute_edges(neighbors, config.partgraph_ratio);
+        log.info("Computed " + std::to_string(edges.size()) + " edges (pgr=" +
+                 std::to_string(config.partgraph_ratio) + ")");
     }
 
     // Run Leiden clustering with COMEBin-exact settings
@@ -2142,16 +2140,15 @@ int run_bin2(const Bin2Config& config) {
     // The reader (load_embeddings_tsv) parses all post-name tokens as floats,
     // so a bin column would corrupt the embedding if fed back via --embeddings.
     // Bin assignments are already in the output .fa files.
+    const int total_dims = embeddings.empty() ? config.embedding_dim : (int)embeddings[0].size();
     std::ofstream emb_out(config.output_dir + "/embeddings.tsv");
     emb_out << "contig";
-    for (int d = 0; d < config.embedding_dim; d++) {
-        emb_out << "\tdim_" << d;
-    }
+    for (int d = 0; d < total_dims; d++) emb_out << "\tdim_" << d;
     emb_out << "\n";
 
     for (size_t i = 0; i < contigs.size(); i++) {
         emb_out << contigs[i].first;
-        for (int d = 0; d < config.embedding_dim; d++) {
+        for (int d = 0; d < (int)embeddings[i].size(); d++) {
             emb_out << "\t" << std::fixed << std::setprecision(6) << embeddings[i][d];
         }
         emb_out << "\n";

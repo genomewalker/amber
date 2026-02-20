@@ -15,6 +15,7 @@ int cmd_bin2(int argc, char** argv) {
     Bin2Config config;
 
     // Parse arguments
+    try {
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
 
@@ -37,7 +38,7 @@ int cmd_bin2(int argc, char** argv) {
                       << "  --bandwidth FLOAT      Edge weighting bandwidth (default: 0.2)\n"
                       << "  --seeds FILE           SCG marker seed file (auto-generated if not provided)\n"
                       << "  --random-seed N        Random seed for Leiden clustering (default: 1006)\n"
-                      << "  --encoder-seed N       Random seed for encoder training (default: 1)\n"
+                      << "  --encoder-seed N       Random seed for encoder training (default: 42)\n"
                       << "  --no-l2norm            Disable L2 normalization of embeddings\n\n"
                       << "Encoder:\n"
                       << "  --hidden-dim N         Encoder hidden layer size (default: 2048)\n"
@@ -240,19 +241,27 @@ int cmd_bin2(int argc, char** argv) {
         else if (arg == "--encoder-qc-max-extra" && i + 1 < argc) {
             config.encoder_qc_max_extra = std::stoi(argv[++i]);
         }
+        else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "Error: unknown flag '" << arg << "'. Run with --help for usage.\n";
+            return 1;
+        }
+    }
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "Error: invalid numeric argument: " << e.what() << "\n";
+        return 1;
+    } catch (const std::out_of_range& e) {
+        std::cerr << "Error: numeric argument out of range: " << e.what() << "\n";
+        return 1;
     }
 
     // Validate required arguments
-    if (config.embeddings_file.empty()) {
-        // Full mode: need contigs and BAM
-        if (config.contigs_path.empty()) {
-            std::cerr << "Error: --contigs is required (or use --embeddings for clustering-only mode)\n";
-            return 1;
-        }
-        if (config.bam_path.empty()) {
-            std::cerr << "Error: --bam is required (or use --embeddings for clustering-only mode)\n";
-            return 1;
-        }
+    if (config.contigs_path.empty()) {
+        std::cerr << "Error: --contigs is required\n";
+        return 1;
+    }
+    if (config.embeddings_file.empty() && config.bam_path.empty()) {
+        std::cerr << "Error: --bam is required (or use --embeddings to skip training)\n";
+        return 1;
     }
     if (config.output_dir.empty()) {
         std::cerr << "Error: --output is required\n";
