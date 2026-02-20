@@ -162,9 +162,7 @@ set(SOURCES
     src/main.cpp
     src/cli/cli_common.cpp
     src/cli/cmd_bin.cpp
-    src/cli/cmd_bin2.cpp
     src/cli/cmd_deconvolve.cpp
-    src/cli/cmd_polish.cpp
     src/cli/cmd_chimera.cpp
     src/cli/cmd_seeds.cpp
     src/seeds/seed_generator.cpp
