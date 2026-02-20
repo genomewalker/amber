@@ -50,7 +50,7 @@ struct Bin2Config {
     bool force_cpu = false;
 
     // Damage-aware InfoNCE
-    bool use_damage_infonce = false;
+    bool use_damage_infonce = true;
     float damage_lambda = 0.5f;
     float damage_wmin = 0.5f;
 
@@ -58,11 +58,11 @@ struct Bin2Config {
     bool use_multiscale_cgr = false;
 
     // Leiden restarts (seed sweep)
-    int n_leiden_restarts = 1;
+    int n_leiden_restarts = 25;
     int restart_stage1_res = 1;
 
     // Consensus kNN (encoder restarts)
-    int n_encoder_restarts = 1;
+    int n_encoder_restarts = 3;
 
     // CheckM marker files
     std::string checkm_hmm_file;
@@ -70,7 +70,7 @@ struct Bin2Config {
     std::string archaea_ms_file;
 
     // SCG hard negative mining
-    bool use_scg_infonce = false;
+    bool use_scg_infonce = true;
     float scg_boost = 2.0f;
 
     // Phase 4E decontamination

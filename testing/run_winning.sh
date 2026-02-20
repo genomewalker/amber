@@ -59,7 +59,7 @@ fi
 echo "=========================================="
 echo "AMBER Winning Config — Rep $REP_ID"
 echo "Commit: $GIT_COMMIT"
-echo "Flags: --damage-infonce --scg-infonce --encoder-restarts 3 --leiden-restarts 25"
+echo "Flags: defaults (damage-infonce + scg-infonce on) --encoder-restarts 3 --leiden-restarts 25"
 echo "Output: $OUTPUT_DIR"
 echo "=========================================="
 
@@ -74,8 +74,6 @@ echo "=========================================="
     --bandwidth 0.2 \
     --partgraph-ratio 50 \
     --threads 16 \
-    --damage-infonce \
-    --scg-infonce \
     --encoder-restarts 3 \
     --leiden-restarts 25 \
     2>&1 | tee "$OUTPUT_DIR/amber.log"
