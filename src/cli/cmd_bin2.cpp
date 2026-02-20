@@ -59,7 +59,7 @@ struct Bin2Config {
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
-    float res_search_min = 2.0f;       // Resolution sweep lower bound
+    float res_search_min = 0.5f;       // Resolution sweep lower bound
     float res_search_max = 12.0f;      // Resolution sweep upper bound
     int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1 (default 7)
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
