@@ -61,6 +61,12 @@ struct DamageProfile {
     int n_damaged_reads = 0;
     int n_undamaged_reads = 0;
 
+    // Raw counts for bin-level damage aggregation (pooled then re-fitted)
+    uint64_t n_opp_5p[10] = {0};  // C opportunities at 5' positions 0-9
+    uint64_t n_ct_5p[10]  = {0};  // C→T mismatches at 5' positions 0-9
+    uint64_t n_opp_3p[10] = {0};  // G opportunities at 3' positions 0-9
+    uint64_t n_ga_3p[10]  = {0};  // G→A mismatches at 3' positions 0-9
+
     // === Helper methods ===
     float mean_5p_damage() const {
         return (ct_rate_5p[0] + ct_rate_5p[1] + ct_rate_5p[2]) / 3.0f;

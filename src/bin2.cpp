@@ -28,7 +28,6 @@
 #include "bin2/clustering/hnsw_knn_index.h"
 #include "bin2/clustering/edge_weighter.h"
 #include "bin2/clustering/leiden_backend.h"
-#include "bin2/clustering/ensemble_leiden.h"
 #include "bin2/clustering/marker_index.h"
 #include "bin2/clustering/quality_leiden_backend.h"
 #include "seeds/seed_generator.h"
@@ -95,8 +94,6 @@ struct Bin2Config {
     // Flags
     bool l2_normalize = true;      // L2 normalize embeddings before clustering
     bool verbose = false;
-    bool sweep = false;            // COMEBin-style parameter sweep
-    bool use_python_leiden = false; // Use Python leidenalg (exact COMEBin match)
     bool force_cpu = false;        // Force CPU mode even if GPU is available
     int hidden_dim = 2048;         // Hidden layer size (COMEBin default: 2048)
     int n_layer = 3;               // Number of hidden layers (COMEBin default: 3)
@@ -108,22 +105,9 @@ struct Bin2Config {
     float damage_lambda = 0.5f;        // Damage attenuation strength (0.4-0.6)
     float damage_wmin = 0.5f;          // Minimum negative weight (keep graph connected)
     bool use_multiscale_cgr = false;   // Use multi-scale CGR late fusion
-    bool use_ensemble_leiden = false;  // Use ensemble Leiden for reproducible clustering
-    int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
-    float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
-    bool ensemble_vary_resolution = false;
-    float ensemble_res_min = 1.0f;
-    float ensemble_res_max = 20.0f;
-    bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
-    bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
-    float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
-    int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
-    float res_search_min = 0.5f;       // Resolution sweep lower bound
-    float res_search_max = 12.0f;      // Resolution sweep upper bound
-    int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1
+    int n_leiden_restarts = 1;         // Best-of-K joint seed restart search (1=off)
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
-    std::string encoder_weight_mode = "quality";  // "vote" or "quality" (SCG-separation-weighted)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
@@ -162,73 +146,6 @@ std::vector<std::string> load_seed_markers(const std::string& path) {
     return seeds;
 }
 
-// Call Python leidenalg for Python leidenalg matching
-bin2::ClusteringResult run_python_leiden(
-    const std::vector<bin2::WeightedEdge>& edges,
-    int n_nodes,
-    const std::vector<double>& node_sizes) {
-
-    // Create temp file for input
-    std::string tmp_input = "/tmp/amber_leiden_input_" + std::to_string(getpid()) + ".txt";
-    std::string tmp_output = "/tmp/amber_leiden_output_" + std::to_string(getpid()) + ".txt";
-
-    {
-        std::ofstream f(tmp_input);
-        f << n_nodes << "\n";
-        f << edges.size() << "\n";
-        for (const auto& e : edges) {
-            f << e.u << " " << e.v << " " << std::setprecision(15) << e.w << "\n";
-        }
-        for (int i = 0; i < n_nodes; i++) {
-            f << static_cast<int64_t>(node_sizes[i]) << "\n";
-        }
-    }
-
-    // Find the Python script (relative to executable or in .scripts/)
-    std::string script_path = ".scripts/leiden_cluster.py";
-    if (!std::filesystem::exists(script_path)) {
-        // Try relative to this source file's location
-        script_path = "/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber/.scripts/leiden_cluster.py";
-    }
-
-    // Call Python with conda environment
-    std::string cmd = "source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh && "
-                      "conda activate comebin && "
-                      "cat " + tmp_input + " | python3 " + script_path + " > " + tmp_output + " 2>&1";
-
-    int ret = system(cmd.c_str());
-    if (ret != 0) {
-        std::cerr << "Warning: Python leiden failed with code " << ret << std::endl;
-    }
-
-    // Read results
-    bin2::ClusteringResult result;
-    result.labels.resize(n_nodes, -1);
-
-    std::ifstream f(tmp_output);
-    std::string line;
-    int max_cluster = -1;
-    while (std::getline(f, line)) {
-        std::istringstream iss(line);
-        int node_id, cluster_id;
-        if (iss >> node_id >> cluster_id) {
-            if (node_id >= 0 && node_id < n_nodes) {
-                result.labels[node_id] = cluster_id;
-                max_cluster = std::max(max_cluster, cluster_id);
-            }
-        }
-    }
-
-    result.num_clusters = max_cluster + 1;
-    result.modularity = 0.0f;  // Not computed by wrapper
-    result.num_iterations = 1;
-
-    // Clean up temp files
-    std::filesystem::remove(tmp_input);
-    std::filesystem::remove(tmp_output);
-
-    return result;
-}
 
 class Bin2Logger {
     bool verbose_;
@@ -689,6 +606,11 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
 
             profile.ct_rate_5p[i] = (ct_count + 0.5f) / (c_total + 1.0f);
             profile.ga_rate_3p[i] = (ga_count + 0.5f) / (g_total + 1.0f);
+
+            profile.n_opp_5p[i] = static_cast<uint64_t>(c_total);
+            profile.n_ct_5p[i]  = static_cast<uint64_t>(ct_count);
+            profile.n_opp_3p[i] = static_cast<uint64_t>(g_total);
+            profile.n_ga_3p[i]  = static_cast<uint64_t>(ga_count);
         }
 
         // Fit exponential decay to estimate lambda
@@ -738,114 +660,6 @@ std::pair<double, double> compute_range_coverage(
     return {mean, variance};
 }
 
-// HDBSCAN-style clustering on embeddings
-std::vector<int> cluster_hdbscan(
-    const std::vector<std::vector<float>>& embeddings,
-    const std::vector<double>& coverages,
-    int min_cluster_size = 5,
-    float coverage_ratio_max = 3.0f) {
-
-    int N = embeddings.size();
-    int D = embeddings[0].size();
-    std::vector<int> labels(N, -1);
-
-    // Compute pairwise distances
-    std::vector<std::vector<float>> dist(N, std::vector<float>(N, 0));
-    #pragma omp parallel for
-    for (int i = 0; i < N; i++) {
-        for (int j = i + 1; j < N; j++) {
-            float d = 0;
-            for (int k = 0; k < D; k++) {
-                float diff = embeddings[i][k] - embeddings[j][k];
-                d += diff * diff;
-            }
-            d = std::sqrt(d);
-
-            // Add coverage penalty
-            double cov_ratio = std::max(coverages[i], coverages[j]) /
-                              std::max(1e-10, std::min(coverages[i], coverages[j]));
-            if (cov_ratio > coverage_ratio_max) {
-                d += 10.0f;  // Large penalty
-            }
-
-            dist[i][j] = dist[j][i] = d;
-        }
-    }
-
-    // Compute core distances (distance to k-th nearest neighbor)
-    int k = std::min(min_cluster_size, N - 1);
-    std::vector<float> core_dist(N);
-    for (int i = 0; i < N; i++) {
-        std::vector<float> dists = dist[i];
-        std::nth_element(dists.begin(), dists.begin() + k, dists.end());
-        core_dist[i] = dists[k];
-    }
-
-    // Compute mutual reachability distance
-    std::vector<std::vector<float>> mrd(N, std::vector<float>(N, 0));
-    for (int i = 0; i < N; i++) {
-        for (int j = i + 1; j < N; j++) {
-            float mr = std::max({core_dist[i], core_dist[j], dist[i][j]});
-            mrd[i][j] = mrd[j][i] = mr;
-        }
-    }
-
-    // Single-linkage clustering on mutual reachability graph
-    std::vector<int> parent(N);
-    std::iota(parent.begin(), parent.end(), 0);
-
-    auto find = [&](int x) {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        return x;
-    };
-
-    auto unite = [&](int x, int y) {
-        int px = find(x), py = find(y);
-        if (px != py) parent[px] = py;
-    };
-
-    // Sort edges by weight
-    std::vector<std::tuple<float, int, int>> edges;
-    for (int i = 0; i < N; i++) {
-        for (int j = i + 1; j < N; j++) {
-            edges.emplace_back(mrd[i][j], i, j);
-        }
-    }
-    std::sort(edges.begin(), edges.end());
-
-    // Build MST with adaptive threshold
-    // Use percentile of edge weights for threshold
-    size_t threshold_idx = std::min(edges.size() - 1, edges.size() * 3 / 4);  // 75th percentile
-    float threshold = std::get<0>(edges[threshold_idx]);
-    threshold = std::max(0.3f, std::min(threshold, 1.5f));  // Clamp to [0.3, 1.5]
-
-    for (auto& [w, i, j] : edges) {
-        if (w > threshold) break;
-        unite(i, j);
-    }
-
-    // Extract clusters
-    std::map<int, std::vector<int>> clusters;
-    for (int i = 0; i < N; i++) {
-        clusters[find(i)].push_back(i);
-    }
-
-    // Assign labels
-    int cluster_id = 0;
-    for (auto& [root, members] : clusters) {
-        if (static_cast<int>(members.size()) >= min_cluster_size) {
-            for (int m : members) {
-                labels[m] = cluster_id;
-            }
-            cluster_id++;
-        }
-    }
-
-    return labels;
-}
 
 // Load pre-computed embeddings from TSV (COMEBin format: contig\tdim0\tdim1\t...)
 std::pair<std::vector<std::string>, std::vector<std::vector<float>>>
@@ -1099,14 +913,8 @@ int run_bin2(const Bin2Config& config) {
             leiden_config.is_membership_fixed = is_membership_fixed;
         }
 
-        bin2::ClusteringResult result;
-        if (config.use_python_leiden) {
-            log.info("Using Python leidenalg for Python leidenalg matching");
-            result = run_python_leiden(edges, static_cast<int>(embeddings.size()), contig_lengths);
-        } else {
-            auto leiden = bin2::create_leiden_backend(true);  // Use libleidenalg if available
-            result = leiden->cluster(edges, static_cast<int>(embeddings.size()), leiden_config);
-        }
+        auto leiden = bin2::create_leiden_backend(true);  // Use libleidenalg if available
+        bin2::ClusteringResult result = leiden->cluster(edges, static_cast<int>(embeddings.size()), leiden_config);
         log.info("Leiden found " + std::to_string(result.num_clusters) + " clusters, modularity=" +
                  std::to_string(result.modularity));
 
@@ -1332,8 +1140,7 @@ int run_bin2(const Bin2Config& config) {
 
     // Build SCG marker lookup for hard negative mining and quality-weighted consensus
     bin2::ContigMarkerLookup scg_lookup;
-    bool need_scg_lookup = config.use_scg_infonce ||
-        (config.n_encoder_restarts > 1 && config.encoder_weight_mode == "quality");
+    bool need_scg_lookup = config.use_scg_infonce || (config.n_encoder_restarts > 1);
     if (need_scg_lookup && !marker_hits_by_contig.empty())
         scg_lookup = bin2::build_contig_marker_lookup(marker_hits_by_contig, contigs);
 
@@ -1743,9 +1550,9 @@ int run_bin2(const Bin2Config& config) {
         cknn_cfg.k = config.k;
         cknn_cfg.bandwidth = config.bandwidth;
         cknn_cfg.partgraph_ratio = config.partgraph_ratio;
-        bool use_quality_weight = config.encoder_weight_mode == "quality" && !scg_lookup.empty();
-        cknn_cfg.weight_mode = use_quality_weight
-            ? bin2::ConsensusWeightMode::QUALITY : bin2::ConsensusWeightMode::VOTE;
+        cknn_cfg.weight_mode = scg_lookup.empty()
+            ? bin2::ConsensusWeightMode::VOTE : bin2::ConsensusWeightMode::QUALITY;
+        const bool use_quality_weight = (cknn_cfg.weight_mode == bin2::ConsensusWeightMode::QUALITY);
         bin2::ConsensusKnnBuilder consensus_builder(cknn_cfg);
         std::vector<float> encoder_scores;
         int extra_restarts = 0;
@@ -2106,126 +1913,6 @@ int run_bin2(const Bin2Config& config) {
         log.info("Built kNN graph with " + std::to_string(neighbors.size()) + " nodes");
     }
 
-    // COMEBin-style parameter sweep (3 x 5 x 8 = 120 configurations).
-    // Incompatible with consensus kNN (encoder restarts take priority).
-    if (config.sweep && consensus_edges.empty()) {
-        log.info("Running AMBER parameter sweep");
-
-        // COMEBin default sweep values
-        std::vector<int> partgraph_ratios = {50, 100, 80};  // COMEBin pgr values
-        std::vector<float> bandwidths = {0.05f, 0.1f, 0.15f, 0.2f, 0.3f};
-        std::vector<float> resolutions = {1.0f, 5.0f, 10.0f, 30.0f, 50.0f, 70.0f, 90.0f, 110.0f};
-
-        std::ofstream sweep_summary(config.output_dir + "/sweep_summary.tsv");
-        sweep_summary << "partgraph_ratio\tbandwidth\tresolution\tnum_clusters\tmodularity\tnum_bins\ttotal_binned_bp\n";
-
-        int total_runs = partgraph_ratios.size() * bandwidths.size() * resolutions.size();
-        int run_idx = 0;
-
-        for (int pgr : partgraph_ratios) {
-            // Compute edges once per partgraph_ratio (COMEBin pattern)
-            bin2::GraphConfig gc;
-            gc.partgraph_ratio = pgr;
-            gc.damage_beta = 0.0f;  // Damage features disabled in COMEBin encoder
-            bin2::DamageAwareEdgeWeighter weighter(gc);
-            // Use raw distances: compute_edges() already applies exp(-dist/bw),
-            // so reusing its output in the bandwidth loop would double-transform.
-            auto pgr_edges = weighter.compute_edge_distances(neighbors, pgr);
-            log.info("partgraph_ratio=" + std::to_string(pgr) + " -> " +
-                     std::to_string(pgr_edges.size()) + " edges");
-
-            for (float bw : bandwidths) {
-                // Apply COMEBin kernel: exp(-dist/bw)
-                std::vector<bin2::WeightedEdge> weighted_edges;
-                weighted_edges.reserve(pgr_edges.size());
-                for (const auto& e : pgr_edges) {
-                    float w = std::exp(-e.w / bw);
-                    weighted_edges.emplace_back(e.u, e.v, w);
-                }
-
-                for (float res : resolutions) {
-                    run_idx++;
-                    std::ostringstream subdir_name;
-                    subdir_name << "sweep_pgr" << pgr
-                                << "_bw" << std::fixed << std::setprecision(2) << bw
-                                << "_res" << std::setprecision(0) << res;
-                    std::string subdir = config.output_dir + "/" + subdir_name.str();
-                    std::filesystem::create_directories(subdir);
-
-                    log.info("[" + std::to_string(run_idx) + "/" + std::to_string(total_runs) +
-                             "] pgr=" + std::to_string(pgr) + " bw=" + std::to_string(bw) +
-                             " res=" + std::to_string(res));
-
-                    // Run Leiden with COMEBin-exact settings
-                    bin2::LeidenConfig lc;
-                    lc.resolution = res;
-                    lc.max_iterations = -1;  // COMEBin: unlimited iterations
-                    lc.random_seed = config.random_seed;
-                    lc.null_model = bin2::NullModel::ErdosRenyi;  // COMEBin: RBER model
-                    lc.use_node_sizes = true;
-                    lc.node_sizes.resize(contigs.size());
-                    for (size_t i = 0; i < contigs.size(); i++) {
-                        lc.node_sizes[i] = static_cast<double>(contigs[i].second.length());
-                    }
-
-                    // Apply seed constraints if available
-                    if (seed_cluster_id > 0) {
-                        lc.use_initial_membership = true;
-                        lc.initial_membership = initial_membership;
-                        lc.use_fixed_membership = true;
-                        lc.is_membership_fixed = is_membership_fixed;
-                    }
-
-                    auto backend = bin2::create_leiden_backend(true);
-                    auto result = backend->cluster(weighted_edges, static_cast<int>(contigs.size()), lc);
-
-                    // Collect clusters and filter by min_bin_size
-                    std::map<int, std::vector<size_t>> clusters;
-                    for (size_t i = 0; i < result.labels.size(); i++) {
-                        clusters[result.labels[i]].push_back(i);
-                    }
-
-                    int num_bins = 0;
-                    size_t total_binned_bp = 0;
-
-                    for (auto& [cluster_id, members] : clusters) {
-                        size_t total_bp = 0;
-                        for (size_t idx : members) total_bp += contigs[idx].second.length();
-                        if (static_cast<int>(total_bp) < config.min_bin_size) continue;
-
-                        // Write bin
-                        std::string bin_name = "bin_" + std::to_string(num_bins);
-                        std::ofstream out(subdir + "/" + bin_name + ".fa");
-                        for (size_t idx : members) {
-                            out << ">" << contigs[idx].first << "\n";
-                            const auto& seq = contigs[idx].second;
-                            for (size_t i = 0; i < seq.length(); i += 80) {
-                                out << seq.substr(i, 80) << "\n";
-                            }
-                        }
-                        num_bins++;
-                        total_binned_bp += total_bp;
-                    }
-
-                    sweep_summary << pgr << "\t"
-                                  << std::fixed << std::setprecision(2) << bw << "\t"
-                                  << std::setprecision(0) << res << "\t"
-                                  << result.num_clusters << "\t"
-                                  << std::setprecision(4) << result.modularity << "\t"
-                                  << num_bins << "\t" << total_binned_bp << "\n";
-
-                    log.info("  -> " + std::to_string(result.num_clusters) + " clusters, " +
-                             std::to_string(num_bins) + " bins (>=" +
-                             std::to_string(config.min_bin_size/1000) + "kb)");
-                }
-            }
-        }
-
-        sweep_summary.close();
-        log.info("Sweep complete (120 configurations). Summary: " + config.output_dir + "/sweep_summary.tsv");
-        log.info("Run CheckM2 on each subdirectory to find best parameters");
-        return 0;
-    }
 
     // Build weighted edges: use consensus kNN when encoder restarts were run,
     // otherwise use the single-encoder kNN with pgr=50.
@@ -2279,7 +1966,7 @@ int run_bin2(const Bin2Config& config) {
     std::vector<std::string> bin2_contig_names;
     bin2::CheckMQualityEstimator bin2_checkm_est;
 
-    const bool need_marker_index = (config.use_quality_leiden || config.n_leiden_restarts > 1);
+    const bool need_marker_index = (config.n_leiden_restarts > 1);
     if (need_marker_index && !marker_hits_by_contig.empty()) {
         bin2_contig_names.reserve(contigs.size());
         for (const auto& [name, seq] : contigs)
@@ -2313,65 +2000,29 @@ int run_bin2(const Bin2Config& config) {
 
     std::unique_ptr<bin2::ILeidenBackend> backend;
     bin2::QualityLeidenBackend* qb_ptr = nullptr;
-    if ((config.use_quality_leiden || config.n_leiden_restarts > 1)
-            && marker_index.num_marker_contigs() > 0) {
-        const bool plain_restarts = !config.use_quality_leiden && config.n_leiden_restarts > 1;
-        if (plain_restarts)
-            log.info("Using seed sweep over plain Leiden (K="
-                     + std::to_string(config.n_leiden_restarts)
-                     + ", bw=" + std::to_string(config.bandwidth)
-                     + ", CheckM lexicographic scoring)");
-        else
-            log.info("Using QualityLeiden (alpha=" + std::to_string(config.quality_alpha) + ")");
+    if (config.n_leiden_restarts > 1 && marker_index.num_marker_contigs() > 0) {
+        log.info("Using seed sweep over plain Leiden (K="
+                 + std::to_string(config.n_leiden_restarts)
+                 + ", bw=" + std::to_string(config.bandwidth)
+                 + ", CheckM lexicographic scoring)");
 
         auto qb = std::make_unique<bin2::QualityLeidenBackend>();
         qb->set_marker_index(&marker_index);
-        if (bin2_checkm_est.has_marker_sets()) {
+        if (bin2_checkm_est.has_marker_sets())
             qb->set_checkm_estimator(&bin2_checkm_est, &bin2_contig_names);
-            if (!plain_restarts)
-                log.info("QualityLeiden: CheckM colocation scoring enabled");
-        }
         bin2::QualityLeidenConfig qcfg;
-        qcfg.alpha               = config.quality_alpha;
-        qcfg.use_map_equation    = config.use_map_equation;
         qcfg.n_leiden_restarts   = config.n_leiden_restarts;
         qcfg.original_bandwidth  = config.bandwidth;
-        qcfg.res_search_min      = config.res_search_min;
-        qcfg.res_search_max      = config.res_search_max;
-        qcfg.restart_stage1_bw   = config.restart_stage1_bw;
         qcfg.restart_stage1_res  = config.restart_stage1_res;
         qcfg.n_threads           = config.threads;
         qcfg.phase4e_entry_contamination   = config.phase4e_entry_contamination;
         qcfg.phase4e_sigma_threshold       = config.phase4e_sigma_threshold;
-        if (plain_restarts) {
-            // Plain bandwidth restarts: no marker edge penalization, no Phase 2.
-            // The SCG score is still used to guide bandwidth arm selection.
-            qcfg.marker_edge_penalty = 0.0f;
-            qcfg.skip_phase2         = true;
-        }
+        // Seed sweep: no marker edge penalization, no Phase 2.
+        qcfg.marker_edge_penalty = 0.0f;
+        qcfg.skip_phase2         = true;
         qb->set_quality_config(qcfg);
         qb_ptr = qb.get();
         backend = std::move(qb);
-    } else if (config.use_ensemble_leiden) {
-        log.info("Using EnsembleLeiden (" + std::to_string(config.n_ensemble_runs) +
-                 " runs, threshold=" + std::to_string(config.ensemble_threshold) +
-                 (config.ensemble_vary_resolution ?
-                  ", res=[" + std::to_string(config.ensemble_res_min) + "," +
-                  std::to_string(config.ensemble_res_max) + "]" : "") + ")");
-        auto ensemble = bin2::create_ensemble_leiden(config.n_ensemble_runs, config.ensemble_threshold);
-        ensemble->set_seed(leiden_config.random_seed);
-        if (config.ensemble_vary_resolution) {
-            bin2::EnsembleLeidenConfig ecfg;
-            ecfg.n_runs = config.n_ensemble_runs;
-            ecfg.consensus_threshold = config.ensemble_threshold;
-            ecfg.base_seed = leiden_config.random_seed;
-            ecfg.vary_resolution = true;
-            ecfg.res_min = config.ensemble_res_min;
-            ecfg.res_max = config.ensemble_res_max;
-            ecfg.verbose = true;
-            ensemble->set_ensemble_config(ecfg);
-        }
-        backend = std::move(ensemble);
     } else {
         backend = bin2::create_leiden_backend(true);  // Use Leiden (not Louvain)
     }
@@ -2397,6 +2048,58 @@ int run_bin2(const Bin2Config& config) {
         clusters[labels[i]].push_back(i);
     }
     log.info("Found " + std::to_string(clusters.size()) + " clusters");
+
+    // Per-bin damage summary: pool raw counts, re-fit damage model, classify
+    if (!damage_profiles.empty()) {
+        std::ofstream dmg_out(config.output_dir + "/damage_per_bin.tsv");
+        dmg_out << "bin_name\tp_ancient_mean\tlambda5\tlambda3\tamp5\tamp3\tct_1p\tga_1p\tdamage_class\n";
+        int dmg_bin_idx = 0;
+        for (auto& [cluster_id, members] : clusters) {
+            size_t bin_bp = 0;
+            for (size_t idx : members) bin_bp += contigs[idx].second.length();
+            if (static_cast<int>(bin_bp) < config.min_bin_size) continue;
+
+            std::array<uint64_t, 10> pool_n5{}, pool_k5{}, pool_n3{}, pool_k3{};
+            double sum_panc = 0.0;
+            int total_reads = 0;
+            for (size_t idx : members) {
+                const auto& dp = damage_profiles[idx];
+                sum_panc   += static_cast<double>(dp.p_anc) * dp.n_reads;
+                total_reads += dp.n_reads;
+                for (int p = 0; p < 10; ++p) {
+                    pool_n5[p] += dp.n_opp_5p[p];
+                    pool_k5[p] += dp.n_ct_5p[p];
+                    pool_n3[p] += dp.n_opp_3p[p];
+                    pool_k3[p] += dp.n_ga_3p[p];
+                }
+            }
+            float p_anc = (total_reads > 0)
+                        ? static_cast<float>(sum_panc / total_reads) : 0.5f;
+
+            std::vector<uint64_t> vn5(pool_n5.begin(), pool_n5.end());
+            std::vector<uint64_t> vk5(pool_k5.begin(), pool_k5.end());
+            std::vector<uint64_t> vn3(pool_n3.begin(), pool_n3.end());
+            std::vector<uint64_t> vk3(pool_k3.begin(), pool_k3.end());
+            auto model = fit_damage_model(vn5, vk5, vn3, vk3, 0.5);
+
+            float ct1 = (pool_n5[0] > 0)
+                      ? static_cast<float>(pool_k5[0]) / pool_n5[0] : 0.0f;
+            float ga1 = (pool_n3[0] > 0)
+                      ? static_cast<float>(pool_k3[0]) / pool_n3[0] : 0.0f;
+
+            const char* cls = (p_anc > 0.5f && ct1 > 0.02f) ? "ancient"
+                            : (p_anc < 0.2f)                 ? "modern"
+                                                              : "mixed";
+
+            dmg_out << "bin_" << dmg_bin_idx << "\t"
+                    << std::fixed << std::setprecision(6) << p_anc << "\t"
+                    << model.curve_5p.lambda    << "\t" << model.curve_3p.lambda    << "\t"
+                    << model.curve_5p.amplitude << "\t" << model.curve_3p.amplitude << "\t"
+                    << ct1 << "\t" << ga1 << "\t" << cls << "\n";
+            dmg_bin_idx++;
+        }
+        log.info("Wrote damage_per_bin.tsv (" + std::to_string(dmg_bin_idx) + " bins)");
+    }
 
     // Pre-calculate bin sizes to filter small bins
     std::vector<std::pair<int, size_t>> bin_sizes;  // cluster_id, total_bp

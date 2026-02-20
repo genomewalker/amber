@@ -34,8 +34,6 @@ struct Bin2Config {
     // Flags
     bool l2_normalize = true;      // L2 normalize embeddings before clustering
     bool verbose = false;
-    bool sweep = false;            // parameter sweep
-    bool use_python_leiden = false; // Use Python leidenalg (exact COMEBin match)
     bool force_cpu = false;        // Force CPU mode even if GPU is available
     int hidden_dim = 2048;         // Hidden layer size (AMBER default: 2048)
     int n_layer = 3;               // Number of hidden layers (AMBER default: 3)
@@ -47,24 +45,9 @@ struct Bin2Config {
     float damage_lambda = 0.5f;        // Damage attenuation strength (0.4-0.6)
     float damage_wmin = 0.5f;          // Minimum negative weight
     bool use_multiscale_cgr = false;   // Use multi-scale CGR late fusion
-    // Ensemble clustering
-    bool use_ensemble_leiden = false;  // Use ensemble Leiden for reproducible clustering
-    int n_ensemble_runs = 10;          // Number of Leiden runs for ensemble
-    float ensemble_threshold = 0.5f;   // Co-occurrence threshold for consensus
-    bool ensemble_vary_resolution = false;  // Explore resolution space log-uniformly
-    float ensemble_res_min = 1.0f;
-    float ensemble_res_max = 20.0f;
-    // Quality-guided clustering
-    bool use_quality_leiden = false;   // Use marker-quality-guided Leiden refinement
-    bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
-    float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
-    int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
-    float res_search_min = 0.5f;       // Resolution sweep lower bound
-    float res_search_max = 12.0f;      // Resolution sweep upper bound
-    int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1 (default 7)
+    int n_leiden_restarts = 1;         // Seed restart search budget (1=off, 25=recommended)
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
-    std::string encoder_weight_mode = "quality";  // "vote" or "quality" (SCG-separation-weighted)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
     std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
@@ -130,43 +113,17 @@ int cmd_bin2(int argc, char** argv) {
                       << "Clustering-only Mode:\n"
                       << "  --embeddings FILE      Load pre-computed embeddings TSV (skip training)\n"
                       << "                         Format: contig_name\\tdim0\\tdim1\\t...\\tdimN\n\n"
-                      << "Damage-Aware (experimental - use for mixed ancient/modern samples):\n"
+                      << "Damage-Aware:\n"
                       << "  --damage-infonce       Enable damage-weighted InfoNCE loss\n"
-                      << "                         Best for datasets with MIXED ancient+modern DNA\n"
-                      << "                         May regress on uniformly ancient samples\n"
                       << "  --damage-lambda FLOAT  Attenuation strength (default: 0.5)\n"
                       << "  --damage-wmin FLOAT    Minimum negative weight (default: 0.5)\n"
                       << "  --multiscale-cgr       Enable multi-scale CGR late fusion\n\n"
-                      << "Ensemble Clustering:\n"
-                      << "  --ensemble-leiden      Use ensemble Leiden for reproducible clustering\n"
-                      << "                         Runs Leiden N times, takes co-occurrence consensus\n"
-                      << "  --n-ensemble-runs INT  Number of Leiden runs (default: 10)\n"
-                      << "  --ensemble-threshold F Co-occurrence threshold for consensus (default: 0.5)\n"
-                      << "  --ensemble-vary-res    Explore resolution log-uniformly across runs\n"
-                      << "  --ensemble-res-min F   Min resolution for exploration (default: 1.0)\n"
-                      << "  --ensemble-res-max F   Max resolution for exploration (default: 20.0)\n"
-                      << "Quality-Guided Clustering:\n"
-                      << "  --quality-leiden       Use marker-quality-guided Leiden refinement\n"
-                      << "                         Optimizes modularity + SCG completeness/contamination\n"
-                      << "  --map-equation         Phase 1b: marker-guided map equation refinement\n"
-                      << "                         Requires --quality-leiden. Replaces modularity delta\n"
-                      << "                         with parameter-free MDL objective (Rosvall & Bergstrom).\n"
-                      << "  --leiden-restarts N    Best-of-K joint (resolution x seed) restart search\n"
-                      << "                         Selects best partition by internal SCG quality.\n"
-                      << "                         Replaces fixed --resolution and --random-seed.\n"
+                      << "Leiden Restarts:\n"
+                      << "  --leiden-restarts N    Seed sweep: run N Leiden restarts, take best SCG score\n"
                       << "                         N=1 (default, off). Recommended: N=25.\n"
-                      << "  --res-search-min FLOAT Resolution sweep lower bound (default: 2.0).\n"
-                      << "  --res-search-max FLOAT Resolution sweep upper bound (default: 12.0).\n"
-                      << "  --stage1-bw N          Stage 1 bandwidth grid size (default: 7).\n"
-                      << "  --stage1-res N         Stage 1 resolution grid size (default: 1 = pinned\n"
-                      << "                         to --resolution value; 3 = sweep res dimension).\n"
-                      << "                         Use --stage1-bw 3 --stage1-res 3 for 9-arm 2D grid.\n"
+                      << "  --stage1-res N         Resolution grid size in Stage 1 (default: 1 = pinned).\n"
                       << "  --encoder-restarts N   Consensus kNN: train N encoders independently,\n"
-                      << "                         aggregate kNN edges (keep freq>= 2/3). Suppresses\n"
-                      << "                         brittle cross-genome bridges from encoder variance.\n"
-                      << "                         N=1 (default, off). Recommended: N=3.\n"
-                      << "  --quality-alpha F      Quality weight in combined objective (default: 1.0)\n"
-                      << "                         0=pure modularity, 1=balanced, >1=quality-dominant\n"
+                      << "                         aggregate kNN edges. N=1 (default, off). Recommended: N=3.\n"
                       << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
                       << "                         (default: auxiliary/checkm_markers_only.hmm)\n"
                       << "  --bacteria-ms FILE     CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)\n"
@@ -259,12 +216,6 @@ int cmd_bin2(int argc, char** argv) {
         else if (arg == "-v" || arg == "--verbose") {
             config.verbose = true;
         }
-        else if (arg == "--sweep") {
-            config.sweep = true;
-        }
-        else if (arg == "--use-python-leiden") {
-            config.use_python_leiden = true;
-        }
         else if (arg == "--cpu") {
             config.force_cpu = true;
         }
@@ -292,56 +243,14 @@ int cmd_bin2(int argc, char** argv) {
         else if (arg == "--multiscale-cgr") {
             config.use_multiscale_cgr = true;
         }
-        else if (arg == "--ensemble-leiden") {
-            config.use_ensemble_leiden = true;
-        }
-        else if (arg == "--n-ensemble-runs" && i + 1 < argc) {
-            config.n_ensemble_runs = std::stoi(argv[++i]);
-        }
-        else if (arg == "--ensemble-threshold" && i + 1 < argc) {
-            config.ensemble_threshold = std::stof(argv[++i]);
-        }
-        else if (arg == "--ensemble-vary-res") {
-            config.ensemble_vary_resolution = true;
-        }
-        else if (arg == "--ensemble-res-min" && i + 1 < argc) {
-            config.ensemble_res_min = std::stof(argv[++i]);
-        }
-        else if (arg == "--ensemble-res-max" && i + 1 < argc) {
-            config.ensemble_res_max = std::stof(argv[++i]);
-        }
-        else if (arg == "--quality-leiden") {
-            config.use_quality_leiden = true;
-        }
-        else if (arg == "--map-equation") {
-            config.use_quality_leiden = true;  // implies quality-leiden
-            config.use_map_equation = true;
-        }
         else if (arg == "--leiden-restarts" && i + 1 < argc) {
             config.n_leiden_restarts = std::stoi(argv[++i]);
-            // Does NOT imply --quality-leiden: restarts run bandwidth sweep over
-            // plain Leiden. Use --quality-leiden --leiden-restarts N to combine both.
-        }
-        else if (arg == "--res-search-min" && i + 1 < argc) {
-            config.res_search_min = std::stof(argv[++i]);
-        }
-        else if (arg == "--res-search-max" && i + 1 < argc) {
-            config.res_search_max = std::stof(argv[++i]);
-        }
-        else if (arg == "--stage1-bw" && i + 1 < argc) {
-            config.restart_stage1_bw = std::stoi(argv[++i]);
         }
         else if (arg == "--stage1-res" && i + 1 < argc) {
             config.restart_stage1_res = std::stoi(argv[++i]);
         }
         else if (arg == "--encoder-restarts" && i + 1 < argc) {
             config.n_encoder_restarts = std::stoi(argv[++i]);
-        }
-        else if (arg == "--encoder-weight-mode" && i + 1 < argc) {
-            config.encoder_weight_mode = argv[++i];
-        }
-        else if (arg == "--quality-alpha" && i + 1 < argc) {
-            config.quality_alpha = std::stof(argv[++i]);
         }
         else if (arg == "--checkm-hmm" && i + 1 < argc) {
             config.checkm_hmm_file = argv[++i];

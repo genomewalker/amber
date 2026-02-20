@@ -131,47 +131,6 @@ struct CandidateSnapshot {
     float selection_score() const { return has_p2 ? score_p2 : score_p1; }
 };
 
-// One bandwidth arm in the adaptive racing search.
-//
-// Bandit statistics (mean_p1, m2_p1, pulls_p1) track Phase 1 scores only,
-// making the reward process stationary. P2 scores are used only to update
-// global_best — they do not enter arm statistics.
-struct ResolutionArm {
-    float  bandwidth  = 0.0f;
-    float  resolution = 0.0f;
-
-    // P1-only stats: used for UCB priority, Stage 2 arm ranking, Stage 3 selection.
-    int    pulls_p1 = 0;
-    double mean_p1  = 0.0;
-    double m2_p1    = 0.0;   // Welford M2 for online variance
-    float  best_p1  = -1e30f;
-
-    CandidateSnapshot best;  // best candidate ever (P2 score if available, else P1)
-
-    void add(const CandidateSnapshot& c) {
-        // Update P1-only bandit stats (always available, stationary).
-        pulls_p1++;
-        double x = c.score_p1;
-        double delta = x - mean_p1;
-        mean_p1 += delta / pulls_p1;
-        m2_p1   += delta * (x - mean_p1);
-        if (c.score_p1 > best_p1) best_p1 = c.score_p1;
-
-        // Update best-ever snapshot (may carry P2 result for global_best tracking).
-        if (c.selection_score() > best.selection_score()) best = c;
-    }
-
-    // Sample std-dev of P1 scores, with prior_sigma when fewer than 2 pulls.
-    double stddev_p1(double prior_sigma = 1.0) const {
-        return pulls_p1 > 1 ? std::sqrt(m2_p1 / (pulls_p1 - 1)) : prior_sigma;
-    }
-
-    // UCB priority based on P1 scores only.
-    double priority(double beta, double prior_sigma = 1.0) const {
-        return mean_p1 + beta * stddev_p1(prior_sigma);
-    }
-};
-
 // Quality-weighted Leiden backend
 // Extends LeidenBackend with marker-based quality in the objective:
 //   total_delta = delta_modularity + λ * delta_quality
@@ -390,14 +349,6 @@ protected:
         float resolution,
         int seed,
         bool run_phase2_for_score);
-
-    // 3-stage adaptive racing over (bandwidth × seed) space at the calibrated resolution.
-    // raw_edges: edges with original_bandwidth applied (no marker penalization yet).
-    // Returns the globally best CandidateSnapshot.
-    CandidateSnapshot run_adaptive_restarts(
-        const std::vector<WeightedEdge>& raw_edges,
-        int n_nodes,
-        const LeidenConfig& base_cfg);
 
     // Dense CommQuality version of calibrate_lambda
     // comm_internal and q_total are only used when qconfig_.use_map_equation is true.
