@@ -63,7 +63,7 @@ echo "Flags: defaults (damage-infonce + scg-infonce on) --encoder-restarts 3 --l
 echo "Output: $OUTPUT_DIR"
 echo "=========================================="
 
-"$BINARY" bin2 \
+"$BINARY" bin \
     --contigs "$CONTIGS" \
     --bam "$BAM" \
     --output "$OUTPUT_DIR/bins" \
