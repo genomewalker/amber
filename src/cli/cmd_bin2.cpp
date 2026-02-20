@@ -61,6 +61,7 @@ struct Bin2Config {
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
     float res_search_min = 2.0f;       // Resolution sweep lower bound
     float res_search_max = 12.0f;      // Resolution sweep upper bound
+    int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1 (default 7)
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
@@ -145,8 +146,10 @@ int cmd_bin2(int argc, char** argv) {
                       << "                         N=1 (default, off). Recommended: N=25.\n"
                       << "  --res-search-min FLOAT Resolution sweep lower bound (default: 2.0).\n"
                       << "  --res-search-max FLOAT Resolution sweep upper bound (default: 12.0).\n"
+                      << "  --stage1-bw N          Stage 1 bandwidth grid size (default: 7).\n"
                       << "  --stage1-res N         Stage 1 resolution grid size (default: 1 = pinned\n"
                       << "                         to --resolution value; 3 = sweep res dimension).\n"
+                      << "                         Use --stage1-bw 3 --stage1-res 3 for 9-arm 2D grid.\n"
                       << "  --encoder-restarts N   Consensus kNN: train N encoders independently,\n"
                       << "                         aggregate kNN edges (keep freq>= 2/3). Suppresses\n"
                       << "                         brittle cross-genome bridges from encoder variance.\n"
@@ -300,6 +303,9 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--res-search-max" && i + 1 < argc) {
             config.res_search_max = std::stof(argv[++i]);
+        }
+        else if (arg == "--stage1-bw" && i + 1 < argc) {
+            config.restart_stage1_bw = std::stoi(argv[++i]);
         }
         else if (arg == "--stage1-res" && i + 1 < argc) {
             config.restart_stage1_res = std::stoi(argv[++i]);

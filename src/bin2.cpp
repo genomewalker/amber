@@ -120,6 +120,7 @@ struct Bin2Config {
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
     float res_search_min = 2.0f;       // Resolution sweep lower bound
     float res_search_max = 12.0f;      // Resolution sweep upper bound
+    int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
@@ -2245,8 +2246,9 @@ int run_bin2(const Bin2Config& config) {
         qcfg.use_map_equation    = config.use_map_equation;
         qcfg.n_leiden_restarts   = config.n_leiden_restarts;
         qcfg.original_bandwidth  = config.bandwidth;
-        qcfg.res_search_min      = config.res_search_min;   // reuses calibration field for restart search
+        qcfg.res_search_min      = config.res_search_min;
         qcfg.res_search_max      = config.res_search_max;
+        qcfg.restart_stage1_bw   = config.restart_stage1_bw;
         qcfg.restart_stage1_res  = config.restart_stage1_res;
         qcfg.n_threads           = config.threads;
         if (plain_restarts) {
