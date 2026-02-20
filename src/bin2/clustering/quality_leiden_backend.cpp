@@ -980,25 +980,63 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
     bool phase2_already_done = false;
 
     if (do_restarts && qconfig_.skip_phase2) {
-        // Pure seed sweep: N Leiden runs at fixed bw=original_bandwidth, no Phase 2.
-        // Selection is lexicographic by CheckM colocation score (HQ count primary,
-        // quality sum secondary) — no bandwidth variation, no marker edge penalty.
-        const int N = qconfig_.n_leiden_restarts;
-        std::cerr << "[QualityLeiden-MT] Seed sweep (N=" << N
+        // Seed sweep: N Leiden runs at fixed bw=original_bandwidth, no Phase 2.
+        // When restart_stage1_res > 1: Stage 1 probes each resolution with 1 seed
+        // to pick the best resolution, then Stage 2 sweeps remaining seeds at that
+        // resolution. When restart_stage1_res == 1: classic fixed-resolution sweep.
+        const int N     = qconfig_.n_leiden_restarts;
+        const int N_RES = qconfig_.restart_stage1_res;
+
+        // Build resolution grid
+        std::vector<float> res_grid;
+        if (N_RES <= 1) {
+            res_grid = {effective_config.resolution};
+        } else {
+            const float log_lo = std::log(qconfig_.res_search_min);
+            const float log_hi = std::log(qconfig_.res_search_max);
+            for (int j = 0; j < N_RES; ++j) {
+                float t = static_cast<float>(j) / (N_RES - 1);
+                res_grid.push_back(std::exp(log_lo + t * (log_hi - log_lo)));
+            }
+        }
+
+        int seed_counter = 0;
+        auto next_seed = [&]() { return spread_seed(effective_config.random_seed, seed_counter++); };
+
+        // Stage 1: one seed per resolution, pick best
+        float best_res = res_grid[0];
+        if (N_RES > 1) {
+            std::cerr << "[QualityLeiden-MT] Resolution Stage 1: " << N_RES
+                      << " resolutions in [" << qconfig_.res_search_min
+                      << ", " << qconfig_.res_search_max << "]...\n";
+            float best_res_score = -1e30f;
+            for (float res : res_grid) {
+                auto c = evaluate_candidate(edges, n_nodes, effective_config,
+                                            qconfig_.original_bandwidth, res, next_seed(), false);
+                std::cerr << "  res=" << res << " clusters=" << c.p1_result.num_clusters
+                          << " score=" << c.score_p1 << "\n";
+                if (c.score_p1 > best_res_score) { best_res_score = c.score_p1; best_res = res; }
+            }
+            std::cerr << "  Best resolution: " << best_res << "\n";
+        }
+
+        // Stage 2: remaining budget at best resolution
+        LeidenConfig sweep_cfg = effective_config;
+        sweep_cfg.resolution = best_res;
+        const int N_sweep = N - static_cast<int>(N_RES > 1 ? N_RES : 0);
+        std::cerr << "[QualityLeiden-MT] Seed sweep (N=" << N_sweep
                   << ", bw=" << qconfig_.original_bandwidth
-                  << ", res=" << effective_config.resolution << ")...\n";
+                  << ", res=" << best_res << ")...\n";
 
         std::vector<std::vector<int>> all_partitions;
-        all_partitions.reserve(N);
+        all_partitions.reserve(N_sweep);
         CandidateSnapshot best;
-        for (int i = 0; i < N; ++i) {
-            const int seed = spread_seed(effective_config.random_seed, i);
-            auto c = evaluate_candidate(edges, n_nodes, effective_config,
-                                        qconfig_.original_bandwidth, effective_config.resolution,
-                                        seed, false);
+        for (int i = 0; i < N_sweep; ++i) {
+            auto c = evaluate_candidate(edges, n_nodes, sweep_cfg,
+                                        qconfig_.original_bandwidth, best_res, next_seed(), false);
             all_partitions.push_back(c.p1_result.labels);
             const bool improved = c.score_p1 > best.score_p1;
-            std::cerr << "  [seed " << seed << "] clusters=" << c.p1_result.num_clusters
+            std::cerr << "  [seed " << c.seed << "] clusters=" << c.p1_result.num_clusters
                       << " score=" << c.score_p1 << (improved ? " *" : "") << "\n";
             if (improved) best = std::move(c);
         }
@@ -1048,7 +1086,7 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
         std::cerr << "[QualityLeiden] Consensus modal init: " << n_part
                   << " partitions → " << modal_clusters << " modal clusters\n";
 
-        LeidenConfig consensus_cfg = effective_config;
+        LeidenConfig consensus_cfg = sweep_cfg;  // carries best_res
         consensus_cfg.use_initial_membership = true;
         consensus_cfg.initial_membership = modal_labels;
         for (int s = 0; s < 3; ++s) {
