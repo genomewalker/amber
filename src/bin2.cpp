@@ -431,7 +431,11 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
 
                     int read_len = aln->core.l_qseq;
                     if (read_len < 10) continue;
-                    // Use at most half the read per end to avoid 5'/3' overlap
+                    // n_lik: positions used for per-read likelihood (p_anc) — fixed at 5
+                    //        keeps InfoNCE weights identical to the validated baseline
+                    // n_smiley: positions tracked for smiley plot — up to n_terminal
+                    //           capped at read_len/2 to avoid 5'/3' overlap
+                    const int n_lik = std::min(5, read_len / 2);
                     int eff_n = std::min(n_terminal, read_len / 2);
 
                     uint8_t* bam_seq = bam_get_seq(aln);
@@ -443,30 +447,28 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                     double log_lik_modern = 0.0;
                     int informative_positions = 0;
 
-                    // Check 5' terminal positions
+                    // 5' terminal: smiley tracking (eff_n positions) + likelihood (n_lik positions)
                     for (int i = 0; i < eff_n; i++) {
                         if (ref_pos + i >= contig_length) break;
                         char ref_base = std::toupper(seq[ref_pos + i]);
                         char read_base = seq_nt16_str[bam_seqi(bam_seq, i)];
                         double q_err = phred_to_error_prob(bam_qual[i]);
-                        int dist = i + 1;
 
-                        // Track per-position C→T stats
+                        // Smiley plot: track all eff_n positions
                         if (ref_base == 'C') {
                             pos_stats[i * 4 + 0].fetch_add(1);
                             if (read_base == 'T') pos_stats[i * 4 + 1].fetch_add(1);
                         }
-
-                        // Track mismatch spectrum at position 0
                         if (i == 0 && ref_base != 'N' && read_base != 'N') {
                             #pragma omp critical
                             adna.add_5p_mismatch(ref_base, read_base);
                         }
 
-                        if (ref_base == 'C') {
+                        // Likelihood: only first n_lik positions (preserves baseline p_anc)
+                        if (i < n_lik && ref_base == 'C') {
+                            int dist = i + 1;
                             double d = damage_rate_at_distance(dist, params.amplitude_5p, params.lambda, params.baseline);
                             informative_positions++;
-
                             if (read_base == 'T') {
                                 log_lik_ancient += std::log(d * (1.0 - q_err) + (1.0 - d) * q_err / 3.0);
                                 log_lik_modern += std::log(q_err / 3.0);
@@ -477,7 +479,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                         }
                     }
 
-                    // Check 3' terminal positions
+                    // 3' terminal: smiley tracking (eff_n positions) + likelihood (n_lik positions)
                     for (int i = 0; i < eff_n; i++) {
                         int read_idx = read_len - 1 - i;
                         int ref_idx = ref_pos + read_len - 1 - i;
@@ -485,24 +487,22 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                         char ref_base = std::toupper(seq[ref_idx]);
                         char read_base = seq_nt16_str[bam_seqi(bam_seq, read_idx)];
                         double q_err = phred_to_error_prob(bam_qual[read_idx]);
-                        int dist = i + 1;
 
-                        // Track per-position G→A stats
+                        // Smiley plot: track all eff_n positions
                         if (ref_base == 'G') {
                             pos_stats[i * 4 + 2].fetch_add(1);
                             if (read_base == 'A') pos_stats[i * 4 + 3].fetch_add(1);
                         }
-
-                        // Track mismatch spectrum at terminal position
                         if (i == 0 && ref_base != 'N' && read_base != 'N') {
                             #pragma omp critical
                             adna.add_3p_mismatch(ref_base, read_base);
                         }
 
-                        if (ref_base == 'G') {
+                        // Likelihood: only first n_lik positions
+                        if (i < n_lik && ref_base == 'G') {
+                            int dist = i + 1;
                             double d = damage_rate_at_distance(dist, params.amplitude_3p, params.lambda, params.baseline);
                             informative_positions++;
-
                             if (read_base == 'A') {
                                 log_lik_ancient += std::log(d * (1.0 - q_err) + (1.0 - d) * q_err / 3.0);
                                 log_lik_modern += std::log(q_err / 3.0);
