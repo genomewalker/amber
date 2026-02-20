@@ -1311,40 +1311,19 @@ int run_bin2(const Bin2Config& config) {
         for (int i = 0; i < N; i++)
             cgr_feats[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
 
-        // Encoder input: [sqrt(var), cov, TNF×136, CGR×9, aDNA×20] = 167 dims
-        // CGR and aDNA are contig-level (same across views) — valid encoder input.
-        // Avoids post-concatenation scale mismatch: all signals learned jointly,
-        // L2 normalization applied once to 128-dim encoder output only.
+        // Encoder input: [sqrt(var), cov, TNF×136, CGR×9] = 147 dims
+        // CGR is contig-level but compositional — contigs from the same genome have
+        // similar fractal/complexity profiles, so it adds valid contrastive signal.
+        // aDNA is NOT included: per-contig damage fingerprints are unique identifiers
+        // that cause the encoder to memorize damage profiles rather than learn
+        // genomic composition, leading to over-fragmentation. aDNA signal is handled
+        // exclusively via damage-aware InfoNCE loss weighting.
         bool has_adna = !damage_profiles.empty() && damage_profiles.size() == static_cast<size_t>(N);
-        constexpr int D_cgr  = bin2::MultiScaleCGRFeatures::num_features();  // 9
-        constexpr int D_adna = 20;
-        int D = 138 + D_cgr + D_adna;  // 167
+        constexpr int D_cgr = bin2::MultiScaleCGRFeatures::num_features();  // 9
+        int D = 138 + D_cgr;  // 147
         log.info("Encoder input: 138 (cov+TNF) + " + std::to_string(D_cgr) +
-                 " (CGR) + " + std::to_string(D_adna) + " (aDNA" +
-                 std::string(has_adna ? "" : " zeros") + ") = " + std::to_string(D) + " dims");
-
-        // Helper: fill CGR + aDNA slice of a feature row (indices 138..166)
-        auto fill_cgr_adna = [&](auto&& row, int i) {
-            float cgr_w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
-            int k = 138;
-            for (float f : cgr_feats[i].to_vector()) row[k++] = f * cgr_w;
-            if (has_adna) {
-                const auto& dmg = damage_profiles[i];
-                int a = 138 + D_cgr;
-                for (int j = 0; j < 5; j++) row[a++] = dmg.ct_rate_5p[j];
-                for (int j = 0; j < 5; j++) row[a++] = dmg.ga_rate_3p[j];
-                row[a++] = dmg.lambda_5p / 2.0f;
-                row[a++] = dmg.lambda_3p / 2.0f;
-                row[a++] = dmg.frag_len_mean / 150.0f;
-                row[a++] = dmg.frag_len_std / 50.0f;
-                row[a++] = std::log1p(dmg.cov_damaged_reads) / 5.0f;
-                row[a++] = std::log1p(dmg.cov_undamaged_reads) / 5.0f;
-                row[a++] = dmg.mm_5p_tc;
-                row[a++] = dmg.mm_3p_ct;
-                row[a++] = dmg.mm_5p_other;
-                row[a++] = dmg.mm_3p_other;
-            }
-        };
+                 " (CGR) = " + std::to_string(D) + " dims" +
+                 (has_adna ? " [aDNA via InfoNCE loss only]" : ""));
 
         std::vector<torch::Tensor> view_tensors;
         for (int v = 0; v < n_views; v++) {
@@ -1354,7 +1333,9 @@ int run_bin2(const Bin2Config& config) {
                 acc[i][0] = static_cast<float>((std::sqrt(view_variances[v][i]) + 1e-5) / global_var_max);
                 acc[i][1] = static_cast<float>((view_coverages[v][i] + 1e-5) / global_cov_max);
                 for (int j = 0; j < 136; j++) acc[i][j + 2] = tnf_views[v][i][j];
-                fill_cgr_adna(acc[i], i);
+                float cgr_w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
+                int k = 138;
+                for (float f : cgr_feats[i].to_vector()) acc[i][k++] = f * cgr_w;
             }
             view_tensors.push_back(view_data);
         }
@@ -1431,14 +1412,16 @@ int run_bin2(const Bin2Config& config) {
             trainer.train_multiview(amber_encoder, view_tensors);
         }
 
-        // Encode using same layout as view tensors (167 dims: cov+TNF+CGR+aDNA)
+        // Encode using same layout as view tensors (147 dims: cov+TNF+CGR)
         std::vector<std::vector<float>> encode_features(N);
         for (int i = 0; i < N; i++) {
             encode_features[i].assign(D, 0.0f);
             encode_features[i][0] = static_cast<float>((std::sqrt(variances[i]) + 1e-5) / var_max);
             encode_features[i][1] = static_cast<float>((coverages[i] + 1e-5) / cov_max);
             for (int j = 0; j < 136; j++) encode_features[i][j + 2] = tnf_views[0][i][j];
-            fill_cgr_adna(encode_features[i], i);
+            float cgr_w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
+            int k = 138;
+            for (float f : cgr_feats[i].to_vector()) encode_features[i][k++] = f * cgr_w;
         }
         embeddings = amber_encoder->encode(encode_features);
 
@@ -1482,7 +1465,7 @@ int run_bin2(const Bin2Config& config) {
         const int max_extra = config.encoder_qc_max_extra;
         float best_sep_score = 0.0f;
 
-        // Run 0: already L2-normalized in `embeddings` (128 dims, encoder learned CGR+aDNA).
+        // Run 0: already L2-normalized in `embeddings` (128 dims, encoder learned CGR+TNF).
         consensus_builder.add_embeddings(embeddings);
 
         // SCG separation score for run 0
