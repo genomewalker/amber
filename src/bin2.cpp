@@ -1460,9 +1460,9 @@ int run_bin2(const Bin2Config& config) {
                 cgr_features[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
             }
             for (int i = 0; i < N; i++) {
-                for (float f : cgr_features[i].to_vector()) {
-                    embeddings[i].push_back(f);
-                }
+                float w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
+                for (float f : cgr_features[i].to_vector())
+                    embeddings[i].push_back(f * w);
             }
         }
 
@@ -1604,10 +1604,12 @@ int run_bin2(const Bin2Config& config) {
                 }
             }
 
-            // Append CGR features (9 dims).
-            for (int i = 0; i < N; i++)
+            // Append CGR features (9 dims, length-weighted).
+            for (int i = 0; i < N; i++) {
+                float w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
                 for (float f : cgr_feats_cached[i].to_vector())
-                    run_embeddings[i].push_back(f);
+                    run_embeddings[i].push_back(f * w);
+            }
 
             // L2 normalize.
             if (config.l2_normalize) {
