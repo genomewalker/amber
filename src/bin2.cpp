@@ -1324,7 +1324,7 @@ int run_bin2(const Bin2Config& config) {
                  std::string(has_adna ? "" : " zeros") + ") = " + std::to_string(D) + " dims");
 
         // Helper: fill CGR + aDNA slice of a feature row (indices 138..166)
-        auto fill_cgr_adna = [&](auto& row, int i) {
+        auto fill_cgr_adna = [&](auto&& row, int i) {
             float cgr_w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
             int k = 138;
             for (float f : cgr_feats[i].to_vector()) row[k++] = f * cgr_w;
