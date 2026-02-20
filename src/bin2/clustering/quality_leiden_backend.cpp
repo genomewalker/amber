@@ -1467,23 +1467,29 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
         CheckMQuality parent_q = checkm_est_->estimate_bin_quality(cluster_names);
         if (parent_q.contamination <= 5.0f) continue;
 
-        // Extended node set: bin contigs + their 1-hop kNN neighbors.
+        // Extended node set: bin contigs + multi-hop kNN neighbors.
         // External neighbors serve as anchors: contaminating contigs have edges
         // to their true genome cluster's contigs outside this bin → Leiden finds
         // the cut that Phase 4A (isolated subgraph) misses entirely.
         std::unordered_set<int> bin_set(nodes.begin(), nodes.end());
+        std::unordered_set<int> seen(nodes.begin(), nodes.end());
         std::vector<int> ext_nodes(nodes.begin(), nodes.end());
-        for (int v : nodes) {
-            for (const auto& [u, w] : adj_[v]) {
-                if (!bin_set.count(u)) {
-                    bin_set.insert(u);  // use bin_set as seen-set for dedup
-                    ext_nodes.push_back(u);
+        std::vector<int> frontier(nodes.begin(), nodes.end());
+
+        for (int hop = 0; hop < qconfig_.phase4e_max_hops; ++hop) {
+            std::vector<int> next_frontier;
+            for (int v : frontier) {
+                for (const auto& [u, w] : adj_[v]) {
+                    if (!seen.count(u)) {
+                        seen.insert(u);
+                        ext_nodes.push_back(u);
+                        next_frontier.push_back(u);
+                    }
                 }
             }
+            frontier = std::move(next_frontier);
+            if (frontier.empty()) break;
         }
-        // Restore bin_set to only bin members for group extraction below.
-        bin_set.clear();
-        for (int v : nodes) bin_set.insert(v);
 
         std::unordered_map<int, int> local_id;
         local_id.reserve(ext_nodes.size());
@@ -1522,17 +1528,18 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
                 if (carriers.size() == 1) sole_carriers.insert(carriers[0]);
         }
 
-        // Try multiple seeds × resolutions. For near-HQ contaminated bins the
-        // correct cut is findable but sensitive to seed — a few tries suffice.
+        // Try multiple seeds × resolutions. Collect ALL good cuts across
+        // combinations and use majority voting to decide which contigs to evict.
         const float res_scales[] = {0.05f, 0.1f, 0.2f, 0.5f, 1.0f};
         const int n_seeds = 15;
-        bool accepted = false;
+
+        struct GoodCut { std::vector<int> evicted; };
+        std::vector<GoodCut> good_cuts;
 
         for (float rs : res_scales) {
-            if (accepted) break;
             sub_config.resolution = base_config.resolution * rs;
 
-            for (int s = 0; s < n_seeds && !accepted; ++s) {
+            for (int s = 0; s < n_seeds; ++s) {
                 sub_config.random_seed = spread_seed(base_config.random_seed, s + c * n_seeds);
 
                 ClusteringResult sub_result;
@@ -1564,31 +1571,62 @@ std::pair<std::vector<int>, int> QualityLeidenBackend::run_phase4_extended(
                     for (int v : sole_carriers) keep_set.insert(v);
 
                     std::vector<std::string> kept_names;
-                    std::vector<int> evicted;
-                    long long evicted_bp = 0;
+                    std::vector<int> evicted_list;
                     for (int v : nodes) {
                         if (keep_set.count(v)) kept_names.push_back((*node_names_)[v]);
-                        else { evicted.push_back(v); evicted_bp += static_cast<long long>(node_sizes_[v]); }
+                        else evicted_list.push_back(v);
                     }
-                    if (evicted.empty()) continue;
+                    if (evicted_list.empty()) continue;
 
                     auto final_q = checkm_est_->estimate_bin_quality(kept_names);
-                    if (final_q.contamination >= 5.0f ||
-                        final_q.completeness < parent_q.completeness - 5.0f) continue;
+                    if (final_q.contamination < 5.0f &&
+                        final_q.completeness >= parent_q.completeness - 5.0f)
+                        good_cuts.push_back({std::move(evicted_list)});
+                }
+            }
+        }
 
-                    // Accept this split.
+        // Vote-based eviction: evict contigs that appear in >= vote_threshold of good cuts.
+        if (!good_cuts.empty()) {
+            std::unordered_map<int, int> vote_count;
+            for (const auto& cut : good_cuts)
+                for (int v : cut.evicted)
+                    vote_count[v]++;
+
+            int vote_min = std::max(1, (int)std::ceil(qconfig_.phase4e_vote_threshold * (float)good_cuts.size()));
+
+            // Collect voted-out contigs, excluding sole carriers.
+            std::vector<int> final_evict;
+            for (const auto& [v, cnt] : vote_count)
+                if (cnt >= vote_min && !sole_carriers.count(v))
+                    final_evict.push_back(v);
+
+            if (!final_evict.empty()) {
+                // Validate with CheckM: the kept set must still be acceptable.
+                std::unordered_set<int> evict_set(final_evict.begin(), final_evict.end());
+                std::vector<std::string> kept_names;
+                for (int v : nodes)
+                    if (!evict_set.count(v))
+                        kept_names.push_back((*node_names_)[v]);
+
+                auto final_q = checkm_est_->estimate_bin_quality(kept_names);
+                if (final_q.contamination < 5.0f &&
+                    final_q.completeness >= parent_q.completeness - 5.0f) {
                     int new_label = n_communities + n_split;
-                    for (int v : evicted) labels[v] = new_label;
+                    for (int v : final_evict) labels[v] = new_label;
                     n_split++;
-                    std::cerr << "[QualityLeiden] Phase 4E: evicted " << evicted.size()
+
+                    long long evicted_bp = 0;
+                    for (int v : final_evict) evicted_bp += static_cast<long long>(node_sizes_[v]);
+                    std::cerr << "[QualityLeiden] Phase 4E: evicted " << final_evict.size()
                               << " contigs (" << evicted_bp / 1000 << "kb) from cluster " << c
                               << " (cont " << parent_q.contamination << "% -> "
                               << final_q.contamination << "%, comp "
                               << parent_q.completeness << "% -> " << final_q.completeness
                               << "%, ext=" << ext_nodes.size()
-                              << " res_scale=" << rs << " seed=" << s << ")\n";
-                    accepted = true;
-                    break;
+                              << " hops=" << qconfig_.phase4e_max_hops
+                              << " votes=" << good_cuts.size()
+                              << " vote_min=" << vote_min << ")\n";
                 }
             }
         }

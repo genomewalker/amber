@@ -123,6 +123,7 @@ struct Bin2Config {
     int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
+    std::string encoder_weight_mode = "quality";  // "vote" or "quality" (SCG-separation-weighted)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
@@ -130,6 +131,16 @@ struct Bin2Config {
     // SCG hard negative mining
     bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
     float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
+    // Phase 4E tuning
+    int phase4e_max_hops = 2;
+    float phase4e_vote_threshold = 0.5f;
+    // Gradient clipping and EMA
+    float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
+    bool use_ema = false;              // EMA of encoder weights for final embeddings
+    float ema_decay = 0.999f;          // EMA decay rate
+    // QC gate: retry poor encoder runs
+    float encoder_qc_threshold = 0.8f; // Retry if score < threshold * best
+    int encoder_qc_max_extra = 2;      // Max extra encoder restarts via QC gate
 };
 
 // Load seed marker contig names from TSV (contig\tcluster) or one-per-line format
@@ -1319,9 +1330,11 @@ int run_bin2(const Bin2Config& config) {
             marker_hits_by_contig = early_gen.get_hits_by_contig();
     }
 
-    // Build SCG marker lookup for hard negative mining
+    // Build SCG marker lookup for hard negative mining and quality-weighted consensus
     bin2::ContigMarkerLookup scg_lookup;
-    if (config.use_scg_infonce && !marker_hits_by_contig.empty())
+    bool need_scg_lookup = config.use_scg_infonce ||
+        (config.n_encoder_restarts > 1 && config.encoder_weight_mode == "quality");
+    if (need_scg_lookup && !marker_hits_by_contig.empty())
         scg_lookup = bin2::build_contig_marker_lookup(marker_hits_by_contig, contigs);
 
     // Build feature vectors
@@ -1616,6 +1629,10 @@ int run_bin2(const Bin2Config& config) {
         trainer_config.scg_boost = config.scg_boost;
         // Encoder seed for reproducibility
         trainer_config.seed = config.encoder_seed;
+        // Gradient clipping and EMA
+        trainer_config.grad_clip = config.grad_clip;
+        trainer_config.use_ema   = config.use_ema;
+        trainer_config.ema_decay = config.ema_decay;
 
         bin2::AmberTrainer trainer(trainer_config);
         if (config.use_damage_infonce && !damage_profiles.empty()) {
@@ -1711,6 +1728,7 @@ int run_bin2(const Bin2Config& config) {
     // Consensus kNN: train N-1 additional encoders (run 0 is already done above),
     // aggregate edges across all N runs, suppress low-frequency cross-genome bridges.
     std::vector<bin2::WeightedEdge> consensus_edges;
+    int total_encoder_runs = config.n_encoder_restarts;
     if (config.n_encoder_restarts > 1) {
         log.info("Consensus kNN: " + std::to_string(config.n_encoder_restarts) +
                  " encoder runs (base seed=" + std::to_string(config.encoder_seed) + ", hash-spread)");
@@ -1725,10 +1743,36 @@ int run_bin2(const Bin2Config& config) {
         cknn_cfg.k = config.k;
         cknn_cfg.bandwidth = config.bandwidth;
         cknn_cfg.partgraph_ratio = config.partgraph_ratio;
+        bool use_quality_weight = config.encoder_weight_mode == "quality" && !scg_lookup.empty();
+        cknn_cfg.weight_mode = use_quality_weight
+            ? bin2::ConsensusWeightMode::QUALITY : bin2::ConsensusWeightMode::VOTE;
         bin2::ConsensusKnnBuilder consensus_builder(cknn_cfg);
+        std::vector<float> encoder_scores;
+        int extra_restarts = 0;
+        const int max_extra = config.encoder_qc_max_extra;
+        float best_sep_score = 0.0f;
 
         // Run 0: already L2-normalized in `embeddings` (128+20+9 = 157 dims).
         consensus_builder.add_embeddings(embeddings);
+
+        // SCG separation score for run 0
+        if (use_quality_weight) {
+            bin2::KnnConfig score_knn_cfg;
+            score_knn_cfg.k = config.k;
+            score_knn_cfg.ef_search = 200;
+            score_knn_cfg.M = 16;
+            score_knn_cfg.ef_construction = 200;
+            score_knn_cfg.random_seed = 42;
+            bin2::HnswKnnIndex score_index(score_knn_cfg);
+            score_index.build(embeddings);
+            auto score_neighbors = score_index.query_all();
+            float s0 = bin2::compute_scg_separation_score(
+                score_neighbors.ids, scg_lookup.contig_marker_ids);
+            encoder_scores.push_back(s0);
+            best_sep_score = s0;
+            log.info("  Encoder run 1/" + std::to_string(config.n_encoder_restarts) +
+                     " SCG separation score: " + std::to_string(s0));
+        }
 
         // Runs 1..N-1: train fresh encoders with hash-spread seeds.
         // Sequential encoder_seed+i has RNG correlation; spread_seed avoids this.
@@ -1737,11 +1781,12 @@ int run_bin2(const Bin2Config& config) {
             h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16;
             return static_cast<int>(h & 0x7fffffffu);
         };
-        for (int run = 1; run < config.n_encoder_restarts; ++run) {
+        for (int run = 1; run < config.n_encoder_restarts + extra_restarts; ++run) {
             const int run_seed = spread_seed(config.encoder_seed, run);
             log.info("  Encoder run " + std::to_string(run + 1) + "/" +
-                     std::to_string(config.n_encoder_restarts) +
-                     " (seed=" + std::to_string(run_seed) + ")");
+                     std::to_string(config.n_encoder_restarts + extra_restarts) +
+                     " (seed=" + std::to_string(run_seed) + ")" +
+                     (run >= config.n_encoder_restarts ? " [QC extra]" : ""));
 
             bin2::AmberEncoder run_encoder(D, config.embedding_dim, config.hidden_dim,
                                              config.n_layer, config.dropout, true);
@@ -1765,6 +1810,9 @@ int run_bin2(const Bin2Config& config) {
             run_tcfg.use_scg_infonce = config.use_scg_infonce;
             run_tcfg.scg_boost       = config.scg_boost;
             run_tcfg.seed            = run_seed;
+            run_tcfg.grad_clip       = config.grad_clip;
+            run_tcfg.use_ema         = config.use_ema;
+            run_tcfg.ema_decay       = config.ema_decay;
 
             bin2::AmberTrainer run_trainer(run_tcfg);
             if (config.use_damage_infonce && !damage_profiles.empty())
@@ -1813,11 +1861,53 @@ int run_bin2(const Bin2Config& config) {
             }
 
             consensus_builder.add_embeddings(run_embeddings);
+
+            // SCG separation score for this run
+            if (use_quality_weight) {
+                bin2::KnnConfig score_knn_cfg;
+                score_knn_cfg.k = config.k;
+                score_knn_cfg.ef_search = 200;
+                score_knn_cfg.M = 16;
+                score_knn_cfg.ef_construction = 200;
+                score_knn_cfg.random_seed = 42 + run;
+                bin2::HnswKnnIndex score_index(score_knn_cfg);
+                score_index.build(run_embeddings);
+                auto score_neighbors = score_index.query_all();
+                float s = bin2::compute_scg_separation_score(
+                    score_neighbors.ids, scg_lookup.contig_marker_ids);
+                encoder_scores.push_back(s);
+                log.info("  Encoder run " + std::to_string(run + 1) + "/" +
+                         std::to_string(config.n_encoder_restarts + extra_restarts) +
+                         " SCG separation score: " + std::to_string(s));
+                if (s > best_sep_score) best_sep_score = s;
+                // QC gate: if this run is much worse than best, trigger extra restart
+                if (s < config.encoder_qc_threshold * best_sep_score
+                    && extra_restarts < max_extra) {
+                    ++extra_restarts;
+                    log.info("  QC gate: score " + std::to_string(s) +
+                             " < " + std::to_string(config.encoder_qc_threshold) +
+                             " * " + std::to_string(best_sep_score) +
+                             " -> extra restart (" + std::to_string(extra_restarts) +
+                             "/" + std::to_string(max_extra) + ")");
+                }
+            }
+        }
+
+        if (use_quality_weight) {
+            consensus_builder.set_encoder_scores(encoder_scores);
+            log.info("Consensus kNN: using quality-weighted aggregation");
+        }
+
+        total_encoder_runs = config.n_encoder_restarts + extra_restarts;
+        if (extra_restarts > 0) {
+            log.info("QC gate triggered " + std::to_string(extra_restarts) +
+                     " extra restart(s), total encoder runs: " + std::to_string(total_encoder_runs));
         }
 
         consensus_edges = consensus_builder.build();
-        log.info("Consensus kNN: " + std::to_string(consensus_edges.size()) + " edges after freq>=" +
-                 std::to_string(cknn_cfg.min_freq) + " filter");
+        log.info("Consensus kNN: " + std::to_string(consensus_edges.size()) + " edges after " +
+                 (use_quality_weight ? "quality threshold>=" + std::to_string(cknn_cfg.quality_threshold)
+                                     : "freq>=" + std::to_string(cknn_cfg.min_freq)) + " filter");
     }
 
     // contig_lengths already computed above (line ~1323) for N50 calc
@@ -2143,7 +2233,7 @@ int run_bin2(const Bin2Config& config) {
     if (!consensus_edges.empty()) {
         edges = std::move(consensus_edges);
         log.info("Using consensus kNN edges (" + std::to_string(edges.size()) + " edges, " +
-                 std::to_string(config.n_encoder_restarts) + " encoder runs)");
+                 std::to_string(total_encoder_runs) + " encoder runs)");
     } else {
         bin2::GraphConfig graph_config;
         graph_config.bandwidth = config.bandwidth;
@@ -2251,6 +2341,8 @@ int run_bin2(const Bin2Config& config) {
         qcfg.restart_stage1_bw   = config.restart_stage1_bw;
         qcfg.restart_stage1_res  = config.restart_stage1_res;
         qcfg.n_threads           = config.threads;
+        qcfg.phase4e_max_hops        = config.phase4e_max_hops;
+        qcfg.phase4e_vote_threshold  = config.phase4e_vote_threshold;
         if (plain_restarts) {
             // Plain bandwidth restarts: no marker edge penalization, no Phase 2.
             // The SCG score is still used to guide bandwidth arm selection.

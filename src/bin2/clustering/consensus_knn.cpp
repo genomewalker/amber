@@ -4,14 +4,45 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace amber::bin2 {
+
+float compute_scg_separation_score(
+    const std::vector<std::vector<int>>& knn_ids,
+    const std::vector<std::vector<int>>& contig_marker_ids) {
+
+    // Build marker -> contig list
+    std::unordered_map<int, std::vector<int>> marker_contigs;
+    for (int i = 0; i < (int)contig_marker_ids.size(); ++i)
+        for (int mid : contig_marker_ids[i])
+            marker_contigs[mid].push_back(i);
+
+    int total = 0, separated = 0;
+    for (const auto& [mid, contigs] : marker_contigs) {
+        if (contigs.size() < 2) continue;
+        for (int a = 0; a < (int)contigs.size(); ++a) {
+            int ca = contigs[a];
+            if (ca < 0 || ca >= (int)knn_ids.size()) continue;
+            std::unordered_set<int> nn_set(knn_ids[ca].begin(), knn_ids[ca].end());
+            for (int b = a + 1; b < (int)contigs.size(); ++b) {
+                total++;
+                if (!nn_set.count(contigs[b])) separated++;
+            }
+        }
+    }
+    return total > 0 ? static_cast<float>(separated) / total : 1.0f;
+}
 
 ConsensusKnnBuilder::ConsensusKnnBuilder(const ConsensusKnnConfig& cfg)
     : cfg_(cfg) {}
 
 void ConsensusKnnBuilder::add_embeddings(const std::vector<std::vector<float>>& embeddings) {
     all_embeddings_.push_back(embeddings);
+}
+
+void ConsensusKnnBuilder::set_encoder_scores(const std::vector<float>& scores) {
+    encoder_scores_ = scores;
 }
 
 std::vector<WeightedEdge> ConsensusKnnBuilder::build() const {
@@ -36,7 +67,12 @@ std::vector<WeightedEdge> ConsensusKnnBuilder::build() const {
     struct EdgeAgg {
         float sum_weight = 0.0f;
         int count = 0;
+        std::vector<float> per_run_w;  // per-run weight (0 = absent)
     };
+
+    bool use_quality = cfg_.weight_mode == ConsensusWeightMode::QUALITY
+                       && !encoder_scores_.empty()
+                       && encoder_scores_.size() == n_runs;
 
     std::unordered_map<EdgeKey, EdgeAgg, EdgeKeyHash> edge_map;
 
@@ -107,11 +143,26 @@ std::vector<WeightedEdge> ConsensusKnnBuilder::build() const {
             auto& agg = edge_map[key];
             agg.sum_weight += w;
             agg.count += 1;
+            if (use_quality) {
+                if (agg.per_run_w.empty())
+                    agg.per_run_w.resize(n_runs, 0.0f);
+                agg.per_run_w[run] = w;
+            }
         }
     }
 
-    // Compute consensus weight for all edges and filter by frequency
+    // Compute consensus weight for all edges and filter
     float n_runs_f = static_cast<float>(n_runs);
+
+    // Normalize encoder scores for QUALITY mode
+    std::vector<float> norm_scores;
+    if (use_quality) {
+        float score_sum = 0;
+        for (float s : encoder_scores_) score_sum += s;
+        norm_scores.resize(n_runs);
+        for (int i = 0; i < (int)n_runs; ++i)
+            norm_scores[i] = score_sum > 0 ? encoder_scores_[i] / score_sum : 1.0f / n_runs_f;
+    }
 
     struct ScoredEdge {
         int lo, hi;
@@ -124,13 +175,24 @@ std::vector<WeightedEdge> ConsensusKnnBuilder::build() const {
     all_scored.reserve(edge_map.size());
 
     for (const auto& [key, agg] : edge_map) {
-        float freq = static_cast<float>(agg.count) / n_runs_f;
-        float w_cons = (agg.sum_weight / static_cast<float>(agg.count)) * freq;
-
-        all_scored.push_back({key.lo, key.hi, w_cons});
-
-        if (freq >= cfg_.min_freq) {
-            consensus_edges.emplace_back(key.lo, key.hi, w_cons);
+        if (use_quality) {
+            float w_sum = 0, score_present = 0;
+            for (int r = 0; r < (int)n_runs; ++r) {
+                if (agg.per_run_w[r] > 0) {
+                    score_present += norm_scores[r];
+                    w_sum += norm_scores[r] * agg.per_run_w[r];
+                }
+            }
+            float w_cons = score_present > 0 ? w_sum / score_present : 0.0f;
+            all_scored.push_back({key.lo, key.hi, w_cons});
+            if (score_present >= cfg_.quality_threshold)
+                consensus_edges.emplace_back(key.lo, key.hi, w_cons);
+        } else {
+            float freq = static_cast<float>(agg.count) / n_runs_f;
+            float w_cons = (agg.sum_weight / static_cast<float>(agg.count)) * freq;
+            all_scored.push_back({key.lo, key.hi, w_cons});
+            if (freq >= cfg_.min_freq)
+                consensus_edges.emplace_back(key.lo, key.hi, w_cons);
         }
     }
 

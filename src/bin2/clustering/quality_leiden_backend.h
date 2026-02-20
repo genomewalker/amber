@@ -105,6 +105,10 @@ struct QualityLeidenConfig {
     int      restart_patience     = 4;        // Stage 3 early stop after N non-improving runs
     float    restart_ucb_beta     = 1.0f;     // UCB: priority = mean + beta * std
     long long restart_min_viable_bp = 200000; // Only score clusters >= this size in bp
+
+    // Phase 4E: extended-neighborhood eviction tuning
+    int phase4e_max_hops = 2;             // kNN expansion hops (1 = current, 2 = include 2-hop neighbors)
+    float phase4e_vote_threshold = 0.5f;  // Min fraction of good cuts a contig must appear in to be evicted
 };
 
 // Snapshot of one (bandwidth, seed) candidate from the restart search.

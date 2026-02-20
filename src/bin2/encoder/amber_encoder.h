@@ -373,6 +373,11 @@ public:
         // Stochastic Weight Averaging: average model weights over last epochs
         bool use_swa = true;
         int swa_start_epoch = 70;         // Start accumulating from this epoch
+        // Gradient clipping and EMA
+        float grad_clip = 1.0f;           // Global gradient norm clip (0 = disabled)
+        bool use_ema = false;             // EMA of encoder weights for final embeddings
+        float ema_decay = 0.999f;         // EMA decay rate
+        float ema_start_frac = 0.8f;      // Start EMA after this fraction of epochs
     };
 
     AmberTrainer(const Config& config)
@@ -520,7 +525,14 @@ public:
 
                 optimizer.zero_grad();
                 loss.backward();
+                if (config_.grad_clip > 0.0f)
+                    torch::nn::utils::clip_grad_norm_(encoder->parameters(), config_.grad_clip);
                 optimizer.step();
+
+                if (config_.use_ema && epoch >= static_cast<int>(config_.ema_start_frac * config_.epochs)) {
+                    if (!ema_initialized_) init_ema(encoder);
+                    update_ema(encoder);
+                }
 
                 total_loss_gpu += loss.detach();
                 if (last_batch) last_accuracy = batch_acc;
@@ -624,6 +636,9 @@ public:
                 std::cerr << "[SWA] No BatchNorm layers found, skipping BN recalibration\n";
             }
         }
+
+        if (config_.use_ema && ema_initialized_)
+            apply_ema(encoder);
 
         std::cerr << "[AmberTrainer] Training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
@@ -733,7 +748,14 @@ public:
 
                 optimizer.zero_grad();
                 loss.backward();
+                if (config_.grad_clip > 0.0f)
+                    torch::nn::utils::clip_grad_norm_(encoder->parameters(), config_.grad_clip);
                 optimizer.step();
+
+                if (config_.use_ema && epoch >= static_cast<int>(config_.ema_start_frac * config_.epochs)) {
+                    if (!ema_initialized_) init_ema(encoder);
+                    update_ema(encoder);
+                }
 
                 total_loss_gpu += loss.detach();
                 if (last_batch) last_accuracy = batch_acc;
@@ -837,6 +859,9 @@ public:
                 std::cerr << "[SWA] No BatchNorm layers found, skipping BN recalibration\n";
             }
         }
+
+        if (config_.use_ema && ema_initialized_)
+            apply_ema(encoder);
 
         std::cerr << "[AmberTrainer] Damage-aware training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
@@ -958,7 +983,14 @@ public:
 
                 optimizer.zero_grad();
                 loss.backward();
+                if (config_.grad_clip > 0.0f)
+                    torch::nn::utils::clip_grad_norm_(encoder->parameters(), config_.grad_clip);
                 optimizer.step();
+
+                if (config_.use_ema && epoch >= static_cast<int>(config_.ema_start_frac * config_.epochs)) {
+                    if (!ema_initialized_) init_ema(encoder);
+                    update_ema(encoder);
+                }
 
                 total_loss_gpu += loss.detach();
                 if (last_batch) last_accuracy = batch_acc;
@@ -1038,6 +1070,9 @@ public:
                 std::cerr << "[SWA] No BatchNorm layers, skipping recalibration\n";
             }
         }
+
+        if (config_.use_ema && ema_initialized_)
+            apply_ema(encoder);
 
         std::cerr << "[AmberTrainer] SCG training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
@@ -1122,7 +1157,14 @@ public:
                 // Backward
                 optimizer.zero_grad();
                 loss.backward();
+                if (config_.grad_clip > 0.0f)
+                    torch::nn::utils::clip_grad_norm_(encoder->parameters(), config_.grad_clip);
                 optimizer.step();
+
+                if (config_.use_ema && epoch >= static_cast<int>(config_.ema_start_frac * config_.epochs)) {
+                    if (!ema_initialized_) init_ema(encoder);
+                    update_ema(encoder);
+                }
 
                 total_loss_gpu += loss.detach();
             }
@@ -1155,6 +1197,9 @@ public:
         // Apply SWA averaged weights
         if (config_.use_swa) apply_swa(encoder, swa_sums, swa_count);
 
+        if (config_.use_ema && ema_initialized_)
+            apply_ema(encoder);
+
         std::cerr << "[AmberTrainer] Training complete. Best loss: "
                   << best_loss << " at epoch " << best_epoch << "\n";
     }
@@ -1177,6 +1222,34 @@ public:
 private:
     Config config_;
     torch::Device device_;
+
+    // EMA state
+    std::vector<torch::Tensor> ema_params_;
+    bool ema_initialized_ = false;
+
+    void init_ema(const AmberEncoder& encoder) {
+        ema_params_.clear();
+        for (const auto& p : encoder->parameters())
+            ema_params_.push_back(p.clone().detach());
+        ema_initialized_ = true;
+    }
+
+    void update_ema(const AmberEncoder& encoder) {
+        torch::NoGradGuard ng;
+        float d = config_.ema_decay;
+        int idx = 0;
+        for (const auto& p : encoder->parameters())
+            ema_params_[idx++].mul_(d).add_(p, 1.0f - d);
+    }
+
+    void apply_ema(AmberEncoder& encoder) {
+        if (!ema_initialized_ || ema_params_.empty()) return;
+        torch::NoGradGuard ng;
+        int idx = 0;
+        for (auto& p : encoder->parameters())
+            p.copy_(ema_params_[idx++]);
+        std::cerr << "[EMA] Applied EMA weights (decay=" << config_.ema_decay << ")\n";
+    }
 
     // Cached positive-index tensor — rebuilt only when (bs, nv) changes.
     // pos_idx_[i] = {c + v'*bs : v' in [0..nv-1], v'≠v}, where c=i%bs, v=i/bs.

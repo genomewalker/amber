@@ -64,12 +64,23 @@ struct Bin2Config {
     int restart_stage1_bw  = 7;        // Bandwidth grid points in Stage 1 (default 7)
     int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
+    std::string encoder_weight_mode = "quality";  // "vote" or "quality" (SCG-separation-weighted)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
     std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
     // SCG hard negative mining
     bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
     float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
+    // Phase 4E tuning
+    int phase4e_max_hops = 2;
+    float phase4e_vote_threshold = 0.5f;
+    // Gradient clipping and EMA
+    float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
+    bool use_ema = false;              // EMA of encoder weights for final embeddings
+    float ema_decay = 0.999f;          // EMA decay rate
+    // QC gate: retry poor encoder runs
+    float encoder_qc_threshold = 0.8f; // Retry if score < threshold * best
+    int encoder_qc_max_extra = 2;      // Max extra encoder restarts via QC gate
 };
 
 extern int run_bin2(const Bin2Config& config);
@@ -166,7 +177,17 @@ int cmd_bin2(int argc, char** argv) {
                       << "                         Forces SCG contigs apart in embedding space before clustering.\n"
                       << "  --scg-boost FLOAT      Amplification factor for shared-marker pairs (default: 2.0)\n"
                       << "                         2.0 = safe (exp(10) vs exp(5) partition denominator).\n"
-                      << "                         >=3.0 can dominate log_Z; not recommended.\n";
+                      << "                         >=3.0 can dominate log_Z; not recommended.\n"
+                      << "Phase 4E Tuning:\n"
+                      << "  --phase4e-max-hops N   kNN expansion hops for extended neighborhood (default: 2)\n"
+                      << "  --phase4e-vote-threshold F  Min fraction of good cuts for eviction (default: 0.5)\n"
+                      << "Encoder Regularization:\n"
+                      << "  --grad-clip FLOAT      Global gradient norm clip (default: 1.0, 0=disabled)\n"
+                      << "  --encoder-ema          Enable EMA of encoder weights for final embeddings\n"
+                      << "  --ema-decay FLOAT      EMA decay rate (default: 0.999)\n"
+                      << "Encoder QC Gate:\n"
+                      << "  --encoder-qc-threshold F  Retry if score < threshold * best (default: 0.8)\n"
+                      << "  --encoder-qc-max-extra N  Max extra encoder retries via QC gate (default: 2)\n";
             return 0;
         }
         else if (arg == "--contigs" && i + 1 < argc) {
@@ -313,6 +334,9 @@ int cmd_bin2(int argc, char** argv) {
         else if (arg == "--encoder-restarts" && i + 1 < argc) {
             config.n_encoder_restarts = std::stoi(argv[++i]);
         }
+        else if (arg == "--encoder-weight-mode" && i + 1 < argc) {
+            config.encoder_weight_mode = argv[++i];
+        }
         else if (arg == "--quality-alpha" && i + 1 < argc) {
             config.quality_alpha = std::stof(argv[++i]);
         }
@@ -330,6 +354,27 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--scg-boost" && i + 1 < argc) {
             config.scg_boost = std::stof(argv[++i]);
+        }
+        else if (arg == "--phase4e-max-hops" && i + 1 < argc) {
+            config.phase4e_max_hops = std::stoi(argv[++i]);
+        }
+        else if (arg == "--phase4e-vote-threshold" && i + 1 < argc) {
+            config.phase4e_vote_threshold = std::stof(argv[++i]);
+        }
+        else if (arg == "--grad-clip" && i + 1 < argc) {
+            config.grad_clip = std::stof(argv[++i]);
+        }
+        else if (arg == "--encoder-ema") {
+            config.use_ema = true;
+        }
+        else if (arg == "--ema-decay" && i + 1 < argc) {
+            config.ema_decay = std::stof(argv[++i]);
+        }
+        else if (arg == "--encoder-qc-threshold" && i + 1 < argc) {
+            config.encoder_qc_threshold = std::stof(argv[++i]);
+        }
+        else if (arg == "--encoder-qc-max-extra" && i + 1 < argc) {
+            config.encoder_qc_max_extra = std::stoi(argv[++i]);
         }
     }
 
