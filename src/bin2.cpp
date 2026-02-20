@@ -132,9 +132,8 @@ struct Bin2Config {
     bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
     float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
     // Phase 4E tuning
-    int phase4e_max_hops = 2;
-    float phase4e_vote_threshold = 0.5f;
     float phase4e_entry_contamination = 3.0f;
+    float phase4e_sigma_threshold = 1.0f;
     // Gradient clipping and EMA
     float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
     bool use_ema = false;              // EMA of encoder weights for final embeddings
@@ -2342,9 +2341,8 @@ int run_bin2(const Bin2Config& config) {
         qcfg.restart_stage1_bw   = config.restart_stage1_bw;
         qcfg.restart_stage1_res  = config.restart_stage1_res;
         qcfg.n_threads           = config.threads;
-        qcfg.phase4e_max_hops              = config.phase4e_max_hops;
-        qcfg.phase4e_vote_threshold        = config.phase4e_vote_threshold;
         qcfg.phase4e_entry_contamination   = config.phase4e_entry_contamination;
+        qcfg.phase4e_sigma_threshold       = config.phase4e_sigma_threshold;
         if (plain_restarts) {
             // Plain bandwidth restarts: no marker edge penalization, no Phase 2.
             // The SCG score is still used to guide bandwidth arm selection.
