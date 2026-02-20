@@ -639,11 +639,12 @@ CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
     int n_nodes,
     const LeidenConfig& base_cfg,
     float bandwidth,
+    float resolution,
     int seed,
     bool run_phase2_for_score) {
 
     CandidateSnapshot snap;
-    snap.resolution = base_cfg.resolution;
+    snap.resolution = resolution;
     snap.bandwidth  = bandwidth;
     snap.seed       = seed;
 
@@ -674,6 +675,7 @@ CandidateSnapshot QualityLeidenBackend::evaluate_candidate(
 
     LeidenConfig trial = base_cfg;
     trial.random_seed = seed;
+    trial.resolution  = resolution;
 
 #ifdef USE_LIBLEIDENALG
     LibLeidenalgBackend trial_leiden;
@@ -700,15 +702,34 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
     int n_nodes,
     const LeidenConfig& base_cfg) {
 
-    const float log_lo = std::log(qconfig_.bw_search_min);
-    const float log_hi = std::log(qconfig_.bw_search_max);
-    const int   N_BW   = qconfig_.restart_stage1_bw;
+    const float log_lo_bw = std::log(qconfig_.bw_search_min);
+    const float log_hi_bw = std::log(qconfig_.bw_search_max);
+    const int   N_BW      = qconfig_.restart_stage1_bw;
+    const int   N_RES     = qconfig_.restart_stage1_res;
 
-    // Build bandwidth arms (log-uniform grid)
-    std::vector<ResolutionArm> arms(N_BW);
+    // Build resolution grid (1 point = pinned to base_cfg.resolution)
+    std::vector<float> res_grid;
+    if (N_RES <= 1) {
+        res_grid = {base_cfg.resolution};
+    } else {
+        const float log_lo_r = std::log(qconfig_.res_search_min);
+        const float log_hi_r = std::log(qconfig_.res_search_max);
+        for (int j = 0; j < N_RES; ++j) {
+            float t = static_cast<float>(j) / (N_RES - 1);
+            res_grid.push_back(std::exp(log_lo_r + t * (log_hi_r - log_lo_r)));
+        }
+    }
+
+    // Build 2D bandwidth × resolution arm grid (log-uniform in both axes)
+    const int N_ARMS = N_BW * N_RES;
+    std::vector<ResolutionArm> arms(N_ARMS);
     for (int i = 0; i < N_BW; ++i) {
         float t = (N_BW > 1) ? static_cast<float>(i) / (N_BW - 1) : 0.5f;
-        arms[i].bandwidth = std::exp(log_lo + t * (log_hi - log_lo));
+        float bw = std::exp(log_lo_bw + t * (log_hi_bw - log_lo_bw));
+        for (int j = 0; j < N_RES; ++j) {
+            arms[i * N_RES + j].bandwidth  = bw;
+            arms[i * N_RES + j].resolution = res_grid[j];
+        }
     }
 
     int seed_counter = 0;
@@ -720,27 +741,27 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
     std::vector<std::vector<int>> all_partitions;
 
     // Stage 1: one pull per arm, Phase 1 SCG score only
-    std::cerr << "[QualityLeiden] Restart Stage 1: " << N_BW << " bandwidths"
-              << " (res=" << base_cfg.resolution << ")...\n";
+    std::cerr << "[QualityLeiden] Restart Stage 1: " << N_BW << " bandwidths × "
+              << N_RES << " resolutions = " << N_ARMS << " arms...\n";
     for (auto& arm : arms) {
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
-                                    arm.bandwidth, next_seed(), false);
+                                    arm.bandwidth, arm.resolution, next_seed(), false);
         all_partitions.push_back(c.p1_result.labels);
         arm.add(c);
         if (c.selection_score() > global_best.selection_score()) global_best = c;
-        std::cerr << "  bw=" << arm.bandwidth
+        std::cerr << "  bw=" << arm.bandwidth << " res=" << arm.resolution
                   << " clusters=" << c.p1_result.num_clusters
                   << " score=" << c.score_p1 << "\n";
     }
 
     // Rank top-K arms by Stage 1 best P1 score (stationary, not inflated by P2).
     float global_best_p1 = global_best.score_p1;
-    std::vector<int> idx(N_BW);
+    std::vector<int> idx(N_ARMS);
     std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](int a, int b) {
         return arms[a].best_p1 > arms[b].best_p1;
     });
-    int topk = std::min(qconfig_.restart_stage2_topk, N_BW);
+    int topk = std::min(qconfig_.restart_stage2_topk, N_ARMS);
     std::vector<int> top(idx.begin(), idx.begin() + topk);
 
     // Stage 2: UCB bandit across top arms.
@@ -758,12 +779,13 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
         // Gate P2 in P1 space: contamination_penalty is ~1 SCG unit, consistent scale.
         bool do_p2 = (arms[ai].best_p1 >= global_best_p1 - qconfig_.contamination_penalty);
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
-                                    arms[ai].bandwidth, next_seed(), do_p2);
+                                    arms[ai].bandwidth, arms[ai].resolution, next_seed(), do_p2);
         all_partitions.push_back(c.p1_result.labels);
         arms[ai].add(c);
         if (c.score_p1 > global_best_p1) global_best_p1 = c.score_p1;
         if (c.selection_score() > global_best.selection_score()) global_best = c;
         std::cerr << "  [S2/" << t << "] bw=" << arms[ai].bandwidth
+                  << " res=" << arms[ai].resolution
                   << " score=" << c.selection_score()
                   << (do_p2 ? "(p2)" : "(p1)")
                   << " global_best=" << global_best.selection_score() << "\n";
@@ -776,13 +798,14 @@ CandidateSnapshot QualityLeidenBackend::run_adaptive_restarts(
         if (arms[a].best_p1 > arms[best_arm].best_p1) best_arm = a;
     }
     std::cerr << "[QualityLeiden] Restart Stage 3: exploiting bw="
-              << arms[best_arm].bandwidth << ", up to "
-              << qconfig_.restart_stage3_extra << " runs (patience="
+              << arms[best_arm].bandwidth << " res=" << arms[best_arm].resolution
+              << ", up to " << qconfig_.restart_stage3_extra << " runs (patience="
               << qconfig_.restart_patience << ")...\n";
     int no_improve = 0;
     for (int i = 0; i < qconfig_.restart_stage3_extra; ++i) {
         auto c = evaluate_candidate(raw_edges, n_nodes, base_cfg,
-                                    arms[best_arm].bandwidth, next_seed(), true);
+                                    arms[best_arm].bandwidth, arms[best_arm].resolution,
+                                    next_seed(), true);
         all_partitions.push_back(c.p1_result.labels);
         arms[best_arm].add(c);
         if (c.selection_score() > global_best.selection_score()) {
@@ -971,7 +994,8 @@ ClusteringResult QualityLeidenBackend::cluster(const std::vector<WeightedEdge>& 
         for (int i = 0; i < N; ++i) {
             const int seed = spread_seed(effective_config.random_seed, i);
             auto c = evaluate_candidate(edges, n_nodes, effective_config,
-                                        qconfig_.original_bandwidth, seed, false);
+                                        qconfig_.original_bandwidth, effective_config.resolution,
+                                        seed, false);
             all_partitions.push_back(c.p1_result.labels);
             const bool improved = c.score_p1 > best.score_p1;
             std::cerr << "  [seed " << seed << "] clusters=" << c.p1_result.num_clusters

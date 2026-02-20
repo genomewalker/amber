@@ -98,6 +98,7 @@ struct QualityLeidenConfig {
     float    bw_search_min        = 0.05f;    // Log-uniform bandwidth search range
     float    bw_search_max        = 0.5f;
     int      restart_stage1_bw    = 7;        // Stage 1 bandwidth grid size
+    int      restart_stage1_res   = 1;        // Stage 1 resolution grid size (1 = pinned to base_cfg.resolution)
     int      restart_stage2_topk  = 3;        // Top arms to race in Stage 2
     int      restart_stage2_extra = 12;       // Extra runs across top arms in Stage 2
     int      restart_stage3_extra = 6;        // Max extra runs on best arm in Stage 3
@@ -130,6 +131,7 @@ struct CandidateSnapshot {
 // global_best — they do not enter arm statistics.
 struct ResolutionArm {
     float  bandwidth  = 0.0f;
+    float  resolution = 0.0f;
 
     // P1-only stats: used for UCB priority, Stage 2 arm ranking, Stage 3 selection.
     int    pulls_p1 = 0;
@@ -378,6 +380,7 @@ protected:
         int n_nodes,
         const LeidenConfig& base_cfg,
         float bandwidth,
+        float resolution,
         int seed,
         bool run_phase2_for_score);
 

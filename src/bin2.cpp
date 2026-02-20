@@ -118,6 +118,9 @@ struct Bin2Config {
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
+    float res_search_min = 2.0f;       // Resolution sweep lower bound
+    float res_search_max = 12.0f;      // Resolution sweep upper bound
+    int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
     // CheckM marker files for proper colocation-weighted quality in QualityLeiden
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
@@ -2242,6 +2245,9 @@ int run_bin2(const Bin2Config& config) {
         qcfg.use_map_equation    = config.use_map_equation;
         qcfg.n_leiden_restarts   = config.n_leiden_restarts;
         qcfg.original_bandwidth  = config.bandwidth;
+        qcfg.res_search_min      = config.res_search_min;   // reuses calibration field for restart search
+        qcfg.res_search_max      = config.res_search_max;
+        qcfg.restart_stage1_res  = config.restart_stage1_res;
         qcfg.n_threads           = config.threads;
         if (plain_restarts) {
             // Plain bandwidth restarts: no marker edge penalization, no Phase 2.

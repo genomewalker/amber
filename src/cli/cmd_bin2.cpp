@@ -59,6 +59,9 @@ struct Bin2Config {
     bool use_map_equation = false;     // Phase 1b: marker-guided map equation refinement
     float quality_alpha = 1.0f;        // Quality weight (0=modularity only, 1=balanced)
     int n_leiden_restarts = 1;         // Best-of-K joint (res × seed) restart search (1=off)
+    float res_search_min = 2.0f;       // Resolution sweep lower bound
+    float res_search_max = 12.0f;      // Resolution sweep upper bound
+    int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
     int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
     std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
     std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
@@ -140,6 +143,10 @@ int cmd_bin2(int argc, char** argv) {
                       << "                         Selects best partition by internal SCG quality.\n"
                       << "                         Replaces fixed --resolution and --random-seed.\n"
                       << "                         N=1 (default, off). Recommended: N=25.\n"
+                      << "  --res-search-min FLOAT Resolution sweep lower bound (default: 2.0).\n"
+                      << "  --res-search-max FLOAT Resolution sweep upper bound (default: 12.0).\n"
+                      << "  --stage1-res N         Stage 1 resolution grid size (default: 1 = pinned\n"
+                      << "                         to --resolution value; 3 = sweep res dimension).\n"
                       << "  --encoder-restarts N   Consensus kNN: train N encoders independently,\n"
                       << "                         aggregate kNN edges (keep freq>= 2/3). Suppresses\n"
                       << "                         brittle cross-genome bridges from encoder variance.\n"
@@ -287,6 +294,15 @@ int cmd_bin2(int argc, char** argv) {
             config.n_leiden_restarts = std::stoi(argv[++i]);
             // Does NOT imply --quality-leiden: restarts run bandwidth sweep over
             // plain Leiden. Use --quality-leiden --leiden-restarts N to combine both.
+        }
+        else if (arg == "--res-search-min" && i + 1 < argc) {
+            config.res_search_min = std::stof(argv[++i]);
+        }
+        else if (arg == "--res-search-max" && i + 1 < argc) {
+            config.res_search_max = std::stof(argv[++i]);
+        }
+        else if (arg == "--stage1-res" && i + 1 < argc) {
+            config.restart_stage1_res = std::stoi(argv[++i]);
         }
         else if (arg == "--encoder-restarts" && i + 1 < argc) {
             config.n_encoder_restarts = std::stoi(argv[++i]);
