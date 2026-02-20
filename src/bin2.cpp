@@ -1305,31 +1305,56 @@ int run_bin2(const Bin2Config& config) {
         log.info("Global coverage normalization (all views) - cov_max=" + std::to_string(global_cov_max) +
                  ", var_max=" + std::to_string(global_var_max));
 
-        // Convert to tensors - ONLY view-specific features for contrastive learning
-        // COMEBin feature order: [sqrt(var), cov, TNF] = 138 dims
-        // NOTE: aDNA features are contig-level (same across views) so they break contrastive learning
-        // They will be added to embeddings AFTER encoding, before clustering
-        std::vector<torch::Tensor> view_tensors;
+        // Pre-compute multi-scale CGR features (contig-level, used as encoder input)
+        std::vector<bin2::MultiScaleCGRFeatures> cgr_feats(N);
+        #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
+        for (int i = 0; i < N; i++)
+            cgr_feats[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
+
+        // Encoder input: [sqrt(var), cov, TNF×136, CGR×9, aDNA×20] = 167 dims
+        // CGR and aDNA are contig-level (same across views) — valid encoder input.
+        // Avoids post-concatenation scale mismatch: all signals learned jointly,
+        // L2 normalization applied once to 128-dim encoder output only.
         bool has_adna = !damage_profiles.empty() && damage_profiles.size() == static_cast<size_t>(N);
-        int D = 138;  // View-specific features only
+        constexpr int D_cgr  = bin2::MultiScaleCGRFeatures::num_features();  // 9
+        constexpr int D_adna = 20;
+        int D = 138 + D_cgr + D_adna;  // 167
+        log.info("Encoder input: 138 (cov+TNF) + " + std::to_string(D_cgr) +
+                 " (CGR) + " + std::to_string(D_adna) + " (aDNA" +
+                 std::string(has_adna ? "" : " zeros") + ") = " + std::to_string(D) + " dims");
 
-        if (has_adna) {
-            log.info("aDNA features will be concatenated to embeddings after encoding (not used in contrastive training)");
-        }
+        // Helper: fill CGR + aDNA slice of a feature row (indices 138..166)
+        auto fill_cgr_adna = [&](auto& row, int i) {
+            float cgr_w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
+            int k = 138;
+            for (float f : cgr_feats[i].to_vector()) row[k++] = f * cgr_w;
+            if (has_adna) {
+                const auto& dmg = damage_profiles[i];
+                int a = 138 + D_cgr;
+                for (int j = 0; j < 5; j++) row[a++] = dmg.ct_rate_5p[j];
+                for (int j = 0; j < 5; j++) row[a++] = dmg.ga_rate_3p[j];
+                row[a++] = dmg.lambda_5p / 2.0f;
+                row[a++] = dmg.lambda_3p / 2.0f;
+                row[a++] = dmg.frag_len_mean / 150.0f;
+                row[a++] = dmg.frag_len_std / 50.0f;
+                row[a++] = std::log1p(dmg.cov_damaged_reads) / 5.0f;
+                row[a++] = std::log1p(dmg.cov_undamaged_reads) / 5.0f;
+                row[a++] = dmg.mm_5p_tc;
+                row[a++] = dmg.mm_3p_ct;
+                row[a++] = dmg.mm_5p_other;
+                row[a++] = dmg.mm_3p_other;
+            }
+        };
 
+        std::vector<torch::Tensor> view_tensors;
         for (int v = 0; v < n_views; v++) {
             torch::Tensor view_data = torch::zeros({N, D});
+            auto acc = view_data.accessor<float, 2>();
             for (int i = 0; i < N; i++) {
-                // sqrt(variance) FIRST (index 0) - GLOBAL normalization
-                float sqrt_var = static_cast<float>((std::sqrt(view_variances[v][i]) + 1e-5) / global_var_max);
-                view_data[i][0] = sqrt_var;
-                // Coverage (index 1) - GLOBAL normalization
-                float norm_cov = static_cast<float>((view_coverages[v][i] + 1e-5) / global_cov_max);
-                view_data[i][1] = norm_cov;
-                // TNF features (indices 2-137) - varies per view (substring augmentation)
-                for (int j = 0; j < 136; j++) {
-                    view_data[i][j + 2] = tnf_views[v][i][j];
-                }
+                acc[i][0] = static_cast<float>((std::sqrt(view_variances[v][i]) + 1e-5) / global_var_max);
+                acc[i][1] = static_cast<float>((view_coverages[v][i] + 1e-5) / global_cov_max);
+                for (int j = 0; j < 136; j++) acc[i][j + 2] = tnf_views[v][i][j];
+                fill_cgr_adna(acc[i], i);
             }
             view_tensors.push_back(view_data);
         }
@@ -1406,65 +1431,16 @@ int run_bin2(const Bin2Config& config) {
             trainer.train_multiview(amber_encoder, view_tensors);
         }
 
-        // Encode using original features (view 0) - 138 dims
+        // Encode using same layout as view tensors (167 dims: cov+TNF+CGR+aDNA)
         std::vector<std::vector<float>> encode_features(N);
         for (int i = 0; i < N; i++) {
-            encode_features[i].resize(D);  // D = 138
-            // sqrt(variance) FIRST (index 0) - MetaBAT2-style
+            encode_features[i].assign(D, 0.0f);
             encode_features[i][0] = static_cast<float>((std::sqrt(variances[i]) + 1e-5) / var_max);
-            // Coverage (index 1) - MetaBAT2-style
             encode_features[i][1] = static_cast<float>((coverages[i] + 1e-5) / cov_max);
-            // TNF features (indices 2-137)
-            for (int j = 0; j < 136; j++) {
-                encode_features[i][j + 2] = tnf_views[0][i][j];
-            }
+            for (int j = 0; j < 136; j++) encode_features[i][j + 2] = tnf_views[0][i][j];
+            fill_cgr_adna(encode_features[i], i);
         }
         embeddings = amber_encoder->encode(encode_features);
-
-        // AMBER-specific: Concatenate aDNA features to embeddings AFTER encoding
-        // This preserves contrastive learning while adding aDNA signal for clustering
-        if (has_adna) {
-            log.info("Concatenating 20 aDNA features to 128-dim embeddings (total 148 dims for clustering)");
-            for (int i = 0; i < N; i++) {
-                const auto& dmg = damage_profiles[i];
-                // Append 20 aDNA features to embedding
-                // Damage profile (10 dims)
-                for (int j = 0; j < 5; j++) embeddings[i].push_back(dmg.ct_rate_5p[j]);
-                for (int j = 0; j < 5; j++) embeddings[i].push_back(dmg.ga_rate_3p[j]);
-                // Damage decay (2 dims)
-                embeddings[i].push_back(dmg.lambda_5p / 2.0f);
-                embeddings[i].push_back(dmg.lambda_3p / 2.0f);
-                // Fragment length (2 dims)
-                embeddings[i].push_back(dmg.frag_len_mean / 150.0f);
-                embeddings[i].push_back(dmg.frag_len_std / 50.0f);
-                // Damage-stratified coverage (2 dims)
-                embeddings[i].push_back(std::log1p(dmg.cov_damaged_reads) / 5.0f);
-                embeddings[i].push_back(std::log1p(dmg.cov_undamaged_reads) / 5.0f);
-                // Mismatch spectrum (4 dims)
-                embeddings[i].push_back(dmg.mm_5p_tc);
-                embeddings[i].push_back(dmg.mm_3p_ct);
-                embeddings[i].push_back(dmg.mm_5p_other);
-                embeddings[i].push_back(dmg.mm_3p_other);
-            }
-        }
-
-        // Append 9 multi-scale CGR features (scale-transition entropy/occupancy/lacunarity)
-        // Captures sequence complexity at multiple scales, orthogonal to damage features
-        {
-            int total_dims = (int)embeddings[0].size() + bin2::MultiScaleCGRFeatures::num_features();
-            log.info("Concatenating 9 CGR features to embeddings (total " +
-                     std::to_string(total_dims) + " dims for clustering)");
-            std::vector<bin2::MultiScaleCGRFeatures> cgr_features(N);
-            #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
-            for (int i = 0; i < N; i++) {
-                cgr_features[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
-            }
-            for (int i = 0; i < N; i++) {
-                float w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
-                for (float f : cgr_features[i].to_vector())
-                    embeddings[i].push_back(f * w);
-            }
-        }
 
     auto train_end = std::chrono::steady_clock::now();
     auto train_s = std::chrono::duration_cast<std::chrono::seconds>(train_end - train_start).count();
@@ -1493,12 +1469,6 @@ int run_bin2(const Bin2Config& config) {
         log.info("Consensus kNN: " + std::to_string(config.n_encoder_restarts) +
                  " encoder runs (base seed=" + std::to_string(config.encoder_seed) + ", hash-spread)");
 
-        // Pre-compute CGR features once (deterministic, identical for all encoder runs).
-        std::vector<bin2::MultiScaleCGRFeatures> cgr_feats_cached(N);
-        #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
-        for (int i = 0; i < N; i++)
-            cgr_feats_cached[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
-
         bin2::ConsensusKnnConfig cknn_cfg;
         cknn_cfg.k = config.k;
         cknn_cfg.bandwidth = config.bandwidth;
@@ -1512,7 +1482,7 @@ int run_bin2(const Bin2Config& config) {
         const int max_extra = config.encoder_qc_max_extra;
         float best_sep_score = 0.0f;
 
-        // Run 0: already L2-normalized in `embeddings` (128+20+9 = 157 dims).
+        // Run 0: already L2-normalized in `embeddings` (128 dims, encoder learned CGR+aDNA).
         consensus_builder.add_embeddings(embeddings);
 
         // SCG separation score for run 0
@@ -1582,34 +1552,8 @@ int run_bin2(const Bin2Config& config) {
             else
                 run_trainer.train_multiview(run_encoder, view_tensors);
 
-            // Encode using view-0 features (same encode_features as run 0).
+            // Encode using same 167-dim features as run 0 (CGR+aDNA in encoder input).
             auto run_embeddings = run_encoder->encode(encode_features);
-
-            // Append aDNA features (20 dims, identical offsets as run 0).
-            if (has_adna) {
-                for (int i = 0; i < N; i++) {
-                    const auto& dmg = damage_profiles[i];
-                    for (int j = 0; j < 5; j++) run_embeddings[i].push_back(dmg.ct_rate_5p[j]);
-                    for (int j = 0; j < 5; j++) run_embeddings[i].push_back(dmg.ga_rate_3p[j]);
-                    run_embeddings[i].push_back(dmg.lambda_5p / 2.0f);
-                    run_embeddings[i].push_back(dmg.lambda_3p / 2.0f);
-                    run_embeddings[i].push_back(dmg.frag_len_mean / 150.0f);
-                    run_embeddings[i].push_back(dmg.frag_len_std / 50.0f);
-                    run_embeddings[i].push_back(std::log1p(dmg.cov_damaged_reads) / 5.0f);
-                    run_embeddings[i].push_back(std::log1p(dmg.cov_undamaged_reads) / 5.0f);
-                    run_embeddings[i].push_back(dmg.mm_5p_tc);
-                    run_embeddings[i].push_back(dmg.mm_3p_ct);
-                    run_embeddings[i].push_back(dmg.mm_5p_other);
-                    run_embeddings[i].push_back(dmg.mm_3p_other);
-                }
-            }
-
-            // Append CGR features (9 dims, length-weighted).
-            for (int i = 0; i < N; i++) {
-                float w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
-                for (float f : cgr_feats_cached[i].to_vector())
-                    run_embeddings[i].push_back(f * w);
-            }
 
             // L2 normalize.
             if (config.l2_normalize) {
