@@ -884,7 +884,7 @@ public:
                           const std::vector<DamageProfile>& damage_profiles,
                           const ContigMarkerLookup& scg_lookup) {
         const bool has_damage = config_.use_damage_infonce && !damage_profiles.empty();
-        const bool has_scg = !scg_lookup.empty();
+        const bool has_scg = config_.use_scg_infonce && !scg_lookup.empty();
 
         if (!has_scg) {
             if (has_damage) return train_multiview(encoder, views, damage_profiles);
