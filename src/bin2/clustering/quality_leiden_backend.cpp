@@ -1259,15 +1259,6 @@ int QualityLeidenBackend::decontaminate(std::vector<int>& labels,
         n = new_n;
     }
 
-    // Phase 4P: second Phase 3 rescue pass.
-    // Phase 4 evictions move contigs out of overcrowded bins, making them
-    // available as recruits for near-HQ bins that Phase 3 (pre-Phase-4) missed.
-    {
-        n = compact_labels(labels);
-        run_phase3_rescue(labels, n);
-        n = compact_labels(labels);
-    }
-
     return n;
 }
 
