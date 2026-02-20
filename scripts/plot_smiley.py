@@ -72,6 +72,17 @@ def load_damage_params(filepath: str) -> pd.DataFrame:
         damage_df = damage_df.rename(columns={'bin_id': 'bin'})
         return damage_df
 
+    # Handle column aliases from bin2 output
+    col_aliases = {
+        'bin_name': 'bin',
+        'p_ancient_mean': 'p_ancient',
+        'amp5': 'amplitude_5p',
+        'amp3': 'amplitude_3p',
+        'lambda5': 'lambda_5p',
+        'lambda3': 'lambda_3p',
+    }
+    df = df.rename(columns={k: v for k, v in col_aliases.items() if k in df.columns})
+
     # Check if this is damage_per_bin.tsv format
     if 'bin' in df.columns and 'p_ancient' in df.columns:
         return df
@@ -142,7 +153,27 @@ def plot_single_bin(
     status_text = damage_class.capitalize()
 
     title_fontsize = 10 if compact else 12
-    ax.set_title(bin_name, fontsize=title_fontsize, color=PALETTE['text'],
+    # Build title: bin name + CheckM2 quality if available
+    title = bin_name
+    if damage_params:
+        comp = damage_params.get('completeness', None)
+        cont = damage_params.get('contamination', None)
+        if comp is not None and cont is not None:
+            if comp >= 90 and cont < 5:
+                quality_label = f"HQ {comp:.0f}%/{cont:.1f}%"
+                title_color = '#27AE60'
+            elif comp >= 50 and cont < 10:
+                quality_label = f"MQ {comp:.0f}%/{cont:.1f}%"
+                title_color = '#F39C12'
+            else:
+                quality_label = f"{comp:.0f}%/{cont:.1f}%"
+                title_color = '#95A5A6'
+            title = f"{bin_name}  [{quality_label}]"
+        else:
+            title_color = PALETTE['text']
+    else:
+        title_color = PALETTE['text']
+    ax.set_title(title, fontsize=title_fontsize, color=title_color,
                  fontweight='bold', pad=8 if compact else 12)
 
     info_fontsize = 7 if compact else 9

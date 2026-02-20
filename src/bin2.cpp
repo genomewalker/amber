@@ -54,6 +54,8 @@
 #include <htslib/sam.h>
 #include <htslib/faidx.h>
 
+#include "bin2_config.h"
+
 namespace amber {
 
 // Resolve a relative data path: check CWD first (backward-compat), then
@@ -69,63 +71,7 @@ static std::string find_amber_data(const std::string& rel_path) {
     return rel_path;
 }
 
-struct Bin2Config {
-    std::string contigs_path;
-    std::string bam_path;
-    std::string output_dir;
-    std::string seed_file;         // SCG marker seed file
-    std::string hmm_file;          // HMM file for auto seed generation
-    std::string hmmsearch_path;    // Path to hmmsearch binary
-    std::string fraggenescan_path; // Path to FragGeneScan binary
-    std::string embeddings_file;   // Pre-computed embeddings TSV (skip training)
-    int threads = 16;
-    int min_length = 1001;         // COMEBin default (filters > 1000bp)
-    int min_bin_size = 200000;     // 200kb minimum bin size
-    int epochs = 100;
-    int batch_size = 1024;         // COMEBin default
-    int embedding_dim = 128;
-    float learning_rate = 0.001f;
-    float temperature = 0.1f;      // COMEBin default
-    // Clustering parameters
-    int k = 100;                   // kNN neighbors (AMBER default)
-    int partgraph_ratio = 50;      // Percentile cutoff for edge pruning
-    float resolution = 1.0f;       // Leiden resolution
-    float bandwidth = 0.1f;        // Edge weighting bandwidth
-    // Flags
-    bool l2_normalize = true;      // L2 normalize embeddings before clustering
-    bool verbose = false;
-    bool force_cpu = false;        // Force CPU mode even if GPU is available
-    int hidden_dim = 2048;         // Hidden layer size (COMEBin default: 2048)
-    int n_layer = 3;               // Number of hidden layers (COMEBin default: 3)
-    float dropout = 0.2f;          // Dropout rate (COMEBin default: 0.2)
-    int random_seed = 42;          // Random seed for Leiden clustering
-    int encoder_seed = 42;         // Random seed for encoder training (optimal)
-    // Damage-aware features (experimental)
-    bool use_damage_infonce = false;   // Use damage-weighted InfoNCE loss
-    float damage_lambda = 0.5f;        // Damage attenuation strength (0.4-0.6)
-    float damage_wmin = 0.5f;          // Minimum negative weight (keep graph connected)
-    bool use_multiscale_cgr = false;   // Use multi-scale CGR late fusion
-    int n_leiden_restarts = 1;         // Best-of-K joint seed restart search (1=off)
-    int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
-    int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
-    // CheckM marker files for proper colocation-weighted quality in QualityLeiden
-    std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
-    std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
-    std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
-    // SCG hard negative mining
-    bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
-    float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
-    // Phase 4E tuning
-    float phase4e_entry_contamination = 3.0f;
-    float phase4e_sigma_threshold = 1.0f;
-    // Gradient clipping and EMA
-    float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
-    bool use_ema = false;              // EMA of encoder weights for final embeddings
-    float ema_decay = 0.999f;          // EMA decay rate
-    // QC gate: retry poor encoder runs
-    float encoder_qc_threshold = 0.8f; // Retry if score < threshold * best
-    int encoder_qc_max_extra = 2;      // Max extra encoder restarts via QC gate
-};
+// Bin2Config defined in bin2_config.h
 
 // Load seed marker contig names from TSV (contig\tcluster) or one-per-line format
 std::vector<std::string> load_seed_markers(const std::string& path) {
@@ -423,7 +369,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
     const std::string& bam_path,
     const std::vector<std::pair<std::string, std::string>>& contigs,
     int threads,
-    int n_terminal = 5) {
+    int n_terminal = 15) {
 
     // Damage model parameters (calibrated for ancient DNA)
     const DamageModelParams params = {
@@ -438,8 +384,10 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
     std::vector<float> contig_lengths(contigs.size());
 
     // Per-position damage rates (for smiley plot)
-    // [position 0-9][0=C_total, 1=C_to_T, 2=G_total, 3=G_to_A]
-    std::vector<std::array<std::atomic<int>, 40>> position_stats(contigs.size());
+    // [position 0..n_terminal-1][0=C_total, 1=C_to_T, 2=G_total, 3=G_to_A]
+    // MAX_SMILEY_POS slots per contig; only first n_terminal are populated
+    constexpr int N_STAT_SLOTS = bin2::DamageProfile::MAX_SMILEY_POS * 4;
+    std::vector<std::array<std::atomic<int>, N_STAT_SLOTS>> position_stats(contigs.size());
     for (auto& ps : position_stats) {
         for (auto& a : ps) a.store(0);
     }
@@ -482,7 +430,9 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                         continue;
 
                     int read_len = aln->core.l_qseq;
-                    if (read_len < 2 * n_terminal) continue;
+                    if (read_len < 10) continue;
+                    // Use at most half the read per end to avoid 5'/3' overlap
+                    int eff_n = std::min(n_terminal, read_len / 2);
 
                     uint8_t* bam_seq = bam_get_seq(aln);
                     uint8_t* bam_qual = bam_get_qual(aln);
@@ -494,7 +444,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                     int informative_positions = 0;
 
                     // Check 5' terminal positions
-                    for (int i = 0; i < std::min(n_terminal, read_len); i++) {
+                    for (int i = 0; i < eff_n; i++) {
                         if (ref_pos + i >= contig_length) break;
                         char ref_base = std::toupper(seq[ref_pos + i]);
                         char read_base = seq_nt16_str[bam_seqi(bam_seq, i)];
@@ -502,7 +452,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                         int dist = i + 1;
 
                         // Track per-position C→T stats
-                        if (i < 10 && ref_base == 'C') {
+                        if (ref_base == 'C') {
                             pos_stats[i * 4 + 0].fetch_add(1);
                             if (read_base == 'T') pos_stats[i * 4 + 1].fetch_add(1);
                         }
@@ -528,7 +478,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                     }
 
                     // Check 3' terminal positions
-                    for (int i = 0; i < std::min(n_terminal, read_len); i++) {
+                    for (int i = 0; i < eff_n; i++) {
                         int read_idx = read_len - 1 - i;
                         int ref_idx = ref_pos + read_len - 1 - i;
                         if (ref_idx >= (int)contig_length || ref_idx < 0) continue;
@@ -538,7 +488,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                         int dist = i + 1;
 
                         // Track per-position G→A stats
-                        if (i < 10 && ref_base == 'G') {
+                        if (ref_base == 'G') {
                             pos_stats[i * 4 + 2].fetch_add(1);
                             if (read_base == 'A') pos_stats[i * 4 + 3].fetch_add(1);
                         }
@@ -598,7 +548,12 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
 
         // Compute per-position damage rates (smiley plot data)
         const auto& ps = position_stats[ci];
-        for (int i = 0; i < 10; i++) {
+        // Initialize unfilled positions to 0.5 (uninformative prior)
+        for (int i = 0; i < bin2::DamageProfile::MAX_SMILEY_POS; i++) {
+            profile.ct_rate_5p[i] = 0.5f;
+            profile.ga_rate_3p[i] = 0.5f;
+        }
+        for (int i = 0; i < n_terminal; i++) {
             int c_total = ps[i * 4 + 0].load();
             int ct_count = ps[i * 4 + 1].load();
             int g_total = ps[i * 4 + 2].load();
@@ -613,9 +568,9 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
             profile.n_ga_3p[i]  = static_cast<uint64_t>(ga_count);
         }
 
-        // Fit exponential decay to estimate lambda
-        auto [lambda_5p, amp_5p] = fit_damage_decay(profile.ct_rate_5p, 10);
-        auto [lambda_3p, amp_3p] = fit_damage_decay(profile.ga_rate_3p, 10);
+        // Fit exponential decay to estimate lambda (use all populated positions)
+        auto [lambda_5p, amp_5p] = fit_damage_decay(profile.ct_rate_5p, n_terminal);
+        auto [lambda_3p, amp_3p] = fit_damage_decay(profile.ga_rate_3p, n_terminal);
         profile.lambda_5p = lambda_5p;
         profile.lambda_3p = lambda_3p;
         profile.amplitude_5p = amp_5p;
@@ -1029,7 +984,8 @@ int run_bin2(const Bin2Config& config) {
     std::vector<bin2::DamageProfile> damage_profiles;
     if (!config.bam_path.empty() && std::filesystem::exists(config.bam_path)) {
         log.info("Extracting aDNA damage profiles from BAM (C→T at 5', G→A at 3', fragment length, mismatch spectrum)");
-        auto damage_map = extract_damage_profiles(config.bam_path, contigs, config.threads);
+        auto damage_map = extract_damage_profiles(config.bam_path, contigs, config.threads,
+                                                   config.damage_positions);
         damage_profiles.resize(contigs.size());
         float total_neff = 0.0f;
         int n_informative = 0;
@@ -1086,14 +1042,14 @@ int run_bin2(const Bin2Config& config) {
         // Dump smiley plot data (position-specific damage rates)
         std::ofstream smiley_out(config.output_dir + "/smiley_plot_rates.tsv");
         smiley_out << "contig";
-        for (int p = 0; p < 10; p++) smiley_out << "\tct_5p_" << p;
-        for (int p = 0; p < 10; p++) smiley_out << "\tga_3p_" << p;
+        for (int p = 0; p < config.damage_positions; p++) smiley_out << "\tct_5p_" << p;
+        for (int p = 0; p < config.damage_positions; p++) smiley_out << "\tga_3p_" << p;
         smiley_out << "\n";
         for (size_t i = 0; i < contigs.size(); i++) {
             const auto& d = damage_profiles[i];
             smiley_out << contigs[i].first;
-            for (int p = 0; p < 10; p++) smiley_out << "\t" << d.ct_rate_5p[p];
-            for (int p = 0; p < 10; p++) smiley_out << "\t" << d.ga_rate_3p[p];
+            for (int p = 0; p < config.damage_positions; p++) smiley_out << "\t" << d.ct_rate_5p[p];
+            for (int p = 0; p < config.damage_positions; p++) smiley_out << "\t" << d.ga_rate_3p[p];
             smiley_out << "\n";
         }
         smiley_out.close();
@@ -2059,14 +2015,16 @@ int run_bin2(const Bin2Config& config) {
             for (size_t idx : members) bin_bp += contigs[idx].second.length();
             if (static_cast<int>(bin_bp) < config.min_bin_size) continue;
 
-            std::array<uint64_t, 10> pool_n5{}, pool_k5{}, pool_n3{}, pool_k3{};
+            const int n_pos = config.damage_positions;
+            std::vector<uint64_t> pool_n5(n_pos, 0), pool_k5(n_pos, 0),
+                                   pool_n3(n_pos, 0), pool_k3(n_pos, 0);
             double sum_panc = 0.0;
             int total_reads = 0;
             for (size_t idx : members) {
                 const auto& dp = damage_profiles[idx];
                 sum_panc   += static_cast<double>(dp.p_anc) * dp.n_reads;
                 total_reads += dp.n_reads;
-                for (int p = 0; p < 10; ++p) {
+                for (int p = 0; p < n_pos; ++p) {
                     pool_n5[p] += dp.n_opp_5p[p];
                     pool_k5[p] += dp.n_ct_5p[p];
                     pool_n3[p] += dp.n_opp_3p[p];
@@ -2076,11 +2034,7 @@ int run_bin2(const Bin2Config& config) {
             float p_anc = (total_reads > 0)
                         ? static_cast<float>(sum_panc / total_reads) : 0.5f;
 
-            std::vector<uint64_t> vn5(pool_n5.begin(), pool_n5.end());
-            std::vector<uint64_t> vk5(pool_k5.begin(), pool_k5.end());
-            std::vector<uint64_t> vn3(pool_n3.begin(), pool_n3.end());
-            std::vector<uint64_t> vk3(pool_k3.begin(), pool_k3.end());
-            auto model = fit_damage_model(vn5, vk5, vn3, vk3, 0.5);
+            auto model = fit_damage_model(pool_n5, pool_k5, pool_n3, pool_k3, 0.5);
 
             float ct1 = (pool_n5[0] > 0)
                       ? static_cast<float>(pool_k5[0]) / pool_n5[0] : 0.0f;

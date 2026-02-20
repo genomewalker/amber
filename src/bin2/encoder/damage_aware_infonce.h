@@ -24,9 +24,10 @@ struct DamageProfile {
     float log_ratio = 0.0f; // log((cov_anc+eps)/(cov_mod+eps))
 
     // === Per-position damage rates (smiley plot) ===
-    // Position 0 = terminal base, position 9 = 10th base from end
-    float ct_rate_5p[10] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};  // C→T at 5'
-    float ga_rate_3p[10] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};  // G→A at 3'
+    // Position 0 = terminal base, up to MAX_SMILEY_POS bases from end
+    static constexpr int MAX_SMILEY_POS = 25;
+    float ct_rate_5p[MAX_SMILEY_POS] = {};  // C→T at 5' (default 0.5 set in extract_damage_profiles)
+    float ga_rate_3p[MAX_SMILEY_POS] = {};  // G→A at 3'
 
     // === aDNA-specific features (AMBER novel) ===
 
@@ -62,10 +63,10 @@ struct DamageProfile {
     int n_undamaged_reads = 0;
 
     // Raw counts for bin-level damage aggregation (pooled then re-fitted)
-    uint64_t n_opp_5p[10] = {0};  // C opportunities at 5' positions 0-9
-    uint64_t n_ct_5p[10]  = {0};  // C→T mismatches at 5' positions 0-9
-    uint64_t n_opp_3p[10] = {0};  // G opportunities at 3' positions 0-9
-    uint64_t n_ga_3p[10]  = {0};  // G→A mismatches at 3' positions 0-9
+    uint64_t n_opp_5p[MAX_SMILEY_POS] = {};  // C opportunities at 5' positions
+    uint64_t n_ct_5p[MAX_SMILEY_POS]  = {};  // C→T mismatches at 5' positions
+    uint64_t n_opp_3p[MAX_SMILEY_POS] = {};  // G opportunities at 3' positions
+    uint64_t n_ga_3p[MAX_SMILEY_POS]  = {};  // G→A mismatches at 3' positions
 
     // === Helper methods ===
     float mean_5p_damage() const {

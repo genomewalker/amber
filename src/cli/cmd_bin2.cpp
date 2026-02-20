@@ -2,69 +2,12 @@
 // CLI handler for the 'bin2' subcommand (self-contrastive binner)
 
 #include "cli_common.h"
+#include "../bin2_config.h"
 #include <iostream>
 #include <string>
 #include <cstring>
 
 namespace amber {
-
-// Forward declaration
-struct Bin2Config {
-    std::string contigs_path;
-    std::string bam_path;
-    std::string output_dir;
-    std::string seed_file;         // SCG marker seed file
-    std::string hmm_file;          // HMM file for auto seed generation
-    std::string hmmsearch_path;    // Path to hmmsearch binary
-    std::string fraggenescan_path; // Path to FragGeneScan binary
-    std::string embeddings_file;   // Pre-computed embeddings TSV (skip training)
-    int threads = 16;
-    int min_length = 1001;         // AMBER default (filters > 1000bp)
-    int min_bin_size = 200000;     // 200kb minimum bin size
-    int epochs = 100;
-    int batch_size = 1024;         // AMBER default
-    int embedding_dim = 128;
-    float learning_rate = 0.001f;
-    float temperature = 0.1f;      // AMBER default
-    // Clustering parameters (tuned for 9 HQ bins)
-    int k = 100;                   // kNN neighbors (AMBER default)
-    int partgraph_ratio = 50;      // Percentile cutoff for edge pruning
-    float resolution = 5.0f;       // Leiden resolution (optimal)
-    float bandwidth = 0.2f;        // Edge weighting bandwidth (optimal)
-    // Flags
-    bool l2_normalize = true;      // L2 normalize embeddings before clustering
-    bool verbose = false;
-    bool force_cpu = false;        // Force CPU mode even if GPU is available
-    int hidden_dim = 2048;         // Hidden layer size (AMBER default: 2048)
-    int n_layer = 3;               // Number of hidden layers (AMBER default: 3)
-    float dropout = 0.2f;          // Dropout rate (AMBER default: 0.2)
-    int random_seed = 1006;        // Random seed for Leiden clustering (optimal)
-    int encoder_seed = 42;         // Random seed for encoder training (optimal)
-    // Damage-aware features (experimental)
-    bool use_damage_infonce = false;   // Use damage-weighted InfoNCE loss
-    float damage_lambda = 0.5f;        // Damage attenuation strength (0.4-0.6)
-    float damage_wmin = 0.5f;          // Minimum negative weight
-    bool use_multiscale_cgr = false;   // Use multi-scale CGR late fusion
-    int n_leiden_restarts = 1;         // Seed restart search budget (1=off, 25=recommended)
-    int restart_stage1_res = 1;        // Resolution grid points in Stage 1 (1 = pinned)
-    int n_encoder_restarts = 1;        // Consensus kNN: train N encoders, aggregate edges (1=off)
-    std::string checkm_hmm_file;       // HMM for CheckM markers (default: auxiliary/checkm_markers_only.hmm)
-    std::string bacteria_ms_file;      // CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)
-    std::string archaea_ms_file;       // CheckM archaea marker sets (default: scripts/checkm_ms/archaea.ms)
-    // SCG hard negative mining
-    bool use_scg_infonce = false;      // Boost SCG-sharing contig pairs as InfoNCE hard negatives
-    float scg_boost = 2.0f;            // Multiplicative boost for shared-marker pairs (default: 2.0)
-    // Phase 4E tuning
-    float phase4e_entry_contamination = 3.0f;
-    float phase4e_sigma_threshold = 1.0f;
-    // Gradient clipping and EMA
-    float grad_clip = 1.0f;            // Global gradient norm clip (0 = disabled)
-    bool use_ema = false;              // EMA of encoder weights for final embeddings
-    float ema_decay = 0.999f;          // EMA decay rate
-    // QC gate: retry poor encoder runs
-    float encoder_qc_threshold = 0.8f; // Retry if score < threshold * best
-    int encoder_qc_max_extra = 2;      // Max extra encoder restarts via QC gate
-};
 
 extern int run_bin2(const Bin2Config& config);
 
@@ -147,7 +90,9 @@ int cmd_bin2(int argc, char** argv) {
                       << "  --ema-decay FLOAT      EMA decay rate (default: 0.999)\n"
                       << "Encoder QC Gate:\n"
                       << "  --encoder-qc-threshold F  Retry if score < threshold * best (default: 0.8)\n"
-                      << "  --encoder-qc-max-extra N  Max extra encoder retries via QC gate (default: 2)\n";
+                      << "  --encoder-qc-max-extra N  Max extra encoder retries via QC gate (default: 2)\n"
+                      << "Damage Profile:\n"
+                      << "  --damage-positions N   Terminal positions for smiley plot and likelihood (default: 15, max: 25)\n";
             return 0;
         }
         else if (arg == "--contigs" && i + 1 < argc) {
@@ -281,6 +226,13 @@ int cmd_bin2(int argc, char** argv) {
         }
         else if (arg == "--ema-decay" && i + 1 < argc) {
             config.ema_decay = std::stof(argv[++i]);
+        }
+        else if (arg == "--damage-positions" && i + 1 < argc) {
+            config.damage_positions = std::stoi(argv[++i]);
+            if (config.damage_positions < 1 || config.damage_positions > 25) {
+                std::cerr << "ERROR: --damage-positions must be 1..25\n";
+                return 1;
+            }
         }
         else if (arg == "--encoder-qc-threshold" && i + 1 < argc) {
             config.encoder_qc_threshold = std::stof(argv[++i]);
