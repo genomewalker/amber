@@ -191,18 +191,6 @@ public:
 
         return results;
     }
-
-    // Sigmoid reliability weight based on contig length.
-    // CGR stats become unreliable on short contigs (<3kb) because the 64x64
-    // grid has too few points per cell. Weight attenuates CGR contribution
-    // smoothly so short contigs fall back on encoder+aDNA features.
-    // L_half=4000: 50% weight at 4kb (grounded in Bog-38 contamination analysis:
-    // contaminating contigs avg 2.2kb, core archaeal contigs avg 4.8kb).
-    static float length_weight(size_t seq_len, int L_half = 4000, float k = 4.0f) {
-        float x = k * (std::log10(static_cast<float>(seq_len))
-                     - std::log10(static_cast<float>(L_half)));
-        return 1.0f / (1.0f + std::exp(-x));
-    }
 };
 
 #ifdef USE_LIBTORCH
