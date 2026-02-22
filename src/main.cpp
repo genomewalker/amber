@@ -12,6 +12,7 @@ namespace amber {
     int cmd_chimera(int argc, char** argv);
     int cmd_deconvolve(int argc, char** argv);
     int cmd_seeds(int argc, char** argv);
+    int cmd_resolve(int argc, char** argv);
 }
 
 constexpr const char* CODENAME = "Ancient Metagenomic BinnER";
@@ -27,6 +28,7 @@ static void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " <command> [options]\n\n";
     std::cerr << "Commands:\n";
     std::cerr << "  bin              Bin contigs (damage-aware contrastive learning)\n";
+    std::cerr << "  resolve          Aggregate bins from multiple independent runs\n";
     std::cerr << "  chimera          Detect chimeric contigs and misassemblies\n";
     std::cerr << "  deconvolve       Separate ancient and modern DNA populations\n";
     std::cerr << "  seeds            Generate SCG marker seeds for binning\n";
@@ -62,6 +64,8 @@ int main(int argc, char** argv) {
 
     if (cmd == "bin") {
         return amber::cmd_bin(argc, argv);
+    } else if (cmd == "resolve") {
+        return amber::cmd_resolve(argc - 1, argv + 1);
     } else if (cmd == "chimera") {
         return amber::cmd_chimera(argc - 1, argv + 1);
     } else if (cmd == "deconvolve") {
