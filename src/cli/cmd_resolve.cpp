@@ -361,174 +361,212 @@ int cmd_resolve(int argc, char** argv) {
     std::cerr << "[resolve] Best: res=" << best_res << " clusters=" << best.num_clusters
               << " scg_score=" << best_scg << "\n";
 
-    // ── 7. Write output ───────────────────────────────────────────────────────
+    // ── 7. Reverse lookup: union_ci → local index per run (O(1) damage access) ─
+    std::vector<std::vector<int>> ci_to_local(R, std::vector<int>(N, -1));
+    for (int r = 0; r < R; r++)
+        for (uint32_t ai = 0; ai < runs[r].n_contigs; ai++) {
+            int si = remap[r][ai];
+            if (si >= 0) ci_to_local[r][si] = ai;
+        }
 
+    // ── 8. Load FASTA, compute per-contig GC ──────────────────────────────────
     auto contigs = load_fasta(contigs_path);
     std::unordered_map<std::string,int> fa_idx;
     fa_idx.reserve(contigs.size());
     for (int i = 0; i < (int)contigs.size(); i++)
         fa_idx[contigs[i].first] = i;
 
-    // Map shared_ci → fasta index
     std::vector<int> shared_to_fa(N, -1);
     for (int i = 0; i < N; i++) {
         auto it = fa_idx.find(all_names[i]);
         if (it != fa_idx.end()) shared_to_fa[i] = it->second;
     }
 
-    // Group shared contigs by cluster label
-    std::unordered_map<int,std::vector<int>> cluster_members;
-    for (int i = 0; i < N; i++) {
-        int lbl = best.labels[i];
-        if (lbl >= 0) cluster_members[lbl].push_back(i);
+    std::vector<float> fa_gc(contigs.size(), 0.0f);
+    for (int i = 0; i < (int)contigs.size(); i++) {
+        const auto& s = contigs[i].second;
+        if (s.empty()) continue;
+        int gc = 0;
+        for (char c : s) if (c=='G'||c=='g'||c=='C'||c=='c') gc++;
+        fa_gc[i] = static_cast<float>(gc) / static_cast<float>(s.size());
     }
 
-    // Score each cluster by SCG completeness for stats output
+    // ── 9. Group contigs by cluster; sort by label for stable bin naming ──────
+    std::unordered_map<int,std::vector<int>> cluster_map;
+    for (int i = 0; i < N; i++) {
+        int lbl = best.labels[i];
+        if (lbl >= 0) cluster_map[lbl].push_back(i);
+    }
+    std::vector<std::pair<int,std::vector<int>>> clusters;
+    clusters.reserve(cluster_map.size());
+    for (auto& [lbl, members] : cluster_map)
+        if ((int)members.size() >= 5)
+            clusters.emplace_back(lbl, std::move(members));
+    std::sort(clusters.begin(), clusters.end(),
+              [](const auto& a, const auto& b){ return a.first < b.first; });
+
+    // ── 10. Intra-bin mean edge weight (co-binning stability) ─────────────────
+    std::unordered_map<int,double> bin_edge_sum;
+    std::unordered_map<int,int>    bin_edge_cnt;
+    for (const auto& e : edges) {
+        int lu = best.labels[e.u];
+        int lv = best.labels[e.v];
+        if (lu >= 0 && lu == lv) { bin_edge_sum[lu] += e.w; bin_edge_cnt[lu]++; }
+    }
+
+    // ── 11. Damage availability ───────────────────────────────────────────────
+    constexpr int kDmgPAnc     = 0;
+    constexpr int kDmgNEff     = 2;
+    constexpr int kDmgCtStart  = 6;   // CT rates positions 1-25 (5' end)
+    constexpr int kDmgGaStart  = 31;  // GA rates positions 1-25 (3' end)
+    constexpr int kDmgLambda5  = 56;
+    constexpr int kDmgLambda3  = 57;
+    constexpr int kDmgAmp5     = 58;
+    constexpr int kDmgAmp3     = 59;
+    constexpr int kDmgFragMean = 60;
+    constexpr int kDmgFragStd  = 61;
+
+    bool has_damage = false;
+    for (int r = 0; r < R; r++)
+        if (!runs[r].damage.empty() && runs[r].dmg_dim >= 63) { has_damage = true; break; }
+
     uint32_t total_markers = runs[0].total_markers;
+
+    // ── 12. Write all outputs in one stable pass over sorted clusters ─────────
+    std::ofstream f_stats(output_dir + "/bin_stats.tsv");
+    f_stats << "bin\tcluster_id\tn_contigs\tgenome_size\tn50\tmax_contig\t"
+            << "gc_content\tscg_completeness\tscg_contamination\tmean_cobin_weight\n";
+
+    std::ofstream f_dmg, f_smiley;
+    if (has_damage) {
+        f_dmg.open(output_dir + "/damage_per_bin.tsv");
+        f_dmg << "bin\tp_ancient\tlambda5\tlambda3\tamplitude_5p\tamplitude_3p\t"
+              << "ct_1p\tga_1p\tfrag_mean\tfrag_std\tdamage_class\n";
+        f_smiley.open(output_dir + "/smiley_plot_rates.tsv");
+        f_smiley << "bin\tposition\tct_rate\tga_rate\n";
+    }
+
     int bin_num = 0;
-    std::ofstream stats(output_dir + "/resolve_stats.tsv");
-    stats << "bin\tcluster_id\tn_contigs\tcompleteness\tcontamination\n";
+    for (auto& [lbl, members] : clusters) {
+        bin_num++;
+        std::string name = "bin_" + std::to_string(bin_num);
 
-    for (auto& [lbl, members] : cluster_members) {
-        if (members.size() < 5) continue;
+        // FASTA output
+        {
+            std::ofstream fa_out(output_dir + "/" + name + ".fa");
+            for (int ci : members) {
+                int fi = shared_to_fa[ci];
+                if (fi >= 0) fa_out << ">" << contigs[fi].first << "\n" << contigs[fi].second << "\n";
+            }
+        }
 
-        // SCG completeness (index via union_to_run0)
+        // Genome assembly stats (from FASTA lengths)
+        std::vector<int> lens;
+        lens.reserve(members.size());
+        double gc_sum = 0.0;
+        int64_t genome_size = 0;
+        for (int ci : members) {
+            int fi = shared_to_fa[ci];
+            if (fi < 0) continue;
+            int len = static_cast<int>(contigs[fi].second.size());
+            lens.push_back(len);
+            genome_size += len;
+            gc_sum += static_cast<double>(fa_gc[fi]) * len;
+        }
+        float gc = genome_size > 0 ? static_cast<float>(gc_sum / genome_size) : 0.0f;
+        int max_contig = lens.empty() ? 0 : *std::max_element(lens.begin(), lens.end());
+        int n50 = 0;
+        if (!lens.empty()) {
+            std::sort(lens.begin(), lens.end(), std::greater<int>());
+            int64_t half = genome_size / 2, cum = 0;
+            for (int l : lens) { cum += l; if (cum >= half) { n50 = l; break; } }
+        }
+
+        // SCG completeness
         float comp = 0.0f, cont = 0.0f;
         if (total_markers > 0 && !scg.empty()) {
-            std::unordered_map<int,int> marker_copies;
+            std::unordered_map<int,int> mc;
             for (int ci : members) {
                 int r0ci = union_to_run0[ci];
                 if (r0ci < 0 || (size_t)r0ci >= scg.size()) continue;
-                for (int mid : scg[r0ci])
-                    marker_copies[mid]++;
+                for (int mid : scg[r0ci]) mc[mid]++;
             }
-            int unique = static_cast<int>(marker_copies.size());
-            int total_copies = 0;
-            for (auto& [m,c] : marker_copies) total_copies += c;
+            int unique = (int)mc.size(), total_copies = 0;
+            for (auto& [m,c] : mc) total_copies += c;
             comp = static_cast<float>(unique) / total_markers;
             cont = static_cast<float>(total_copies - unique) / total_markers;
         }
 
-        bin_num++;
-        std::string name = "bin_" + std::to_string(bin_num);
-        std::ofstream out(output_dir + "/" + name + ".fa");
-        for (int ci : members) {
-            int fi = shared_to_fa[ci];
-            if (fi < 0) continue;
-            out << ">" << contigs[fi].first << "\n" << contigs[fi].second << "\n";
+        // Co-binning stability
+        float mean_cobin = 0.0f;
+        {
+            auto it = bin_edge_cnt.find(lbl);
+            if (it != bin_edge_cnt.end() && it->second > 0)
+                mean_cobin = static_cast<float>(bin_edge_sum[lbl] / it->second);
         }
-        stats << name << "\t" << lbl << "\t" << members.size()
-              << "\t" << comp << "\t" << cont << "\n";
-    }
 
-    std::cerr << "[resolve] Wrote " << bin_num << " bins to " << output_dir << "\n";
+        f_stats << name << "\t" << lbl << "\t" << (int)members.size()
+                << "\t" << genome_size << "\t" << n50 << "\t" << max_contig
+                << "\t" << gc << "\t" << comp << "\t" << cont
+                << "\t" << mean_cobin << "\n";
 
-    // ── 8. Export damage stats per bin ───────────────────────────────────────────
-    // Aggregate damage from abin files for smiley plot generation.
-    // Damage layout (63-dim): p_anc, var_anc, n_eff, cov_anc, cov_mod, log_ratio,
-    //   CT_rate[25], GA_rate[25], lambda5, lambda3, amp5, amp3, frag_mean, frag_std, frag_med
-
-    constexpr int kDmgPAnc      = 0;
-    constexpr int kDmgNEff      = 2;
-    constexpr int kDmgCtStart   = 6;    // CT rates at positions 1-25 (5' end)
-    constexpr int kDmgGaStart   = 31;   // GA rates at positions 1-25 (3' end)
-    constexpr int kDmgLambda5   = 56;
-    constexpr int kDmgLambda3   = 57;
-    constexpr int kDmgAmp5      = 58;
-    constexpr int kDmgAmp3      = 59;
-    constexpr int kDmgFragMean  = 60;
-
-    // Check if damage data available
-    bool has_damage = false;
-    int dmg_dim = 0;
-    for (int r = 0; r < R; r++) {
-        if (!runs[r].damage.empty() && runs[r].dmg_dim >= 63) {
-            has_damage = true;
-            dmg_dim = runs[r].dmg_dim;
-            break;
-        }
-    }
-
-    if (has_damage) {
-        std::ofstream dmg_out(output_dir + "/damage_per_bin.tsv");
-        dmg_out << "bin\tp_ancient\tlambda5\tlambda3\tamplitude_5p\tamplitude_3p\t"
-                << "ct_1p\tga_1p\tfrag_mean\tdamage_class\n";
-
-        std::ofstream rate_out(output_dir + "/smiley_plot_rates.tsv");
-        rate_out << "bin\tposition\tct_rate\tga_rate\n";
-
-        bin_num = 0;
-        for (auto& [lbl, members] : cluster_members) {
-            if (members.size() < 5) continue;
-            bin_num++;
-            std::string name = "bin_" + std::to_string(bin_num);
-
-            // Aggregate damage stats (weighted by n_eff)
-            double sum_p_anc = 0, sum_lambda5 = 0, sum_lambda3 = 0;
-            double sum_amp5 = 0, sum_amp3 = 0, sum_frag = 0;
+        // Damage stats
+        if (has_damage) {
+            double sum_p_anc = 0, sum_l5 = 0, sum_l3 = 0;
+            double sum_a5 = 0, sum_a3 = 0, sum_fm = 0, sum_fs = 0;
             std::vector<double> sum_ct(25, 0), sum_ga(25, 0);
-            double total_weight = 0;
+            double total_w = 0;
 
             for (int ci : members) {
-                // Find this contig in any run with damage data
                 for (int r = 0; r < R; r++) {
                     if (runs[r].damage.empty() || runs[r].dmg_dim < 63) continue;
-                    // Get local index in this run
-                    int local_idx = -1;
-                    for (uint32_t ai = 0; ai < runs[r].n_contigs; ai++) {
-                        if (remap[r][ai] == ci) { local_idx = ai; break; }
-                    }
-                    if (local_idx < 0) continue;
-
-                    const float* d = runs[r].damage.data() + local_idx * runs[r].dmg_dim;
-                    float w = std::max(d[kDmgNEff], 1.0f);  // weight by effective reads
-
-                    sum_p_anc   += w * d[kDmgPAnc];
-                    sum_lambda5 += w * d[kDmgLambda5];
-                    sum_lambda3 += w * d[kDmgLambda3];
-                    sum_amp5    += w * d[kDmgAmp5];
-                    sum_amp3    += w * d[kDmgAmp3];
-                    sum_frag    += w * d[kDmgFragMean];
+                    int li = ci_to_local[r][ci];
+                    if (li < 0) continue;
+                    const float* d = runs[r].damage.data() + li * runs[r].dmg_dim;
+                    float w = std::max(d[kDmgNEff], 1.0f);
+                    sum_p_anc += w * d[kDmgPAnc];
+                    sum_l5    += w * d[kDmgLambda5];
+                    sum_l3    += w * d[kDmgLambda3];
+                    sum_a5    += w * d[kDmgAmp5];
+                    sum_a3    += w * d[kDmgAmp3];
+                    sum_fm    += w * d[kDmgFragMean];
+                    sum_fs    += w * d[kDmgFragStd];
                     for (int p = 0; p < 25; p++) {
                         sum_ct[p] += w * d[kDmgCtStart + p];
                         sum_ga[p] += w * d[kDmgGaStart + p];
                     }
-                    total_weight += w;
-                    break;  // only count once per contig
+                    total_w += w;
+                    break;  // one observation per contig
                 }
             }
 
-            if (total_weight < 1e-6) continue;
-            double inv = 1.0 / total_weight;
+            if (total_w >= 1e-6) {
+                double inv = 1.0 / total_w;
+                double ct1 = sum_ct[0] * inv;
+                double ga1 = sum_ga[0] * inv;
+                double term = (ct1 + ga1) / 2.0;
+                const char* dmg_class = term >= 0.10 ? "ancient"
+                                      : term >= 0.03 ? "moderate" : "modern";
 
-            double p_anc   = sum_p_anc * inv;
-            double lambda5 = sum_lambda5 * inv;
-            double lambda3 = sum_lambda3 * inv;
-            double amp5    = sum_amp5 * inv;
-            double amp3    = sum_amp3 * inv;
-            double frag    = sum_frag * inv;
-            double ct_1p   = sum_ct[0] * inv;
-            double ga_1p   = sum_ga[0] * inv;
+                f_dmg << name
+                      << "\t" << sum_p_anc * inv
+                      << "\t" << sum_l5 * inv << "\t" << sum_l3 * inv
+                      << "\t" << sum_a5 * inv << "\t" << sum_a3 * inv
+                      << "\t" << ct1 << "\t" << ga1
+                      << "\t" << sum_fm * inv << "\t" << sum_fs * inv
+                      << "\t" << dmg_class << "\n";
 
-            // Damage classification
-            std::string dmg_class;
-            double term_damage = (ct_1p + ga_1p) / 2.0;
-            if (term_damage >= 0.10)       dmg_class = "ancient";
-            else if (term_damage >= 0.03)  dmg_class = "moderate";
-            else                           dmg_class = "modern";
-
-            dmg_out << name << "\t" << p_anc << "\t" << lambda5 << "\t" << lambda3
-                    << "\t" << amp5 << "\t" << amp3 << "\t" << ct_1p << "\t" << ga_1p
-                    << "\t" << frag << "\t" << dmg_class << "\n";
-
-            // Write per-position rates for smiley plot
-            for (int p = 0; p < 25; p++) {
-                rate_out << name << "\t" << (p + 1) << "\t"
-                         << (sum_ct[p] * inv) << "\t" << (sum_ga[p] * inv) << "\n";
+                for (int p = 0; p < 25; p++)
+                    f_smiley << name << "\t" << (p+1) << "\t"
+                             << (sum_ct[p] * inv) << "\t" << (sum_ga[p] * inv) << "\n";
             }
         }
-        std::cerr << "[resolve] Wrote damage stats to " << output_dir << "/damage_per_bin.tsv\n";
     }
+
+    std::cerr << "[resolve] Wrote " << bin_num << " bins to " << output_dir << "\n";
+    std::cerr << "[resolve] Wrote bin_stats.tsv";
+    if (has_damage) std::cerr << ", damage_per_bin.tsv, smiley_plot_rates.tsv";
+    std::cerr << "\n";
 
     return 0;
 }
