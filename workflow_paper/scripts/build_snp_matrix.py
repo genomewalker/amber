@@ -7,6 +7,7 @@ Creates both all-SNP and transversion-only alignments.
 import sys
 from collections import defaultdict
 from pathlib import Path
+import bisect
 
 def parse_snps_file(snps_file):
     """Parse show-snps output, return dict of {pos: (ref_base, query_base)}"""
@@ -28,6 +29,47 @@ def parse_snps_file(snps_file):
                 continue
     return snps
 
+def parse_coords_file(coords_file):
+    """Parse show-coords -r -T output, return sorted list of (start, end) ref intervals (1-based)."""
+    intervals = []
+    with open(coords_file) as f:
+        for line in f:
+            if not line.strip() or line.startswith('[') or line.startswith('=') or line.startswith('S'):
+                continue
+            fields = line.strip().split('\t')
+            if len(fields) < 2:
+                continue
+            try:
+                s1 = int(fields[0])
+                e1 = int(fields[1])
+                intervals.append((min(s1, e1), max(s1, e1)))
+            except (ValueError, IndexError):
+                continue
+    intervals.sort()
+    # Merge overlapping intervals into list of tuples
+    merged = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def is_covered(pos, merged_intervals):
+    """Binary search: is pos covered by any merged interval?"""
+    # Find rightmost interval with start <= pos
+    lo, hi = 0, len(merged_intervals)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if merged_intervals[mid][0] <= pos:
+            lo = mid + 1
+        else:
+            hi = mid
+    idx = lo - 1
+    return idx >= 0 and merged_intervals[idx][1] >= pos
+
+
 def is_transversion(base1, base2):
     """Check if substitution is a transversion (purine <-> pyrimidine)"""
     purines = set('AG')
@@ -38,6 +80,7 @@ def is_transversion(base1, base2):
 def main():
     # Get inputs from snakemake
     snps_files = snakemake.input.snps
+    coords_files = snakemake.input.coords
     ref_file = snakemake.input.ref
     mask_file = getattr(snakemake.input, "mask", None)
 
@@ -53,6 +96,12 @@ def main():
     for snp_file in snps_files:
         sample = Path(snp_file).stem
         all_snps[sample] = parse_snps_file(snp_file)
+
+    # Parse alignment coverage intervals per sample
+    all_coverage = {}  # {sample: merged_intervals}
+    for coords_file in coords_files:
+        sample = Path(coords_file).stem
+        all_coverage[sample] = parse_coords_file(coords_file)
 
     # Find all variable positions across all samples
     all_positions = set()
@@ -106,8 +155,10 @@ def main():
                 base = ref_base
             elif sample in all_snps and pos in all_snps[sample]:
                 base = all_snps[sample][pos][1]
+            elif sample in all_coverage and is_covered(pos, all_coverage[sample]):
+                base = ref_base  # Covered but no SNP = truly reference
             else:
-                base = ref_base  # No SNP = same as reference
+                base = 'N'  # Not covered by alignment = missing data
 
             alignment_all[sample].append(base)
 

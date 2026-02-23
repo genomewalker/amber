@@ -857,7 +857,7 @@ rule iqtree_codon:
             -m {params.model} \
             -bb {params.bootstrap} -alrt {params.alrt} \
             -nt {threads} \
-            --prefix {params.prefix} \
+            --prefix {params.prefix} --redo \
             2> {log}
         """
 
@@ -945,11 +945,12 @@ rule nucmer_align:
 
 
 rule extract_snps:
-    """Extract SNPs from nucmer alignments"""
+    """Extract SNPs and alignment coverage from nucmer alignments"""
     input:
         filtered = f"{PHYLO_DIR}/10_snp_tree/nucmer/{{sample}}.filter"
     output:
-        snps = f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.snps"
+        snps   = f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.snps",
+        coords = f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.coords"
     params:
         env = "/maps/projects/fernandezguerra/apps/opt/conda/envs/bioinfo"
     log: f"{PHYLO_DIR}/logs/snps/{{sample}}.log"
@@ -963,6 +964,7 @@ rule extract_snps:
         source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
         conda activate {params.env}
         show-snps -CT {input.filtered} > {output.snps} 2> {log}
+        show-coords -r -T {input.filtered} > {output.coords} 2>> {log}
         """
 
 
@@ -971,6 +973,10 @@ rule build_snp_matrix:
     input:
         snps = expand(
             f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.snps",
+            sample=SPECIES_TAXA
+        ),
+        coords = expand(
+            f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.coords",
             sample=SPECIES_TAXA
         ),
         ref  = f"{PHYLO_DIR}/01_genomes/{config['snp_reference']}.fna",
@@ -1015,7 +1021,7 @@ rule iqtree_snp_tvonly:
         conda activate {params.env}
         iqtree3 -s {input} -m {params.model} \
             -bb {params.bootstrap} -nt {threads} \
-            --prefix {params.prefix} 2> {log}
+            --prefix {params.prefix} --redo 2> {log}
         """
 
 
@@ -1043,5 +1049,5 @@ rule iqtree_snp_all:
         conda activate {params.env}
         iqtree3 -s {input} -m {params.model} \
             -bb {params.bootstrap} -nt {threads} \
-            --prefix {params.prefix} 2> {log}
+            --prefix {params.prefix} --redo 2> {log}
         """
