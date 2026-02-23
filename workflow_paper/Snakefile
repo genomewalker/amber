@@ -1,0 +1,1047 @@
+# AMBER Paper Workflow — Unified Pipeline
+# Parts: A-binning → B-QC → C-deconvolve → D-phylogenomics → E-BEAST2
+
+import os
+from pathlib import Path
+
+configfile: "config.yaml"
+
+# ---------------------------------------------------------------------------
+# Paths and constants
+# ---------------------------------------------------------------------------
+_TS = config["timestamp"]
+OUTDIR = f"{config['outdir']}/{_TS}" if _TS != "default" else config["outdir"]
+
+SKIP_BINNING = config.get("skip_binning", False)
+RESOLVE_DIR  = config["existing_resolve_dir"] if SKIP_BINNING else f"{OUTDIR}/resolve"
+# Existing resolve dirs have bins directly in root; new runs put them in bins/
+RESOLVE_BINS = RESOLVE_DIR if SKIP_BINNING else f"{OUTDIR}/resolve/bins"
+
+PHYLO_DIR = f"{OUTDIR}/phylogenomics"
+
+ENV_ASSEMBLY = config["envs"]["assembly"]
+ENV_GUNC     = config["envs"]["gunc"]
+ENV_GTDBTK   = config["envs"]["gtdbtk"]
+
+MARKERS      = config["markers"]
+SPECIES_TAXA = config["species_level_taxa"] + config["outgroup_taxa"]
+
+# Reference genome names — discovered upfront from the reference directory
+_ref_dir = Path(config["reference_genomes_dir"])
+REF_GENOMES = sorted(set(
+    p.stem
+    for ext in [".fna", ".fa"]
+    for p in _ref_dir.glob(f"*{ext}")
+))
+PHYLO_SAMPLES = REF_GENOMES + ["ancient_consensus", "modern_consensus"]
+
+N_REPS = config["amber"].get("n_reps", 3)
+REPS   = list(range(1, N_REPS + 1))
+
+
+# ---------------------------------------------------------------------------
+# Target rules
+# ---------------------------------------------------------------------------
+
+localrules: link_ref_genome, link_ancient_consensus, link_modern_consensus
+
+rule all:
+    """Full pipeline: binning → QC → deconvolve → phylogenomics → BEAST2 XML"""
+    input:
+        f"{OUTDIR}/summary.tsv",
+        f"{OUTDIR}/fastani/bins_vs_refs.tsv",
+        f"{OUTDIR}/deconvolve/ancient_consensus.fa",
+        f"{OUTDIR}/fastani/deconvolved_vs_refs.tsv",
+        f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile",
+        f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml",
+        f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree.treefile"
+
+rule fastani_only:
+    """FastANI bins vs refs + deconvolved vs refs"""
+    input:
+        f"{OUTDIR}/fastani/bins_vs_refs.tsv",
+        f"{OUTDIR}/fastani/deconvolved_vs_refs.tsv"
+
+rule bin_resolve:
+    """Run 3 independent amber_bin reps and amber_resolve consensus"""
+    input:
+        bins   = f"{OUTDIR}/resolve/bins",
+        damage = f"{OUTDIR}/resolve/damage_per_bin.tsv",
+        stats  = f"{OUTDIR}/resolve/bin_stats.tsv"
+
+rule qc_only:
+    """Run CheckM2 + GUNC on the resolve bins (validate HQ bins)"""
+    input:
+        f"{OUTDIR}/checkm2_final/quality_report.tsv",
+        f"{OUTDIR}/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv"
+
+rule qc_full:
+    """Full QC including GTDB-Tk + summary table"""
+    input:
+        f"{OUTDIR}/summary.tsv"
+
+rule phylo:
+    """Phylogenomics + BEAST2 XML (no BEAST2 run)"""
+    input:
+        f"{PHYLO_DIR}/08_trees/aa_ml_tree.treefile",
+        f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile",
+        f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml",
+        f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree.treefile"
+
+
+# ---------------------------------------------------------------------------
+# PART A: Binning — skipped when skip_binning: true
+# ---------------------------------------------------------------------------
+
+if not SKIP_BINNING:
+
+    rule amber_bin:
+        input:
+            contigs = config["contigs"],
+            bam     = config["bam"],
+            hmm     = config["amber"]["hmm"]
+        output:
+            bins = directory(f"{OUTDIR}/rep{{rep}}/bins")
+        params:
+            amber              = config["amber"]["binary"],
+            encoder_seed       = config["amber"]["encoder_seed"],
+            random_seed        = config["amber"]["random_seed"],
+            resolution         = config["amber"]["resolution"],
+            bandwidth          = config["amber"]["bandwidth"],
+            partgraph_ratio    = config["amber"]["partgraph_ratio"],
+            n_leiden_restarts  = config["amber"]["n_leiden_restarts"],
+            n_encoder_restarts = config["amber"]["n_encoder_restarts"],
+            env                = ENV_ASSEMBLY
+        threads: config["threads"]
+        resources:
+            mem_mb     = 64000,
+            runtime    = 180,
+            slurm_partition = "compregular",
+            gres        = "gpu:a100:1"
+        log: f"{OUTDIR}/logs/amber_rep{{rep}}.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            {params.amber} bin \
+                --contigs {input.contigs} \
+                --bam {input.bam} \
+                --hmm {input.hmm} \
+                --encoder-seed {params.encoder_seed} \
+                --random-seed {params.random_seed} \
+                --resolution {params.resolution} \
+                --bandwidth {params.bandwidth} \
+                --partgraph-ratio {params.partgraph_ratio} \
+                --leiden-restarts {params.n_leiden_restarts} \
+                --encoder-restarts {params.n_encoder_restarts} \
+                --threads {threads} \
+                --output {output.bins} \
+                2>&1 | tee {log}
+            """
+
+    rule checkm2_rep:
+        input:
+            bins = f"{OUTDIR}/rep{{rep}}/bins"
+        output:
+            report = f"{OUTDIR}/rep{{rep}}/checkm2/quality_report.tsv"
+        params:
+            outdir = f"{OUTDIR}/rep{{rep}}/checkm2",
+            env    = ENV_ASSEMBLY
+        threads: config["checkm2"]["threads"]
+        resources:
+            mem_mb   = 32000,
+            runtime  = 60,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/checkm2_rep{{rep}}.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            checkm2 predict \
+                --input {input.bins} \
+                --output-directory {params.outdir} \
+                --extension fa \
+                --threads {threads} \
+                --force \
+                2>&1 | tee {log}
+            """
+
+    rule amber_resolve:
+        input:
+            bins_dirs = expand(f"{OUTDIR}/rep{{rep}}/bins", rep=REPS),
+            contigs   = config["contigs"]
+        output:
+            bins   = directory(f"{OUTDIR}/resolve/bins"),
+            damage = f"{OUTDIR}/resolve/damage_per_bin.tsv",
+            smiley = f"{OUTDIR}/resolve/smiley_plot_rates.tsv",
+            stats  = f"{OUTDIR}/resolve/bin_stats.tsv"
+        params:
+            amber          = config["amber"]["binary"],
+            abins          = lambda wc, input: " ".join(f"{d}/run.abin" for d in input.bins_dirs),
+            min_cobin_frac = config["resolve"]["min_cobin_frac"],
+            restarts       = config["resolve"]["restarts"],
+            env            = ENV_ASSEMBLY
+        threads: config["threads"]
+        resources:
+            mem_mb   = 32000,
+            runtime  = 30,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/resolve.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+            export OMP_NUM_THREADS={threads}
+
+            {params.amber} resolve \
+                --runs {params.abins} \
+                --contigs {input.contigs} \
+                --min-cobin-frac {params.min_cobin_frac} \
+                --restarts {params.restarts} \
+                --output {output.bins} \
+                2>&1 | tee {log}
+
+            mv {output.bins}/damage_per_bin.tsv {output.damage}
+            mv {output.bins}/smiley_plot_rates.tsv {output.smiley}
+            mv {output.bins}/bin_stats.tsv {output.stats}
+            """
+
+
+# ---------------------------------------------------------------------------
+# PART B: Quality Control
+# ---------------------------------------------------------------------------
+
+rule checkm2_final:
+    input:
+        bins = f"{RESOLVE_BINS}"
+    output:
+        report = f"{OUTDIR}/checkm2_final/quality_report.tsv"
+    params:
+        outdir = f"{OUTDIR}/checkm2_final",
+        env    = ENV_ASSEMBLY
+    threads: config["checkm2"]["threads"]
+    resources:
+        mem_mb   = 32000,
+        runtime  = 60,
+        slurm_partition = "compregular"
+    log: f"{OUTDIR}/logs/checkm2_final.log"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+        checkm2 predict \
+            --input {input.bins} \
+            --output-directory {params.outdir} \
+            --extension fa \
+            --threads {threads} \
+            --force \
+            2>&1 | tee {log}
+        """
+
+
+checkpoint filter_hq_mq:
+    """Symlink bins passing completeness/contamination threshold into hq_mq_bins/"""
+    input:
+        bins  = f"{RESOLVE_BINS}",
+        checkm = f"{OUTDIR}/checkm2_final/quality_report.tsv"
+    output:
+        hq_mq = directory(f"{OUTDIR}/hq_mq_bins")
+    params:
+        min_completeness = config["filter"]["min_completeness"],
+        max_contamination = config["filter"]["max_contamination"]
+    run:
+        import os, csv
+        os.makedirs(output.hq_mq, exist_ok=True)
+        n = 0
+        with open(input.checkm) as f:
+            for row in csv.DictReader(f, delimiter='\t'):
+                if (float(row['Completeness']) >= params.min_completeness and
+                        float(row['Contamination']) <= params.max_contamination):
+                    src = os.path.abspath(os.path.join(input.bins, row['Name'] + '.fa'))
+                    dst = os.path.join(output.hq_mq, row['Name'] + '.fa')
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        os.symlink(src, dst)
+                        n += 1
+        print(f"[filter_hq_mq] {n} bins passed "
+              f"(comp>={params.min_completeness}%, cont<={params.max_contamination}%)")
+
+
+def get_hq_mq_bins(wildcards):
+    checkpoints.filter_hq_mq.get(**wildcards)
+    return f"{OUTDIR}/hq_mq_bins"
+
+
+rule fastani_bins:
+    """FastANI: compare all HQ/MQ bins against reference Methanoflorentales genomes"""
+    input:
+        bins = get_hq_mq_bins
+    output:
+        ani = f"{OUTDIR}/fastani/bins_vs_refs.tsv"
+    params:
+        ref_dir = config["reference_genomes_dir"]
+    conda: "/maps/projects/fernandezguerra/apps/opt/conda/envs/assembly"
+    threads: config["threads"]
+    resources:
+        mem_mb   = 16000,
+        runtime  = 60,
+        slurm_partition = "compregular"
+    log: f"{OUTDIR}/logs/fastani_bins.log"
+    shell:
+        """
+        mkdir -p $(dirname {output.ani})
+        find {input.bins} -name "*.fa" -o -name "*.fna" > {output.ani}.ql
+        find {params.ref_dir} -name "*.fna" -o -name "*.fa" > {output.ani}.rl
+        fastANI --ql {output.ani}.ql --rl {output.ani}.rl \
+            -o {output.ani} -t {threads} 2> {log}
+        rm -f {output.ani}.ql {output.ani}.rl
+        """
+
+
+rule gunc:
+    """GUNC chimera detection — runs only on HQ/MQ bins"""
+    input:
+        bins = get_hq_mq_bins
+    output:
+        report = f"{OUTDIR}/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv"
+    params:
+        outdir = f"{OUTDIR}/gunc",
+        db     = config["gunc"]["db"],
+        env    = ENV_GUNC
+    threads: config["gunc"]["threads"]
+    resources:
+        mem_mb   = 32000,
+        runtime  = 240,
+        slurm_partition = "compregular"
+    log: f"{OUTDIR}/logs/gunc.log"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+        mkdir -p {params.outdir}
+        gunc run \
+            --input_dir {input.bins} \
+            --out_dir {params.outdir} \
+            --db_file {params.db} \
+            --threads {threads} \
+            2>&1 | tee {log}
+        """
+
+
+rule gtdbtk:
+    """GTDB-Tk taxonomic classification — runs only on HQ/MQ bins"""
+    input:
+        bins = get_hq_mq_bins
+    output:
+        ar53   = f"{OUTDIR}/gtdbtk/gtdbtk.ar53.summary.tsv",
+        bac120 = f"{OUTDIR}/gtdbtk/gtdbtk.bac120.summary.tsv"
+    params:
+        outdir = f"{OUTDIR}/gtdbtk",
+        db     = config["gtdbtk"]["db"],
+        env    = ENV_GTDBTK
+    threads: config["gtdbtk"]["threads"]
+    resources:
+        mem_mb   = 128000,
+        runtime  = 240,
+        slurm_partition = "compregular"
+    log: f"{OUTDIR}/logs/gtdbtk.log"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+        export GTDBTK_DATA_PATH={params.db}
+
+        mkdir -p {params.outdir}
+        gtdbtk classify_wf \
+            --genome_dir {input.bins} \
+            --out_dir {params.outdir} \
+            --extension fa \
+            --cpus {threads} \
+            --skip_ani_screen \
+            2>&1 | tee {log}
+
+        touch {params.outdir}/gtdbtk.ar53.summary.tsv
+        touch {params.outdir}/gtdbtk.bac120.summary.tsv
+        """
+
+
+rule summary:
+    """Merge CheckM2, GUNC, GTDB-Tk, and damage into a single summary TSV"""
+    input:
+        checkm      = f"{OUTDIR}/checkm2_final/quality_report.tsv",
+        gunc        = f"{OUTDIR}/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv",
+        gtdbtk_ar53  = f"{OUTDIR}/gtdbtk/gtdbtk.ar53.summary.tsv",
+        gtdbtk_bac120 = f"{OUTDIR}/gtdbtk/gtdbtk.bac120.summary.tsv",
+        damage      = f"{RESOLVE_DIR}/damage_per_bin.tsv"
+    output:
+        summary = f"{OUTDIR}/summary.tsv"
+    run:
+        import pandas as pd
+
+        checkm = pd.read_csv(input.checkm, sep='\t')
+        checkm = checkm[['Name', 'Completeness', 'Contamination', 'Genome_Size', 'GC_Content']]
+        checkm.columns = ['bin', 'completeness', 'contamination', 'genome_size', 'gc_content']
+
+        gunc = pd.read_csv(input.gunc, sep='\t')
+        gunc = gunc[['genome', 'clade_separation_score', 'pass.GUNC']]
+        gunc.columns = ['bin', 'gunc_css', 'gunc_pass']
+
+        dfs = []
+        for path in [input.gtdbtk_ar53, input.gtdbtk_bac120]:
+            try:
+                df = pd.read_csv(path, sep='\t')
+                if len(df) > 0:
+                    dfs.append(df[['user_genome', 'classification']])
+            except Exception:
+                pass
+        if dfs:
+            gtdbtk = pd.concat(dfs).rename(
+                columns={'user_genome': 'bin', 'classification': 'gtdb_classification'})
+        else:
+            gtdbtk = pd.DataFrame(columns=['bin', 'gtdb_classification'])
+
+        damage = pd.read_csv(input.damage, sep='\t')
+        keep = [c for c in ['bin', 'p_ancient', 'ct_1p', 'ga_1p', 'damage_class']
+                if c in damage.columns]
+        damage = damage[keep]
+
+        summary = checkm.merge(gunc, on='bin', how='left')
+        summary = summary.merge(gtdbtk, on='bin', how='left')
+        summary = summary.merge(damage, on='bin', how='left')
+
+        summary['quality'] = 'LQ'
+        summary.loc[
+            (summary.completeness >= 50) & (summary.contamination < 10), 'quality'] = 'MQ'
+        summary.loc[
+            (summary.completeness >= 90) & (summary.contamination < 5), 'quality'] = 'HQ'
+
+        summary = summary.sort_values(
+            ['quality', 'completeness'], ascending=[False, False])
+        summary.to_csv(output.summary, sep='\t', index=False)
+
+        hq = (summary.quality == 'HQ').sum()
+        mq = (summary.quality == 'MQ').sum()
+        anc = summary.get('damage_class', pd.Series(dtype=str)).eq('ancient').sum()
+        print(f"\nSummary: {hq} HQ, {mq} MQ bins; {anc} ancient")
+
+
+# ---------------------------------------------------------------------------
+# PART C: Ancient Bin Selection + Deconvolution
+# ---------------------------------------------------------------------------
+
+checkpoint select_ancient_bin:
+    """Select the Bog-38 HQ GUNC-pass bin for deconvolution"""
+    input:
+        checkm      = f"{OUTDIR}/checkm2_final/quality_report.tsv",
+        gunc        = f"{OUTDIR}/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv",
+        gtdbtk_ar53  = f"{OUTDIR}/gtdbtk/gtdbtk.ar53.summary.tsv",
+        gtdbtk_bac120 = f"{OUTDIR}/gtdbtk/gtdbtk.bac120.summary.tsv"
+    output:
+        selected_bin = f"{OUTDIR}/selected_bin.txt"
+    params:
+        gtdbtk_clade     = config["ancient_selection"]["gtdbtk_clade"],
+        min_completeness = config["ancient_selection"]["min_completeness"],
+        max_contamination = config["ancient_selection"]["max_contamination"],
+        require_gunc_pass = config["ancient_selection"]["require_gunc_pass"],
+        tiebreak         = config["ancient_selection"]["tiebreak"]
+    script:
+        "scripts/select_ancient_bin.py"
+
+
+def get_ancient_bin_fa(wildcards):
+    ck = checkpoints.select_ancient_bin.get()
+    bin_name = open(ck.output.selected_bin).read().strip()
+    return f"{RESOLVE_BINS}/{bin_name}.fa"
+
+
+rule deconvolve:
+    """Run amber deconvolve on the selected ancient bin"""
+    input:
+        bin_fa   = get_ancient_bin_fa,
+        bam      = config["bam"],
+        selected = f"{OUTDIR}/selected_bin.txt"
+    output:
+        ancient = f"{OUTDIR}/deconvolve/ancient_consensus.fa",
+        modern  = f"{OUTDIR}/deconvolve/modern_consensus.fa",
+        smiley  = f"{OUTDIR}/deconvolve/smiley_data.tsv",
+        trace   = f"{OUTDIR}/deconvolve/deconvolve_trace.log",
+        mask    = f"{OUTDIR}/deconvolve/high_confidence_mask.bed"
+    params:
+        amber        = config["amber"]["binary"],
+        library_type = config["deconvolve"]["library_type"],
+        em_iters     = config["deconvolve"]["em_iterations"],
+        outdir       = f"{OUTDIR}/deconvolve",
+        env          = ENV_ASSEMBLY
+    threads: config["deconvolve"]["threads"]
+    resources:
+        mem_mb   = 32000,
+        runtime  = 60,
+        slurm_partition = "compregular"
+    log: f"{OUTDIR}/logs/deconvolve.log"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+        {params.amber} deconvolve \
+            --contigs {input.bin_fa} \
+            --bam {input.bam} \
+            --output {params.outdir} \
+            --library-type {params.library_type} \
+            --em-iterations {params.em_iters} \
+            --write-position-stats \
+            --threads {threads} \
+            2>&1 | tee {log}
+        """
+
+
+rule fastani_deconvolved:
+    """FastANI: compare deconvolved ancient/modern consensi against reference genomes.
+    Shows improvement vs the raw mixed bin — ancient_consensus should have higher ANI
+    to its closest relative than the pre-deconvolution mixture.
+    """
+    input:
+        ancient = f"{OUTDIR}/deconvolve/ancient_consensus.fa",
+        modern  = f"{OUTDIR}/deconvolve/modern_consensus.fa"
+    output:
+        ani = f"{OUTDIR}/fastani/deconvolved_vs_refs.tsv"
+    params:
+        ref_dir = config["reference_genomes_dir"]
+    conda: "/maps/projects/fernandezguerra/apps/opt/conda/envs/assembly"
+    threads: config["threads"]
+    resources:
+        mem_mb   = 8000,
+        runtime  = 30,
+        slurm_partition = "compregular"
+    log: f"{OUTDIR}/logs/fastani_deconvolved.log"
+    shell:
+        """
+        mkdir -p $(dirname {output.ani})
+        printf "%s\n%s\n" {input.ancient} {input.modern} > {output.ani}.ql
+        find {params.ref_dir} -name "*.fna" -o -name "*.fa" > {output.ani}.rl
+        fastANI --ql {output.ani}.ql --rl {output.ani}.rl \
+            -o {output.ani} -t {threads} 2> {log}
+        rm -f {output.ani}.ql {output.ani}.rl
+        """
+
+
+# ---------------------------------------------------------------------------
+# PART D: Phylogenomics — genome setup
+# ---------------------------------------------------------------------------
+
+rule link_ref_genome:
+    """Symlink a reference genome into the phylo genomes directory"""
+    input:
+        lambda wc: str(next(
+            (p for ext in [".fna", ".fa"]
+             for p in [_ref_dir / f"{wc.sample}{ext}"] if p.exists()),
+            _ref_dir / f"{wc.sample}.fna"
+        ))
+    output:
+        f"{PHYLO_DIR}/01_genomes/{{sample}}.fna"
+    shell:
+        "mkdir -p $(dirname {output}) && ln -sf $(realpath {input}) {output}"
+
+
+rule link_ancient_consensus:
+    input:  f"{OUTDIR}/deconvolve/ancient_consensus.fa"
+    output: f"{PHYLO_DIR}/01_genomes/ancient_consensus.fa"
+    shell:  "mkdir -p $(dirname {output}) && ln -sf $(realpath {input}) {output}"
+
+
+rule link_modern_consensus:
+    input:  f"{OUTDIR}/deconvolve/modern_consensus.fa"
+    output: f"{PHYLO_DIR}/01_genomes/modern_consensus.fa"
+    shell:  "mkdir -p $(dirname {output}) && ln -sf $(realpath {input}) {output}"
+
+
+def get_phylo_genome_path(wildcards):
+    if wildcards.sample in ["ancient_consensus", "modern_consensus"]:
+        return f"{PHYLO_DIR}/01_genomes/{wildcards.sample}.fa"
+    return f"{PHYLO_DIR}/01_genomes/{wildcards.sample}.fna"
+
+
+# ---------------------------------------------------------------------------
+# PART E: Marker-gene phylogeny (Stage 1)
+# ---------------------------------------------------------------------------
+
+rule prodigal:
+    """Predict protein-coding genes (metagenomic mode)"""
+    input:
+        genome = get_phylo_genome_path
+    output:
+        faa = f"{PHYLO_DIR}/02_prodigal/{{sample}}.faa",
+        fna = f"{PHYLO_DIR}/02_prodigal/{{sample}}.fna",
+        gff = f"{PHYLO_DIR}/02_prodigal/{{sample}}.gff"
+    params:
+        env = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/prodigal/{{sample}}.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 20,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        prodigal -i {input.genome} -a {output.faa} -d {output.fna} \
+            -f gff -o {output.gff} -p meta -g 11 -q 2> {log}
+        """
+
+
+rule hmmsearch:
+    """Search all marker genes against one sample in a single run"""
+    input:
+        faa    = f"{PHYLO_DIR}/02_prodigal/{{sample}}.faa",
+        hmm_db = f"{config['marker_hmm_dir']}/all_markers.hmm"
+    output:
+        tbl = f"{PHYLO_DIR}/03_hmm/{{sample}}.tbl",
+        out = f"{PHYLO_DIR}/03_hmm/{{sample}}.out"
+    params:
+        evalue = config["hmm_evalue"],
+        env    = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/hmmsearch/{{sample}}.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 20,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        hmmsearch --tblout {output.tbl} -o {output.out} \
+            -E {params.evalue} {input.hmm_db} {input.faa} 2> {log}
+        """
+
+
+rule extract_markers:
+    """Extract best-hit marker sequences per sample"""
+    input:
+        faa = f"{PHYLO_DIR}/02_prodigal/{{sample}}.faa",
+        tbl = f"{PHYLO_DIR}/03_hmm/{{sample}}.tbl"
+    output:
+        f"{PHYLO_DIR}/04_extracted/{{sample}}_markers.faa"
+    params:
+        markers = MARKERS,
+        env     = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk",
+        script  = workflow.basedir + "/scripts/extract_markers.py"
+    log: f"{PHYLO_DIR}/logs/extract/{{sample}}.log"
+    resources:
+        mem_mb = 2000,
+        runtime = 5,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        python {params.script} \
+            --faa {input.faa} \
+            --tbl {input.tbl} \
+            --output {output} \
+            --sample {wildcards.sample} \
+            --log {log} \
+            --markers {params.markers}
+        """
+
+
+rule align_marker:
+    """Align each marker across all samples with MAFFT"""
+    input:
+        seqs = expand(
+            f"{PHYLO_DIR}/04_extracted/{{sample}}_markers.faa",
+            sample=PHYLO_SAMPLES
+        )
+    output:
+        f"{PHYLO_DIR}/05_aligned/{{marker}}.aln.faa"
+    params:
+        marker    = "{marker}",
+        algorithm = config["mafft_algorithm"],
+        tmpfile   = f"{PHYLO_DIR}/05_aligned/{{marker}}.tmp.faa",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/phylogenomics_gb"
+    log: f"{PHYLO_DIR}/logs/align/{{marker}}.log"
+    threads: 4
+    resources:
+        mem_mb = 8000,
+        runtime = 60,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+
+        > {params.tmpfile}
+        for f in {input.seqs}; do
+            grep -A1 "_{params.marker}\\( \\|$\\)" "$f" >> {params.tmpfile} || true
+        done
+
+        mafft --maxiterate 1000 --localpair --thread {threads} \
+            {params.tmpfile} > {output} 2> {log}
+
+        rm -f {params.tmpfile}
+        """
+
+
+rule trim_alignment:
+    """Trim alignments with BMGE"""
+    input:
+        f"{PHYLO_DIR}/05_aligned/{{marker}}.aln.faa"
+    output:
+        f"{PHYLO_DIR}/06_trimmed/{{marker}}.trimmed.faa"
+    params:
+        matrix = config["bmge_matrix"],
+        env    = "/maps/projects/fernandezguerra/apps/opt/conda/envs/phylogenomics_gb"
+    log: f"{PHYLO_DIR}/logs/trim/{{marker}}.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        if [ -s {input} ]; then
+            bmge -i {input} -t AA -m {params.matrix} -of {output} 2> {log} || touch {output}
+        else
+            touch {output}
+            echo "Empty input alignment" > {log}
+        fi
+        """
+
+
+rule back_translate:
+    """Back-translate AA alignment to codon alignment"""
+    input:
+        aa_aln  = f"{PHYLO_DIR}/06_trimmed/{{marker}}.trimmed.faa",
+        nt_seqs = expand(
+            f"{PHYLO_DIR}/02_prodigal/{{sample}}.fna",
+            sample=PHYLO_SAMPLES
+        )
+    output:
+        f"{PHYLO_DIR}/06_trimmed/{{marker}}.codon.fna"
+    params:
+        env    = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk",
+        script = workflow.basedir + "/scripts/back_translate.py"
+    log: f"{PHYLO_DIR}/logs/backtranslate/{{marker}}.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        python {params.script} \
+            --aa-aln {input.aa_aln} \
+            --output {output} \
+            --log {log} \
+            --nt-seqs {input.nt_seqs}
+        """
+
+
+rule concatenate_aa:
+    """Concatenate trimmed AA alignments into protein supermatrix"""
+    input:
+        expand(f"{PHYLO_DIR}/06_trimmed/{{marker}}.trimmed.faa", marker=MARKERS)
+    output:
+        f"{PHYLO_DIR}/07_concatenated/concat_aa.faa"
+    params:
+        samples = PHYLO_SAMPLES
+    log: f"{PHYLO_DIR}/logs/concatenate_aa.log"
+    resources:
+        mem_mb = 8000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    script:
+        "scripts/concatenate_aa.py"
+
+
+rule iqtree_aa:
+    """Build ML phylogeny with IQ-TREE on protein supermatrix (LG+F+R10)"""
+    input:
+        f"{PHYLO_DIR}/07_concatenated/concat_aa.faa"
+    output:
+        tree = f"{PHYLO_DIR}/08_trees/aa_ml_tree.treefile",
+        log_ = f"{PHYLO_DIR}/08_trees/aa_ml_tree.log"
+    params:
+        bootstrap = config["iqtree_bootstrap"],
+        alrt      = config["iqtree_alrt"],
+        prefix    = f"{PHYLO_DIR}/08_trees/aa_ml_tree",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_aa.log"
+    threads: config["threads"]
+    resources:
+        mem_mb = 32000,
+        runtime = 480,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input} \
+            -m LG+F+R10 \
+            -bb {params.bootstrap} -alrt {params.alrt} \
+            -nt {threads} \
+            --prefix {params.prefix} \
+            2> {log}
+        """
+
+
+rule concatenate_codon:
+    """Concatenate all marker codon alignments into a single supermatrix"""
+    input:
+        expand(f"{PHYLO_DIR}/06_trimmed/{{marker}}.codon.fna", marker=MARKERS)
+    output:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.txt"
+    params:
+        samples = PHYLO_SAMPLES
+    log: f"{PHYLO_DIR}/logs/concatenate.log"
+    resources:
+        mem_mb = 8000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    script:
+        "scripts/concatenate_codon.py"
+
+
+rule iqtree_codon:
+    """Build ML phylogeny with IQ-TREE on codon supermatrix"""
+    input:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.txt"
+    output:
+        tree = f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile",
+        log_ = f"{PHYLO_DIR}/08_trees/codon_ml_tree.log"
+    params:
+        model     = config["iqtree_model"],
+        bootstrap = config["iqtree_bootstrap"],
+        alrt      = config["iqtree_alrt"],
+        prefix    = f"{PHYLO_DIR}/08_trees/codon_ml_tree",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_codon.log"
+    threads: config["threads"]
+    resources:
+        mem_mb = 32000,
+        runtime = 240,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input.aln} -p {input.partitions} \
+            -m {params.model} \
+            -bb {params.bootstrap} -alrt {params.alrt} \
+            -nt {threads} \
+            --prefix {params.prefix} \
+            2> {log}
+        """
+
+
+rule beast2_xml:
+    """Generate BEAST2 XML for tip-dating"""
+    input:
+        aln  = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
+        tree = f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile"
+    output:
+        xml    = f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml",
+        script = f"{PHYLO_DIR}/09_beast2/run_beast.sh"
+    params:
+        chain_length     = config["beast2_chain_length"],
+        log_every        = config["beast2_log_every"],
+        tip_dates        = {s: (config["sample_age"] if s == "ancient_consensus" else 0)
+                            for s in PHYLO_SAMPLES},
+        clock_rate_mean  = config["clock_rate_prior_mean"],
+        beagle_lib       = config["beagle_lib"]
+    log: f"{PHYLO_DIR}/logs/beast2_xml.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    script:
+        "scripts/create_beast2_xml.py"
+
+
+rule beast2_run:
+    """Run BEAST2 tip-dating analysis (GPU-accelerated)"""
+    input:
+        xml = f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml"
+    output:
+        log_   = f"{PHYLO_DIR}/09_beast2/codon_tipdating.log",
+        trees  = f"{PHYLO_DIR}/09_beast2/codon_tipdating.trees"
+    params:
+        beagle_lib = config["beagle_lib"],
+        workdir    = f"{PHYLO_DIR}/09_beast2"
+    log: f"{PHYLO_DIR}/logs/beast2_run.log"
+    threads: 8
+    resources:
+        mem_mb     = 64000,
+        runtime    = 720,
+        slurm_partition = "compregular",
+        gres        = "gpu:a100:2"
+    conda: "envs/beast2.yaml"
+    shell:
+        """
+        export LD_LIBRARY_PATH="{params.beagle_lib}:$LD_LIBRARY_PATH"
+        cd {params.workdir}
+        beast -beagle_GPU -beagle_order 0,1 -threads {threads} \
+            -overwrite codon_tipdating.xml 2> {log}
+        """
+
+
+# ---------------------------------------------------------------------------
+# PART F: Core-genome SNP phylogeny (Stage 2)
+# ---------------------------------------------------------------------------
+
+rule nucmer_align:
+    """Pairwise whole-genome alignment with nucmer"""
+    input:
+        ref   = f"{PHYLO_DIR}/01_genomes/{config['snp_reference']}.fna",
+        query = get_phylo_genome_path
+    output:
+        delta    = f"{PHYLO_DIR}/10_snp_tree/nucmer/{{sample}}.delta",
+        filtered = f"{PHYLO_DIR}/10_snp_tree/nucmer/{{sample}}.filter"
+    params:
+        prefix = f"{PHYLO_DIR}/10_snp_tree/nucmer/{{sample}}",
+        minlen = config["nucmer_minmatch"],
+        env    = "/maps/projects/fernandezguerra/apps/opt/conda/envs/bioinfo"
+    log: f"{PHYLO_DIR}/logs/nucmer/{{sample}}.log"
+    resources:
+        mem_mb = 8000,
+        runtime = 30,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        nucmer --maxmatch -p {params.prefix} {input.ref} {input.query} 2> {log}
+        delta-filter -r -q -l {params.minlen} {output.delta} > {output.filtered} 2>> {log}
+        """
+
+
+rule extract_snps:
+    """Extract SNPs from nucmer alignments"""
+    input:
+        filtered = f"{PHYLO_DIR}/10_snp_tree/nucmer/{{sample}}.filter"
+    output:
+        snps = f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.snps"
+    params:
+        env = "/maps/projects/fernandezguerra/apps/opt/conda/envs/bioinfo"
+    log: f"{PHYLO_DIR}/logs/snps/{{sample}}.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        show-snps -CT {input.filtered} > {output.snps} 2> {log}
+        """
+
+
+rule build_snp_matrix:
+    """Build SNP alignment matrix from all pairwise comparisons"""
+    input:
+        snps = expand(
+            f"{PHYLO_DIR}/10_snp_tree/snps/{{sample}}.snps",
+            sample=SPECIES_TAXA
+        ),
+        ref  = f"{PHYLO_DIR}/01_genomes/{config['snp_reference']}.fna",
+        mask = f"{OUTDIR}/deconvolve/high_confidence_mask.bed"
+    output:
+        all_snps = f"{PHYLO_DIR}/10_snp_tree/snp_alignment_all.fna",
+        tv_only  = f"{PHYLO_DIR}/10_snp_tree/snp_alignment_tvonly.fna",
+        stats    = f"{PHYLO_DIR}/10_snp_tree/snp_stats.txt"
+    params:
+        taxa     = SPECIES_TAXA,
+        ref_name = config["snp_reference"]
+    log: f"{PHYLO_DIR}/logs/snp_matrix.log"
+    resources:
+        mem_mb = 8000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    script:
+        "scripts/build_snp_matrix.py"
+
+
+rule iqtree_snp_tvonly:
+    """Build ML tree from transversions only (damage-robust)"""
+    input:
+        f"{PHYLO_DIR}/10_snp_tree/snp_alignment_tvonly.fna"
+    output:
+        f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree.treefile"
+    params:
+        model     = config["snp_tree_model"],
+        bootstrap = config["iqtree_bootstrap"],
+        prefix    = f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_snp_tvonly.log"
+    threads: 8
+    resources:
+        mem_mb = 16000,
+        runtime = 120,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input} -m {params.model} \
+            -bb {params.bootstrap} -nt {threads} \
+            --prefix {params.prefix} 2> {log}
+        """
+
+
+rule iqtree_snp_all:
+    """Build ML tree from all SNPs"""
+    input:
+        f"{PHYLO_DIR}/10_snp_tree/snp_alignment_all.fna"
+    output:
+        f"{PHYLO_DIR}/10_snp_tree/snp_all_tree.treefile"
+    params:
+        model     = config["snp_tree_model"],
+        bootstrap = config["iqtree_bootstrap"],
+        prefix    = f"{PHYLO_DIR}/10_snp_tree/snp_all_tree",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_snp_all.log"
+    threads: 8
+    resources:
+        mem_mb = 16000,
+        runtime = 120,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input} -m {params.model} \
+            -bb {params.bootstrap} -nt {threads} \
+            --prefix {params.prefix} 2> {log}
+        """

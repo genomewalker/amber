@@ -102,7 +102,19 @@ struct DeconvolutionConfig {
     bool use_dynamic_thresholds = false;  // Enable dynamic threshold computation
 
     // Auto-estimation of model parameters from data
-    bool auto_estimate_params = false;    // Estimate length/identity params from read distributions
+    bool auto_estimate_params = true;     // Estimate length/identity params from read distributions
+};
+
+struct PositionStat {
+    int32_t pos;           // 0-based reference position
+    char ancient_base;
+    char modern_base;
+    float post_anc;        // best genotype posterior for ancient (0.0 if fallback)
+    float post_mod;        // best genotype posterior for modern (0.0 if fallback)
+    float eff_depth_anc;   // w_ancient_total (sum of p_ancient weights)
+    float eff_depth_mod;   // w_modern_total (sum of 1-p_ancient weights)
+    float p_diff;          // post_anc * post_mod if ancient_base != modern_base and neither fallback
+    uint8_t flags;         // bit 0: anc_fallback, bit 1: mod_fallback, bit 2: damage_zone_read
 };
 
 // Per-contig deconvolution statistics
@@ -186,6 +198,8 @@ struct DeconvolutionResult {
     double f_undamaged_moment = 0.0;         // Moment estimator (for validation)
     int fraction_em_iterations = 0;          // EM iterations used
     bool fraction_converged = false;         // Whether EM converged
+
+    std::vector<PositionStat> position_stats;  // populated iff write_position_stats=true
 };
 
 // Compute optimal thresholds from p_ancient histogram using valley detection
@@ -1256,6 +1270,10 @@ inline DeconvolutionResult deconvolve_contig(
         std::array<double, 4> ancient_interior_lik = {0.0, 0.0, 0.0, 0.0};
         double w_ancient_interior = 0.0;
 
+        float anc_posterior_best = 0.0f, mod_posterior_best = 0.0f;
+        bool anc_fallback = false, mod_fallback = false;
+        bool has_damage_zone_read = false;
+
         constexpr double kEps = 1e-10;
         constexpr int BASE_C = 1, BASE_T = 3, BASE_G = 2, BASE_A = 0;
 
@@ -1275,6 +1293,7 @@ inline DeconvolutionResult deconvolve_contig(
             q_err = std::max(0.001, std::min(0.5, q_err));
 
             bool is_interior = (obs.dist_5p > zone_5p && obs.dist_3p > zone_3p);
+            has_damage_zone_read |= !is_interior;
 
             // Compute damage rates at this position
             double d5 = damage_rate_at_distance(obs.dist_5p,
@@ -1359,7 +1378,7 @@ inline DeconvolutionResult deconvolve_contig(
             anc_depth_to_use = w_ancient_interior;
         }
 
-        if (anc_depth_to_use >= kMinEffDepth) {
+        if (anc_depth_to_use >= config.min_ancient_depth) {
             double max_anc = *std::max_element(anc_lik_to_use->begin(), anc_lik_to_use->end());
             std::array<double, 4> post_anc;
             double sum_anc = 0.0;
@@ -1377,6 +1396,7 @@ inline DeconvolutionResult deconvolve_contig(
                 result.ancient_raw[pos] = bases[best_anc];
                 result.ancient_consensus[pos] = bases[best_anc];
                 ancient_called = true;
+                anc_posterior_best = (float)(post_anc[best_anc] / sum_anc);
             }
         }
 
@@ -1385,12 +1405,13 @@ inline DeconvolutionResult deconvolve_contig(
             result.ancient_raw[pos] = neutral_consensus[pos];
             result.ancient_consensus[pos] = neutral_consensus[pos];
             ancient_called = true;
+            anc_fallback = true;
             result.positions_ancient_only++;  // Mark as independent fallback
         }
 
         // === CALL MODERN CONSENSUS ===
         bool modern_called = false;
-        if (w_modern_total >= kMinEffDepth) {
+        if (w_modern_total >= config.min_modern_depth) {
             double max_mod = *std::max_element(modern_lik.begin(), modern_lik.end());
             std::array<double, 4> post_mod;
             double sum_mod = 0.0;
@@ -1407,6 +1428,7 @@ inline DeconvolutionResult deconvolve_contig(
                 constexpr char bases[] = {'A', 'C', 'G', 'T'};
                 result.modern_consensus[pos] = bases[best_mod];
                 modern_called = true;
+                mod_posterior_best = (float)(post_mod[best_mod] / sum_mod);
             }
         }
 
@@ -1415,6 +1437,7 @@ inline DeconvolutionResult deconvolve_contig(
         if (!modern_called && neutral_consensus[pos] != 'N') {
             result.modern_consensus[pos] = neutral_consensus[pos];
             modern_called = true;
+            mod_fallback = true;
             result.positions_modern_only++;  // Mark as independent fallback
         }
 
@@ -1438,6 +1461,23 @@ inline DeconvolutionResult deconvolve_contig(
         } else if (!modern_called) {
             // Ancient called but modern not - use original for modern
             result.modern_consensus[pos] = sequence[pos];
+        }
+
+        if (config.write_position_stats && (w_ancient_total > 0.0 || w_modern_total > 0.0)) {
+            PositionStat ps;
+            ps.pos           = pos;
+            ps.ancient_base  = result.ancient_consensus[pos];
+            ps.modern_base   = result.modern_consensus[pos];
+            ps.post_anc      = anc_posterior_best;
+            ps.post_mod      = mod_posterior_best;
+            ps.eff_depth_anc = (float)w_ancient_total;
+            ps.eff_depth_mod = (float)w_modern_total;
+            ps.flags         = (anc_fallback ? 1 : 0) | (mod_fallback ? 2 : 0)
+                             | (has_damage_zone_read ? 4 : 0);
+            ps.p_diff        = (ps.ancient_base != ps.modern_base
+                                && !anc_fallback && !mod_fallback)
+                               ? ps.post_anc * ps.post_mod : 0.0f;
+            result.position_stats.push_back(ps);
         }
     }
 

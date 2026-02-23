@@ -4,11 +4,9 @@ set -eo pipefail
 # Validate bins using CheckM2 only (no GUNC)
 # Usage: validate_bins_checkm2.sh <bin_directory> [output_dir] [threads]
 
-set +u
-source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
-conda activate assembly
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
-set -u
+ASSEMBLY_ENV=/maps/projects/fernandezguerra/apps/opt/conda/envs/assembly
+export PATH="$ASSEMBLY_ENV/bin:$PATH"
+export LD_LIBRARY_PATH="$ASSEMBLY_ENV/lib:${LD_LIBRARY_PATH:-}"
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <bin_directory> [output_dir] [threads]"
@@ -26,9 +24,11 @@ if [ ! -d "$BIN_DIR" ]; then
     exit 1
 fi
 
-NUM_BINS=$(ls "$BIN_DIR"/*.fa 2>/dev/null | wc -l)
+NUM_FA=$(find "$BIN_DIR" -maxdepth 1 -name "*.fa" | wc -l)
+NUM_GZ=$(find "$BIN_DIR" -maxdepth 1 -name "*.fa.gz" | wc -l)
+NUM_BINS=$((NUM_FA + NUM_GZ))
 if [ "$NUM_BINS" -eq 0 ]; then
-    echo "Error: No *.fa files found in $BIN_DIR"
+    echo "Error: No *.fa or *.fa.gz files found in $BIN_DIR"
     exit 1
 fi
 
@@ -41,8 +41,23 @@ echo ""
 CHECKM2_DIR="$OUTPUT_DIR/checkm2"
 rm -rf "$CHECKM2_DIR"
 
+# If any bins are gzipped, decompress all into a temp dir so CheckM2 sees only .fa
+if [ "$NUM_GZ" -gt 0 ]; then
+    TMPBINS=$(mktemp -d)
+    trap "rm -rf $TMPBINS" EXIT
+    for fa in "$BIN_DIR"/*.fa; do
+        [ -e "$fa" ] && cp "$fa" "$TMPBINS/"
+    done
+    for gz in "$BIN_DIR"/*.fa.gz; do
+        gunzip -c "$gz" > "$TMPBINS/$(basename "${gz%.gz}")"
+    done
+    INPUT_DIR="$TMPBINS"
+else
+    INPUT_DIR="$BIN_DIR"
+fi
+
 $CHECKM2_BIN predict \
-    --input "$BIN_DIR" \
+    --input "$INPUT_DIR" \
     --output-directory "$CHECKM2_DIR" \
     --extension fa \
     --threads "$THREADS" \

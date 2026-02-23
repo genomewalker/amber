@@ -68,6 +68,7 @@ int cmd_bin(int argc, char** argv) {
                       << "  --stage1-res N         Resolution grid size in Stage 1 (default: 1 = pinned).\n"
                       << "  --encoder-restarts N   Consensus kNN: train N encoders independently,\n"
                       << "                         aggregate kNN edges. (default: 3)\n"
+                      << "  --consensus-threshold F  Min co-binning fraction for consensus (default: 0.5)\n"
                       << "  --checkm-hmm FILE      CheckM HMM for seed+quality markers\n"
                       << "                         (default: auxiliary/checkm_markers_only.hmm)\n"
                       << "  --bacteria-ms FILE     CheckM bacteria marker sets (default: scripts/checkm_ms/bacteria.ms)\n"
@@ -77,6 +78,8 @@ int cmd_bin(int argc, char** argv) {
                       << "  --scg-boost FLOAT      Amplification factor for shared-marker pairs (default: 2.0)\n"
                       << "                         2.0 = safe (exp(10) vs exp(5) partition denominator).\n"
                       << "                         >=3.0 can dominate log_Z; not recommended.\n"
+                      << "  --scg-supcon           SCG-SupCon: move co-genomic pairs to positive set instead\n"
+                      << "                         of treating them as hard negatives (implies --no-scg-infonce)\n"
                       << "Phase 4E Tuning (embedding-outlier contamination eviction):\n"
                       << "  --phase4e-entry-cont F Internal contamination % threshold to attempt Phase 4E\n"
                       << "                         (default: 3.0; ~3% internal ≈ ~6% CheckM2)\n"
@@ -196,6 +199,16 @@ int cmd_bin(int argc, char** argv) {
         else if (arg == "--encoder-restarts" && i + 1 < argc) {
             config.n_encoder_restarts = std::stoi(argv[++i]);
         }
+        else if (arg == "--consensus-threshold" && i + 1 < argc) {
+            config.consensus_threshold = std::stof(argv[++i]);
+        }
+        else if (arg == "--n-views" && i + 1 < argc) {
+            config.n_views = std::stoi(argv[++i]);
+            if (config.n_views < 2) {
+                std::cerr << "Error: --n-views must be >= 2 (got " << config.n_views << ")\n";
+                return 1;
+            }
+        }
         else if (arg == "--checkm-hmm" && i + 1 < argc) {
             config.checkm_hmm_file = argv[++i];
         }
@@ -210,6 +223,10 @@ int cmd_bin(int argc, char** argv) {
         }
         else if (arg == "--scg-boost" && i + 1 < argc) {
             config.scg_boost = std::stof(argv[++i]);
+        }
+        else if (arg == "--scg-supcon") {
+            config.use_scg_supcon = true;
+            config.use_scg_infonce = false;  // mutually exclusive
         }
         else if (arg == "--phase4e-entry-cont" && i + 1 < argc) {
             config.phase4e_entry_contamination = std::stof(argv[++i]);

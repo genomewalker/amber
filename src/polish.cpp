@@ -660,10 +660,13 @@ struct DeconvolveConfig {
     double std_identity_modern = 0.5;
 
     // Auto-estimation
-    bool auto_estimate_params = false;
+    bool auto_estimate_params = true;
 
     // Prior probability
     double prior_ancient = 0.5;  // Default: uninformative
+
+    // Per-position uncertainty output
+    bool write_position_stats = false;
 };
 
 int run_deconvolver(int argc, char** argv) {
@@ -730,6 +733,8 @@ int run_deconvolver(int argc, char** argv) {
             config.auto_estimate_params = true;
         } else if (arg == "--prior" && i + 1 < argc) {
             config.prior_ancient = std::stod(argv[++i]);
+        } else if (arg == "--write-position-stats") {
+            config.write_position_stats = true;
         }
     }
 
@@ -857,6 +862,7 @@ int run_deconvolver(int argc, char** argv) {
         deconv_config.std_identity_modern = config.std_identity_modern;
         deconv_config.auto_estimate_params = config.auto_estimate_params;
         deconv_config.prior_ancient = config.prior_ancient;
+        deconv_config.write_position_stats = config.write_position_stats;
 
         #pragma omp for schedule(dynamic, 50)
         for (size_t ci = 0; ci < contigs.size(); ci++) {
@@ -878,6 +884,15 @@ int run_deconvolver(int argc, char** argv) {
     std::ofstream ancient_out(config.output_dir + "/ancient_consensus.fa");
     std::ofstream modern_out(config.output_dir + "/modern_consensus.fa");
     std::ofstream stats_out(config.output_dir + "/deconvolution_stats.tsv");
+
+    std::ofstream pos_stats_out, mask_out;
+    if (config.write_position_stats) {
+        pos_stats_out.open(config.output_dir + "/position_stats.tsv");
+        pos_stats_out << "contig\tpos\tancient_base\tmodern_base\t"
+                         "post_anc\tpost_mod\teff_depth_anc\teff_depth_mod\t"
+                         "p_diff\tflags\n";
+        mask_out.open(config.output_dir + "/high_confidence_mask.bed");
+    }
 
     stats_out << "contig\tlength\ttotal_reads\tancient_reads\tmodern_reads\t"
               << "ancient_fraction\tmean_p_ancient\tclassification_confidence\t"
@@ -949,6 +964,22 @@ int run_deconvolver(int argc, char** argv) {
         total_ct_corr += dr.ancient_ct_corrections;
         total_ga_corr += dr.ancient_ga_corrections;
 
+        if (config.write_position_stats) {
+            for (const auto& ps : dr.position_stats) {
+                bool anc_fb = ps.flags & 1, mod_fb = (ps.flags >> 1) & 1;
+                pos_stats_out << name << "\t" << (ps.pos + 1) << "\t"
+                              << ps.ancient_base << "\t" << ps.modern_base << "\t"
+                              << std::fixed << std::setprecision(4)
+                              << ps.post_anc << "\t" << ps.post_mod << "\t"
+                              << ps.eff_depth_anc << "\t" << ps.eff_depth_mod << "\t"
+                              << ps.p_diff << "\t"
+                              << (int)ps.flags << "\n";
+                if (ps.ancient_base != ps.modern_base && (anc_fb || mod_fb || ps.p_diff < 0.5f)) {
+                    mask_out << name << "\t" << ps.pos << "\t" << (ps.pos + 1) << "\n";
+                }
+            }
+        }
+
         // Accumulate smiley data
         for (int d = 0; d < DeconvolutionResult::SMILEY_MAX_POS; d++) {
             smiley_anc_t_5p[d] += dr.anc_t_5p[d];
@@ -979,6 +1010,28 @@ int run_deconvolver(int argc, char** argv) {
             length_hist_ambiguous[b] += dr.length_hist_ambiguous[b];
         }
     }
+
+    // Compute weighted mean fragment lengths from per-class histograms
+    auto hist_mean_std = [](const auto& hist, int n_bins, double bin_width) -> std::pair<double, double> {
+        double sum = 0.0, sum_sq = 0.0, count = 0.0;
+        for (int b = 0; b < n_bins; b++) {
+            double len = (b + 0.5) * bin_width;
+            double n = static_cast<double>(hist[b]);
+            sum    += n * len;
+            sum_sq += n * len * len;
+            count  += n;
+        }
+        if (count < 1.0) return {0.0, 0.0};
+        double mean = sum / count;
+        double var  = sum_sq / count - mean * mean;
+        return {mean, std::sqrt(std::max(0.0, var))};
+    };
+    auto [frag_mean_ancient, frag_std_ancient] =
+        hist_mean_std(length_hist_ancient,   DeconvolutionResult::LENGTH_BINS, 5.0);
+    auto [frag_mean_modern,  frag_std_modern] =
+        hist_mean_std(length_hist_modern,    DeconvolutionResult::LENGTH_BINS, 5.0);
+    auto [frag_mean_ambig,   frag_std_ambig] =
+        hist_mean_std(length_hist_ambiguous, DeconvolutionResult::LENGTH_BINS, 5.0);
 
     // Write smiley plot data (ancient p>=0.8, modern p<=0.2, ambiguous 0.2<p<0.8)
     std::ofstream smiley_out(config.output_dir + "/smiley_data.tsv");
@@ -1072,6 +1125,13 @@ int run_deconvolver(int argc, char** argv) {
     log.metric("  Modern reads (dynamic)", (int)dyn_modern_count);
     log.metric("  Ambiguous reads (dynamic)", (int)dyn_ambiguous_count);
     log.metric("Positions where ancient != modern", (int)total_diffs);
+    log.info("Fragment length (mean ± std):");
+    log.info("  Ancient: " + std::to_string(frag_mean_ancient).substr(0,5)
+             + " ± " + std::to_string(frag_std_ancient).substr(0,5) + " bp");
+    log.info("  Modern:  " + std::to_string(frag_mean_modern).substr(0,5)
+             + " ± " + std::to_string(frag_std_modern).substr(0,5) + " bp");
+    log.info("  Ambiguous: " + std::to_string(frag_mean_ambig).substr(0,5)
+             + " ± " + std::to_string(frag_std_ambig).substr(0,5) + " bp");
     if (config.polish_ancient) {
         log.metric("Ancient C->T corrections", (int)total_ct_corr);
         log.metric("Ancient G->A corrections", (int)total_ga_corr);

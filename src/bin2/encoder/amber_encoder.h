@@ -366,9 +366,11 @@ public:
         bool use_damage_infonce = false;  // Use damage-weighted negative pairs
         float damage_lambda = 0.5f;       // Max attenuation strength (0.4-0.6)
         float damage_wmin = 0.5f;         // Minimum negative weight (graph connectivity)
-        // SCG hard negative mining
+        // SCG hard negative mining (legacy: boosts denominator weight)
         bool use_scg_infonce = false;     // Boost SCG-sharing pairs as hard negatives
         float scg_boost = 2.0f;           // Multiplicative boost for shared-marker pairs
+        // SCG-SupCon: correct positive/negative assignment using marker co-membership
+        bool use_scg_supcon = false;      // Move co-genomic SCG pairs to positive set
         int seed = 42;                    // Random seed for reproducibility
         // Stochastic Weight Averaging: average model weights over last epochs
         bool use_swa = true;
@@ -383,10 +385,15 @@ public:
     AmberTrainer(const Config& config)
         : config_(config),
           device_(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU) {
-        // Set random seed for reproducibility
+        // Set random seed and force deterministic GPU ops for reproducibility.
+        // CUBLAS_WORKSPACE_CONFIG must be set before CUDA init; set it here if not already present.
+        setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8", /*overwrite=*/0);
         torch::manual_seed(config.seed);
+        at::globalContext().setDeterministicAlgorithms(true, /*warn_only=*/false);
+        at::globalContext().setDeterministicCuDNN(true);
+        at::globalContext().setBenchmarkCuDNN(false);
         if (torch::cuda::is_available()) {
-            std::cerr << "[AmberTrainer] Using CUDA GPU (seed=" << config.seed << ")\n";
+            std::cerr << "[AmberTrainer] Using CUDA GPU (seed=" << config.seed << ", deterministic=ON)\n";
         } else {
             std::cerr << "[AmberTrainer] CUDA not available, using CPU (seed=" << config.seed << ")\n";
         }
@@ -438,6 +445,83 @@ public:
             auto pred = sim.detach().argmax(1);  // (N,)
             acc = (pred.unsqueeze(1) == pos_idx_).any(1)
                       .to(torch::kFloat).mean().item<float>() * 100.0f;
+        }
+
+        return {loss, acc};
+    }
+
+    // SupCon loss: multi-positive InfoNCE with SCG co-membership labels.
+    // Positive set P(i) = view-positives ∪ co-genomic batch members.
+    // Denominator excludes self + P(i) + any-shared-marker pairs.
+    // cog_bs:  (bs,bs) bool CPU — pairs with identical non-empty marker sets → positives
+    // excl_bs: (bs,bs) bool CPU — pairs sharing ≥1 marker → excluded from denominator
+    // damage_weights: optional (bs,bs) float GPU — applied before temperature scaling
+    std::pair<torch::Tensor, float> supcon_loss(
+        torch::Tensor features, int batch_size, int n_views,
+        const torch::Tensor& cog_bs, const torch::Tensor& excl_bs,
+        bool need_acc = false, torch::Tensor damage_weights = {}) {
+
+        int N = batch_size * n_views;
+        ensure_pos_idx(batch_size, n_views);
+
+        features = torch::nn::functional::normalize(features,
+            torch::nn::functional::NormalizeFuncOptions().dim(1));
+
+        auto sim = torch::mm(features, features.t());  // (N, N)
+
+        if (damage_weights.defined()) {
+            sim.view({n_views, batch_size, n_views, batch_size})
+               .mul_(damage_weights.view({1, batch_size, 1, batch_size}));
+        }
+        sim.div_(config_.temperature);
+
+        // Expand (bs,bs) → (N,N): block structure where row v*bs+c, col v'*bs+c'
+        // maps to mask[c, c'] regardless of view indices v, v'.
+        auto expand_bs = [&](const torch::Tensor& m) {
+            return m.to(device_)
+                    .unsqueeze(0).unsqueeze(0)
+                    .expand({n_views, n_views, batch_size, batch_size})
+                    .permute({0, 2, 1, 3})
+                    .contiguous()
+                    .reshape({N, N});
+        };
+
+        // Positive mask: view-positives + co-genomic SCG batch members
+        auto pos_mask = torch::zeros({N, N},
+            torch::TensorOptions().device(device_).dtype(torch::kFloat32));
+        pos_mask.scatter_(1, pos_idx_, 1.0f);
+        if (cog_bs.numel() > 0)
+            pos_mask = torch::max(pos_mask, expand_bs(cog_bs).to(torch::kFloat32));
+
+        // Exclusion mask: self + positives + any-shared-marker pairs
+        auto excl_mask = pos_mask.clone();
+        if (excl_bs.numel() > 0)
+            excl_mask = torch::max(excl_mask, expand_bs(excl_bs).to(torch::kFloat32));
+        excl_mask.fill_diagonal_(1.0f);
+
+        // Per-sample log partition: logsumexp over eligible negatives.
+        // Fallback: if all non-self entries are excluded (degenerate batch),
+        // use the full unmasked row to avoid logsumexp(-1e9,...) = -1e9.
+        auto denom_sim = sim.masked_fill(excl_mask.to(torch::kBool), -1e9f);
+        auto n_valid = (excl_mask < 0.5f).to(torch::kFloat32).sum(1);  // (N,)
+        auto has_valid = (n_valid > 0.5f).unsqueeze(1).expand_as(sim); // (N,N)
+        auto denom_sim_safe = torch::where(has_valid, denom_sim, sim);
+        auto log_Z = torch::logsumexp(denom_sim_safe, 1);  // (N,)
+
+        // Per-sample numerator: mean similarity over positive set
+        auto pos_count = pos_mask.sum(1).clamp_min(1.0f);  // (N,)
+        auto pos_sim_mean = (sim * pos_mask).sum(1) / pos_count;  // (N,)
+
+        auto loss = (log_Z - pos_sim_mean).mean();
+
+        float acc = 0.0f;
+        if (need_acc) {
+            torch::NoGradGuard ng;
+            auto self_eye = torch::eye(N,
+                torch::TensorOptions().device(device_).dtype(torch::kBool));
+            auto pred = sim.detach().masked_fill(self_eye, -1e9f).argmax(1);  // (N,)
+            acc = pos_mask.gather(1, pred.unsqueeze(1)).squeeze(1)
+                      .mean().item<float>() * 100.0f;
         }
 
         return {loss, acc};
@@ -884,9 +968,11 @@ public:
                           const std::vector<DamageProfile>& damage_profiles,
                           const ContigMarkerLookup& scg_lookup) {
         const bool has_damage = config_.use_damage_infonce && !damage_profiles.empty();
-        const bool has_scg = config_.use_scg_infonce && !scg_lookup.empty();
+        const bool has_scg = (config_.use_scg_infonce || config_.use_scg_supcon) && !scg_lookup.empty();
 
         if (!has_scg) {
+            if (config_.use_scg_supcon)
+                std::cerr << "[AmberTrainer] WARNING: --scg-supcon requested but SCG lookup is empty; falling back to damage-only training\n";
             if (has_damage) return train_multiview(encoder, views, damage_profiles);
             return train_multiview(encoder, views);
         }
@@ -925,6 +1011,7 @@ public:
         std::cerr << "[AmberTrainer] Training on " << n_full_batches
                   << " minibatches (drop_last=True), epochs=" << config_.epochs << "\n";
 
+
         float best_loss = std::numeric_limits<float>::max();
         int best_epoch = 0;
         int earlystop_epoch = 0;
@@ -962,24 +1049,34 @@ public:
                 for (int v = 0; v < n_views; v++)
                     batch_views.push_back(views_gpu[v].index_select(0, idx_tensor));
                 auto all_features = torch::cat(batch_views, 0);
+
                 auto embeddings = encoder->forward(all_features);
 
-                torch::Tensor final_weights;
-                if (has_damage) {
-                    auto dw = damage_infonce.compute_weights(batch_damage, device_);
-                    auto sw = compute_scg_weights(scg_lookup, batch_idx, device_);
-                    // Use max, not mul: damage attenuates (≤1.0), SCG boosts (>1.0).
-                    // mul() cancels both signals for same-ancient SCG pairs (0.5×2=1).
-                    // max() lets SCG take priority: confirmed-different-genome pairs
-                    // get the boost regardless of their damage similarity.
-                    final_weights = torch::max(dw, sw);
-                } else {
-                    final_weights = compute_scg_weights(scg_lookup, batch_idx, device_);
-                }
-
                 bool last_batch = (b == n_full_batches - 1);
-                auto [loss, batch_acc] = info_nce_loss(
-                    embeddings, bs, n_views, last_batch, final_weights);
+                bool need_acc_this_batch = last_batch;
+                torch::Tensor loss;
+                float batch_acc = 0.0f;
+
+                if (config_.use_scg_supcon) {
+                    auto [cog_mask, excl_mask] = compute_scg_masks(scg_lookup, batch_idx);
+                    torch::Tensor dw;
+                    if (has_damage)
+                        dw = damage_infonce.compute_weights(batch_damage, device_);
+                    std::tie(loss, batch_acc) = supcon_loss(
+                        embeddings, bs, n_views, cog_mask, excl_mask, need_acc_this_batch, dw);
+                } else {
+                    // Legacy scg_boost: amplify SCG-sharing pairs in denominator
+                    torch::Tensor final_weights;
+                    if (has_damage) {
+                        auto dw = damage_infonce.compute_weights(batch_damage, device_);
+                        auto sw = compute_scg_weights(scg_lookup, batch_idx, device_);
+                        final_weights = torch::max(dw, sw);
+                    } else {
+                        final_weights = compute_scg_weights(scg_lookup, batch_idx, device_);
+                    }
+                    std::tie(loss, batch_acc) = info_nce_loss(
+                        embeddings, bs, n_views, need_acc_this_batch, final_weights);
+                }
 
                 optimizer.zero_grad();
                 loss.backward();
@@ -993,7 +1090,7 @@ public:
                 }
 
                 total_loss_gpu += loss.detach();
-                if (last_batch) last_accuracy = batch_acc;
+                if (need_acc_this_batch) last_accuracy = batch_acc;
             }
 
             float epoch_loss = total_loss_gpu.item<float>() / std::max(1, n_full_batches);
@@ -1257,6 +1354,126 @@ private:
     int cached_N_  = -1;
     int cached_bs_ = -1;
     int cached_nv_ = -1;
+
+    // Sparse pre-computed SCG pair relationships — built once per training run.
+    // adj[ci] = [(cj, is_cog), ...] for all cj sharing ≥1 marker with ci (symmetric).
+    // has_marker[ci] = true when ci has any marker (fast filter for batch_pos building).
+    struct ScgPairCache {
+        std::vector<std::vector<std::pair<int, bool>>> adj;
+        std::vector<bool> has_marker;
+        int n_contigs = 0;
+        bool empty() const { return n_contigs == 0; }
+    };
+
+    static ScgPairCache build_scg_pair_cache(const ContigMarkerLookup& lookup) {
+        int N = lookup.n_contigs;
+        ScgPairCache cache;
+        cache.n_contigs = N;
+        cache.adj.resize(N);
+        cache.has_marker.resize(N, false);
+
+        std::vector<int> mb;
+        for (int i = 0; i < N; i++)
+            if (!lookup.contig_marker_ids[i].empty()) { cache.has_marker[i] = true; mb.push_back(i); }
+
+        int Mc = (int)mb.size();
+        for (int a = 0; a < Mc; a++) {
+            int ci = mb[a];
+            const auto& mi = lookup.contig_marker_ids[ci];
+            for (int b = a + 1; b < Mc; b++) {
+                int cj = mb[b];
+                const auto& mj = lookup.contig_marker_ids[cj];
+                int shared = 0;
+                size_t p = 0, q = 0;
+                while (p < mi.size() && q < mj.size()) {
+                    if      (mi[p] == mj[q]) { ++shared; ++p; ++q; }
+                    else if (mi[p]  < mj[q]) ++p;
+                    else                      ++q;
+                }
+                if (shared > 0) {
+                    bool is_cog = (shared == (int)mi.size() && shared == (int)mj.size());
+                    cache.adj[ci].emplace_back(cj, is_cog);
+                    cache.adj[cj].emplace_back(ci, is_cog);
+                }
+            }
+        }
+        return cache;
+    }
+
+    // Fast per-batch SCG mask build using pre-computed sparse adjacency.
+    // O(Mc_batch * avg_adj) + O(bs) instead of O(bs^2 * marker_intersection).
+    static std::pair<torch::Tensor, torch::Tensor> compute_scg_masks_fast(
+        const ScgPairCache& cache, const std::vector<long>& batch_idx) {
+        int bs = (int)batch_idx.size();
+        std::vector<uint8_t> cogenomic(static_cast<size_t>(bs) * bs, 0);
+        std::vector<uint8_t> exclusion(static_cast<size_t>(bs) * bs, 0);
+
+        // Map marker-bearing contigs in this batch to their batch position
+        std::unordered_map<int, int> batch_pos;
+        batch_pos.reserve(32);
+        for (int p = 0; p < bs; p++) {
+            int ci = (int)batch_idx[p];
+            if (ci < cache.n_contigs && cache.has_marker[ci])
+                batch_pos[ci] = p;
+        }
+
+        for (const auto& [ci, p] : batch_pos) {
+            for (const auto& [cj, is_cog] : cache.adj[ci]) {
+                auto it = batch_pos.find(cj);
+                if (it == batch_pos.end()) continue;
+                int q = it->second;
+                exclusion[p * bs + q] = exclusion[q * bs + p] = 1;
+                if (is_cog) cogenomic[p * bs + q] = cogenomic[q * bs + p] = 1;
+            }
+        }
+
+        auto cog = torch::from_blob(cogenomic.data(), {bs, bs},
+                       torch::TensorOptions().dtype(torch::kUInt8)).to(torch::kBool).clone();
+        auto excl = torch::from_blob(exclusion.data(), {bs, bs},
+                        torch::TensorOptions().dtype(torch::kUInt8)).to(torch::kBool).clone();
+        return {cog, excl};
+    }
+
+    // Compute per-batch SCG masks for SupCon loss (slow fallback, kept for reference).
+    // Returns (cogenomic, exclusion) as (bs, bs) CPU bool tensors.
+    std::pair<torch::Tensor, torch::Tensor> compute_scg_masks(
+        const ContigMarkerLookup& lookup,
+        const std::vector<long>& batch_idx) {
+        int bs = (int)batch_idx.size();
+        std::vector<uint8_t> cogenomic(static_cast<size_t>(bs) * bs, 0);
+        std::vector<uint8_t> exclusion(static_cast<size_t>(bs) * bs, 0);
+        for (int i = 0; i < bs; i++) {
+            long ci = batch_idx[i];
+            if (ci >= lookup.n_contigs) continue;
+            const auto& mi = lookup.contig_marker_ids[ci];
+            if (mi.empty()) continue;
+            for (int j = i + 1; j < bs; j++) {
+                long cj = batch_idx[j];
+                if (cj >= lookup.n_contigs) continue;
+                const auto& mj = lookup.contig_marker_ids[cj];
+                if (mj.empty()) continue;
+                int shared = 0;
+                size_t a = 0, b = 0;
+                while (a < mi.size() && b < mj.size()) {
+                    if (mi[a] == mj[b]) { ++shared; ++a; ++b; }
+                    else if (mi[a] < mj[b]) ++a;
+                    else ++b;
+                }
+                if (shared > 0) {
+                    exclusion[i * bs + j] = exclusion[j * bs + i] = 1;
+                    if (shared == (int)mi.size() && shared == (int)mj.size())
+                        cogenomic[i * bs + j] = cogenomic[j * bs + i] = 1;
+                }
+            }
+        }
+        auto cog = torch::from_blob(cogenomic.data(), {bs, bs},
+                       torch::TensorOptions().dtype(torch::kUInt8))
+                       .to(torch::kBool).clone();
+        auto excl = torch::from_blob(exclusion.data(), {bs, bs},
+                        torch::TensorOptions().dtype(torch::kUInt8))
+                        .to(torch::kBool).clone();
+        return {cog, excl};
+    }
 
     // Build (bs×bs) weight tensor for SCG hard negative mining.
     // Pairs sharing ≥1 marker get scg_boost; all others get 1.0.
