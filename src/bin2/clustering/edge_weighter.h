@@ -37,14 +37,11 @@ public:
         int partgraph_ratio) const;
 
     void set_bandwidth(float bandwidth) { bandwidth_ = bandwidth; }
-    void set_damage_beta(float beta) { damage_beta_ = beta; }
 
     float bandwidth() const { return bandwidth_; }
-    float damage_beta() const { return damage_beta_; }
 
 private:
     float bandwidth_;
-    float damage_beta_;
     float confidence_threshold_ = 0.5f;
 };
 

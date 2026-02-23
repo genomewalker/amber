@@ -45,34 +45,10 @@ struct QualityLeidenConfig {
     float lambda_min = 0.01f;          // Minimum λ (prevent quality domination)
     float lambda_max = 100.0f;         // Maximum λ (prevent modularity domination)
 
-    // Mode: scalarized vs constrained
-    bool use_constrained_mode = false; // If true, use ε-constrained refinement
-    float epsilon_budget = 0.05f;      // Fraction of modularity gain allowed as loss
-
-    // Phase 1: edge weight penalty for pairs sharing the same SCG marker.
-    // Reduces w by exp(-marker_edge_penalty * n_shared_markers).
-    // 0 = disabled, 3.0 = ~95% reduction per shared marker.
-    float marker_edge_penalty = 3.0f;
-
     // Phase 1: complementary edge bonus for marker-bearing contig pairs that share
     // NO markers (complementary sets → likely same genome, different contigs).
     // Multiplies w by (1 + scg_complement_bonus). 0 = disabled, 0.3 = +30%.
     float scg_complement_bonus = 0.3f;
-
-    // Phase 1b: marker-guided map equation refinement after libleidenalg.
-    // Replaces modularity delta with the map equation delta (parameter-free,
-    // MDL-based), combined with the marker quality penalty. This avoids the
-    // resolution limit and over-merging issues of modularity-based refinement.
-    bool use_map_equation = false;
-
-    // Resolution calibration: try n_res_trials resolutions log-uniform over
-    // [res_search_min, res_search_max], score each with the internal SCG metric
-    // (Σ present - penalty*dup_excess), fit a quadratic in log-resolution space,
-    // and use the argmax for the main pipeline run.
-    bool calibrate_resolution = false;
-    int n_res_trials = 8;
-    float res_search_min = 0.5f;
-    float res_search_max = 50.0f;
 
     // Skip Phase 2 contamination splitting entirely (both during candidate
     // evaluation and in the final cluster() output). Set when using the
@@ -98,7 +74,6 @@ struct QualityLeidenConfig {
     float    bw_search_min        = 0.05f;    // Log-uniform bandwidth search range
     float    bw_search_max        = 0.5f;
     int      restart_stage1_bw    = 7;        // Stage 1 bandwidth grid size
-    int      restart_stage1_res   = 1;        // Stage 1 resolution grid size (1 = pinned to base_cfg.resolution)
     int      restart_stage2_topk  = 3;        // Top arms to race in Stage 2
     int      restart_stage2_extra = 12;       // Extra runs across top arms in Stage 2
     int      restart_stage3_extra = 6;        // Max extra runs on best arm in Stage 3
@@ -172,52 +147,6 @@ public:
     void set_embeddings(const std::vector<std::vector<float>>* emb) { embeddings_ = emb; }
 
 protected:
-    // Override move_nodes_fast to add quality delta
-    bool move_nodes_fast_quality(
-        std::vector<int>& labels,
-        std::vector<double>& comm_weights,
-        std::vector<double>& comm_sizes,
-        std::vector<std::unordered_map<int, int>>& comm_markers,
-        float resolution,
-        float lambda);
-
-    // Override refinement to add quality delta
-    void refine_partition_quality(
-        std::vector<int>& labels,
-        const std::vector<int>& aggregate_membership,
-        std::vector<double>& comm_weights,
-        std::vector<double>& comm_sizes,
-        std::vector<std::unordered_map<int, int>>& comm_markers,
-        float resolution,
-        float lambda);
-
-    // Calibrate λ empirically from observed move deltas
-    float calibrate_lambda(
-        const std::vector<int>& labels,
-        const std::vector<double>& comm_weights,
-        const std::vector<double>& comm_sizes,
-        const std::vector<std::unordered_map<int, int>>& comm_markers,
-        float resolution);
-
-    // Initialize community marker counts from labels
-    void init_comm_markers(
-        const std::vector<int>& labels,
-        int n_communities,
-        std::vector<std::unordered_map<int, int>>& comm_markers);
-
-    // Aggregate marker counts for aggregate graph
-    std::vector<std::unordered_map<int, int>> aggregate_markers(
-        const std::vector<int>& labels,
-        const std::vector<std::unordered_map<int, int>>& comm_markers,
-        int n_communities);
-
-    // Update community marker counts when node moves
-    void update_comm_markers(
-        int node,
-        int from_comm,
-        int to_comm,
-        std::vector<std::unordered_map<int, int>>& comm_markers);
-
     // Dense CommQuality versions
     void init_comm_quality(
         const std::vector<int>& labels,
@@ -232,30 +161,12 @@ protected:
         int node, int source_comm, int target_comm,
         const std::vector<CommQuality>& comm_q) const;
 
-    // Map equation delta for moving node from curr to tgt (gain = -ΔL, positive = improvement).
-    // comm_internal[c] = Σ_{v∈c} Σ_{u∈c,u~v} w_{uv} (each internal edge counted twice).
-    // q_total = (total_edge_weight_ - Σ comm_internal[c]) / total_edge_weight_.
-    double delta_map_equation(
-        int node, int curr, int tgt,
-        double edges_to_curr, double edges_to_tgt,
-        const std::vector<double>& comm_weights,
-        const std::vector<double>& comm_internal,
-        double q_total) const;
-
-    // Initialize comm_internal from current labels.
-    void init_comm_internal(
-        const std::vector<int>& labels,
-        int n_communities,
-        std::vector<double>& comm_internal) const;
-
     // Multicore quality-weighted move kernel with work stealing
     bool move_nodes_fast_quality_mt(
         std::vector<int>& labels,
         std::vector<double>& comm_weights,
         std::vector<double>& comm_sizes,
         std::vector<CommQuality>& comm_q,
-        std::vector<double>& comm_internal,
-        double& q_total,
         float resolution,
         float lambda,
         int n_threads);
@@ -266,20 +177,12 @@ protected:
         std::vector<double>& comm_weights,
         std::vector<double>& comm_sizes,
         std::vector<CommQuality>& comm_q,
-        std::vector<double>& comm_internal,
-        double& q_total,
         float resolution,
         float lambda,
         int n_threads);
 
     // Resolution calibration: score a partition with the internal SCG metric.
     float scg_quality_score(const std::vector<CommQuality>& comm_q) const;
-
-    // Try n_res_trials resolutions, fit quadratic in log-res space, return argmax.
-    float calibrate_resolution(
-        const std::vector<WeightedEdge>& edges,
-        int n_nodes,
-        const LeidenConfig& config) const;
 
     // SCG quality score for an arbitrary label vector (builds CommQuality internally).
     // Falls back to 0.0 if no markers hit any node.
@@ -351,14 +254,11 @@ protected:
         bool run_phase2_for_score);
 
     // Dense CommQuality version of calibrate_lambda
-    // comm_internal and q_total are only used when qconfig_.use_map_equation is true.
     float calibrate_lambda(
         const std::vector<int>& labels,
         const std::vector<double>& comm_weights,
         const std::vector<double>& comm_sizes,
         const std::vector<CommQuality>& comm_q,
-        const std::vector<double>& comm_internal,
-        double q_total,
         float resolution);
 
 private:

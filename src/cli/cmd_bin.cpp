@@ -61,7 +61,7 @@ int cmd_bin(int argc, char** argv) {
                       << "  --no-damage-infonce    Disable damage-weighted InfoNCE loss (on by default)\n"
                       << "  --damage-lambda FLOAT  Attenuation strength (default: 0.5)\n"
                       << "  --damage-wmin FLOAT    Minimum negative weight (default: 0.5)\n"
-                      << "  --multiscale-cgr       Enable multi-scale CGR late fusion\n\n"
+                      << "\n"
                       << "Leiden Restarts:\n"
                       << "  --leiden-restarts N    Seed sweep: run N Leiden restarts, take best SCG score\n"
                       << "                         (default: 25)\n"
@@ -90,9 +90,6 @@ int cmd_bin(int argc, char** argv) {
                       << "  --grad-clip FLOAT      Global gradient norm clip (default: 1.0, 0=disabled)\n"
                       << "  --encoder-ema          Enable EMA of encoder weights for final embeddings\n"
                       << "  --ema-decay FLOAT      EMA decay rate (default: 0.999)\n"
-                      << "Encoder QC Gate:\n"
-                      << "  --encoder-qc-threshold F  Retry if score < threshold * best (default: 0.8)\n"
-                      << "  --encoder-qc-max-extra N  Max extra encoder retries via QC gate (default: 2)\n"
                       << "Damage Profile:\n"
                       << "  --damage-positions N   Terminal positions for smiley plot and likelihood (default: 15, max: 25)\n";
             return 0;
@@ -187,14 +184,8 @@ int cmd_bin(int argc, char** argv) {
         else if (arg == "--damage-wmin" && i + 1 < argc) {
             config.damage_wmin = std::stof(argv[++i]);
         }
-        else if (arg == "--multiscale-cgr") {
-            config.use_multiscale_cgr = true;
-        }
         else if (arg == "--leiden-restarts" && i + 1 < argc) {
             config.n_leiden_restarts = std::stoi(argv[++i]);
-        }
-        else if (arg == "--stage1-res" && i + 1 < argc) {
-            config.restart_stage1_res = std::stoi(argv[++i]);
         }
         else if (arg == "--encoder-restarts" && i + 1 < argc) {
             config.n_encoder_restarts = std::stoi(argv[++i]);
@@ -249,12 +240,6 @@ int cmd_bin(int argc, char** argv) {
                 std::cerr << "ERROR: --damage-positions must be 1..25\n";
                 return 1;
             }
-        }
-        else if (arg == "--encoder-qc-threshold" && i + 1 < argc) {
-            config.encoder_qc_threshold = std::stof(argv[++i]);
-        }
-        else if (arg == "--encoder-qc-max-extra" && i + 1 < argc) {
-            config.encoder_qc_max_extra = std::stoi(argv[++i]);
         }
         else if (arg.rfind("--", 0) == 0) {
             std::cerr << "Error: unknown flag '" << arg << "'. Run with --help for usage.\n";

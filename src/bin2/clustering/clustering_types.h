@@ -16,7 +16,6 @@ struct KnnConfig {
 
 struct GraphConfig {
     float bandwidth = 0.1f;
-    float damage_beta = 1.0f;
     int partgraph_ratio = 50;     // Percentile cutoff for edge pruning (50, 80, 100)
 };
 

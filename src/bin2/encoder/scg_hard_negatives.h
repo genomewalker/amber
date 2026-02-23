@@ -10,7 +10,8 @@ namespace amber::bin2 {
 // contig_marker_ids[i] is sorted for O(k) intersection queries.
 struct ContigMarkerLookup {
     std::vector<std::vector<int>> contig_marker_ids;
-    int n_contigs = 0;
+    int n_contigs     = 0;
+    int total_markers = 0;  // number of distinct marker profiles (e.g. 206)
     bool empty() const { return contig_marker_ids.empty(); }
 };
 
@@ -34,7 +35,8 @@ inline ContigMarkerLookup build_contig_marker_lookup(
         contig_idx_map[contigs[i].first] = i;
 
     ContigMarkerLookup lookup;
-    lookup.n_contigs = (int)contigs.size();
+    lookup.n_contigs     = (int)contigs.size();
+    lookup.total_markers = next_id;
     lookup.contig_marker_ids.resize(contigs.size());
 
     for (const auto& [contig, markers] : hits_by_contig) {

@@ -9,21 +9,12 @@
 namespace amber::bin2 {
 
 DamageAwareEdgeWeighter::DamageAwareEdgeWeighter(const GraphConfig& config)
-    : bandwidth_(config.bandwidth)
-    , damage_beta_(config.damage_beta) {}
+    : bandwidth_(config.bandwidth) {}
 
 float DamageAwareEdgeWeighter::weight(float emb_dist,
-                                       const DamageFeatures& di,
-                                       const DamageFeatures& dj) const {
-    float base = std::exp(-emb_dist / bandwidth_);
-
-    float damage_penalty = 1.0f;
-    if (di.confidence > confidence_threshold_ && dj.confidence > confidence_threshold_) {
-        float dp_diff = std::abs(di.p_ancient - dj.p_ancient);
-        damage_penalty = std::exp(-damage_beta_ * dp_diff);
-    }
-
-    return base * damage_penalty;
+                                       const DamageFeatures& /*di*/,
+                                       const DamageFeatures& /*dj*/) const {
+    return std::exp(-emb_dist / bandwidth_);
 }
 
 std::vector<WeightedEdge> DamageAwareEdgeWeighter::compute_edges(
@@ -144,13 +135,12 @@ float AdaptiveBandwidthWeighter::compute_bandwidth(const NeighborList& neighbors
 std::vector<WeightedEdge> AdaptiveBandwidthWeighter::compute_edges(
     const NeighborList& neighbors,
     const std::vector<DamageFeatures>& damage_features,
-    float damage_beta) const {
+    float /*damage_beta*/) const {
 
     float bandwidth = compute_bandwidth(neighbors);
 
     GraphConfig config;
     config.bandwidth = bandwidth;
-    config.damage_beta = damage_beta;
 
     DamageAwareEdgeWeighter weighter(config);
     return weighter.compute_symmetric_edges(neighbors, damage_features);

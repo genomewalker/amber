@@ -927,7 +927,6 @@ ClusteringResult LibLeidenalgBackend::cluster(
     int n_nodes,
     const LeidenConfig& config) {
 
-
     // Clean up previous graph
     if (impl_->igraph_created) {
         igraph_destroy(&impl_->igraph);

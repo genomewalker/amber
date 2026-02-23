@@ -33,7 +33,7 @@ if(AMBER_USE_LIBLEIDENALG)
     # igraph build options - minimal build
     set(IGRAPH_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-    set(IGRAPH_ENABLE_TLS OFF CACHE BOOL "" FORCE)
+    set(IGRAPH_ENABLE_TLS ON CACHE BOOL "" FORCE)  # Thread-local error handling for parallel Leiden
     set(IGRAPH_USE_INTERNAL_BLAS ON CACHE BOOL "" FORCE)
     set(IGRAPH_USE_INTERNAL_LAPACK ON CACHE BOOL "" FORCE)
     set(IGRAPH_USE_INTERNAL_ARPACK ON CACHE BOOL "" FORCE)
@@ -165,6 +165,7 @@ set(SOURCES
     src/cli/cmd_deconvolve.cpp
     src/cli/cmd_chimera.cpp
     src/cli/cmd_seeds.cpp
+    src/cli/cmd_resolve.cpp
     src/seeds/seed_generator.cpp
     src/polish.cpp
     src/chimera.cpp
@@ -183,7 +184,7 @@ set(SOURCES
     src/bin2/clustering/hnsw_knn_index.cpp
     src/bin2/clustering/edge_weighter.cpp
     src/bin2/clustering/leiden_backend.cpp
-    src/bin2/clustering/ensemble_leiden.cpp
+
     src/bin2/clustering/marker_index.cpp
     src/bin2/clustering/quality_leiden_backend.cpp
     src/bin2/clustering/consensus_knn.cpp

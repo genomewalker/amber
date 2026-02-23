@@ -22,6 +22,7 @@
 #include "bin2/encoder/multiscale_cgr.h"
 #include "bin2/encoder/scg_hard_negatives.h"
 #include "algorithms/damage_likelihood.h"
+#include "bin2/io/abin.h"
 
 #include "bin2/clustering/clustering_types.h"
 #include "bin2/clustering/consensus_knn.h"
@@ -30,6 +31,8 @@
 #include "bin2/clustering/leiden_backend.h"
 #include "bin2/clustering/marker_index.h"
 #include "bin2/clustering/quality_leiden_backend.h"
+#include "bin2/clustering/partition_consensus.h"
+#include "bin2/clustering/bin_confidence.h"
 #include "seeds/seed_generator.h"
 
 #include <iostream>
@@ -164,7 +167,7 @@ std::unordered_map<std::string, CoverageWithVariance> load_coverage_comebin_styl
         bam1_t* aln = bam_init1();
 
         if (bam && header && idx) {
-            #pragma omp for schedule(dynamic)
+            #pragma omp for schedule(static)
             for (size_t ci = 0; ci < contigs.size(); ci++) {
                 const auto& [name, seq] = contigs[ci];
                 uint32_t contig_length = static_cast<uint32_t>(seq.length());
@@ -410,7 +413,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
         bam1_t* aln = bam_init1();
 
         if (bam && header && idx) {
-            #pragma omp for schedule(dynamic)
+            #pragma omp for schedule(static)
             for (size_t ci = 0; ci < contigs.size(); ci++) {
                 const auto& [name, seq] = contigs[ci];
                 uint32_t contig_length = seq.length();
@@ -460,7 +463,6 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                             if (read_base == 'T') pos_stats[i * 4 + 1].fetch_add(1);
                         }
                         if (i == 0 && ref_base != 'N' && read_base != 'N') {
-                            #pragma omp critical
                             adna.add_5p_mismatch(ref_base, read_base);
                         }
 
@@ -494,7 +496,6 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                             if (read_base == 'A') pos_stats[i * 4 + 3].fetch_add(1);
                         }
                         if (i == 0 && ref_base != 'N' && read_base != 'N') {
-                            #pragma omp critical
                             adna.add_3p_mismatch(ref_base, read_base);
                         }
 
@@ -525,8 +526,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                     float weight = std::sqrt(static_cast<float>(informative_positions));
                     acc.add_read(p_damaged, weight);
 
-                    // Accumulate aDNA-specific features
-                    #pragma omp critical
+                    // Accumulate aDNA-specific features (thread-exclusive per ci)
                     adna.add_read(read_len, p_damaged);
                 }
                 hts_itr_destroy(iter);
@@ -704,14 +704,23 @@ int run_bin2(const Bin2Config& config) {
 
     std::filesystem::create_directories(config.output_dir);
 
-    // Remove only bin_*.fa files from previous runs (not other user data in the directory)
+    // Remove only bin_*.fa files from previous runs (not other user data in the directory).
+    // Collect + sort first to make deletion order deterministic across filesystems.
+    std::vector<std::filesystem::path> stale_bin_files;
     for (const auto& entry : std::filesystem::directory_iterator(config.output_dir)) {
         const auto& p = entry.path();
         const auto stem = p.stem().string();
         if ((p.extension() == ".fa" || p.extension() == ".fasta") &&
             stem.rfind("bin_", 0) == 0) {
-            std::filesystem::remove(p);
+            stale_bin_files.push_back(p);
         }
+    }
+    std::sort(stale_bin_files.begin(), stale_bin_files.end(),
+              [](const std::filesystem::path& a, const std::filesystem::path& b) {
+                  return a.filename().string() < b.filename().string();
+              });
+    for (const auto& p : stale_bin_files) {
+        std::filesystem::remove(p);
     }
 
     // ========================================
@@ -811,6 +820,7 @@ int run_bin2(const Bin2Config& config) {
         knn_config.k = std::min(config.k, static_cast<int>(embeddings.size()) - 1);  // k can't exceed n-1
         knn_config.ef_search = 1000;
         knn_config.ef_construction = 1000;
+        knn_config.random_seed = config.random_seed;
         std::cerr << "[DEBUG] k adjusted to " << knn_config.k << "\n" << std::flush;
 
         bin2::HnswKnnIndex knn_index(knn_config);
@@ -1093,95 +1103,15 @@ int run_bin2(const Bin2Config& config) {
             marker_hits_by_contig = early_gen.get_hits_by_contig();
     }
 
-    // Build SCG marker lookup for hard negative mining and quality-weighted consensus
+    // Build SCG marker lookup for hard negative mining, quality-weighted consensus,
+    // and post-processing confidence scoring.
     bin2::ContigMarkerLookup scg_lookup;
-    bool need_scg_lookup = config.use_scg_infonce || (config.n_encoder_restarts > 1);
-    if (need_scg_lookup && !marker_hits_by_contig.empty())
+    if (!marker_hits_by_contig.empty())
         scg_lookup = bin2::build_contig_marker_lookup(marker_hits_by_contig, contigs);
-
-    // Build feature vectors
-    // TNF (136) + CGR (26) + Complexity (14) + log_cov (1) + aDNA (20) = 197 dims
-    // aDNA features: damage profile (10) + decay params (2) + frag len (2) + damage cov (2) + mismatch (4)
-    bool use_adna_features = !damage_profiles.empty();
-    int feature_dim = use_adna_features ? 197 : 177;
-    log.info("Building feature vectors (" + std::to_string(feature_dim) + " dims" +
-             (use_adna_features ? ", including 20 aDNA-specific features)" : ")"));
-
-    std::vector<std::vector<float>> features(contigs.size());
-
-    for (size_t i = 0; i < contigs.size(); i++) {
-        features[i].resize(feature_dim);
-        int idx = 0;
-
-        // TNF features (136)
-        for (int j = 0; j < 136; j++) features[i][idx++] = tnf_features[i][j];
-
-        // CGR features (26)
-        const auto& cgr = cgr_features[i];
-        features[i][idx++] = static_cast<float>(cgr.fractal_dimension);
-        features[i][idx++] = static_cast<float>(cgr.lacunarity);
-        for (int j = 0; j < 7; j++) features[i][idx++] = static_cast<float>(cgr.hu_moments[j]);
-        for (int j = 0; j < 10; j++) features[i][idx++] = static_cast<float>(cgr.radial_density[j]);
-        for (int j = 0; j < 4; j++) features[i][idx++] = static_cast<float>(cgr.quadrant_density[j]);
-        features[i][idx++] = static_cast<float>(cgr.entropy);
-        features[i][idx++] = static_cast<float>(cgr.uniformity);
-        features[i][idx++] = static_cast<float>(cgr.max_density);
-
-        // Complexity features (14)
-        const auto& cplx = complexity_features[i];
-        for (int j = 0; j < 4; j++) features[i][idx++] = static_cast<float>(cplx.lempel_ziv_complexity[j]);
-        for (int j = 0; j < 3; j++) features[i][idx++] = static_cast<float>(cplx.hurst_exponent[j]);
-        features[i][idx++] = static_cast<float>(cplx.dfa_exponent);
-        for (int j = 0; j < 5; j++) features[i][idx++] = static_cast<float>(cplx.entropy_scaling[j]);
-        features[i][idx++] = static_cast<float>(cplx.kmer_fractal_dim);
-
-        // Coverage (1)
-        features[i][idx++] = static_cast<float>(std::log1p(coverages[i]));
-
-        // aDNA-specific features (20) - AMBER novel
-        if (use_adna_features && i < damage_profiles.size()) {
-            const auto& dmg = damage_profiles[i];
-
-            // Damage profile (10 dims) - first 5 positions from each end
-            for (int j = 0; j < 5; j++) features[i][idx++] = dmg.ct_rate_5p[j];
-            for (int j = 0; j < 5; j++) features[i][idx++] = dmg.ga_rate_3p[j];
-
-            // Damage decay parameters (2 dims) - normalized
-            features[i][idx++] = dmg.lambda_5p / 2.0f;  // Normalize ~[0,1]
-            features[i][idx++] = dmg.lambda_3p / 2.0f;
-
-            // Fragment length distribution (2 dims) - normalized
-            features[i][idx++] = dmg.frag_len_mean / 150.0f;
-            features[i][idx++] = dmg.frag_len_std / 50.0f;
-
-            // Damage-stratified coverage (2 dims) - log-normalized
-            features[i][idx++] = std::log1p(dmg.cov_damaged_reads) / 5.0f;
-            features[i][idx++] = std::log1p(dmg.cov_undamaged_reads) / 5.0f;
-
-            // Mismatch spectrum (4 dims) - already normalized rates
-            features[i][idx++] = dmg.mm_5p_tc;
-            features[i][idx++] = dmg.mm_3p_ct;
-            features[i][idx++] = dmg.mm_5p_other;
-            features[i][idx++] = dmg.mm_3p_other;
-        }
-    }
-
-    // Log aDNA feature statistics
-    if (use_adna_features && !damage_profiles.empty()) {
-        float sum_lambda = 0, sum_frag = 0, sum_ratio = 0;
-        for (const auto& d : damage_profiles) {
-            sum_lambda += (d.lambda_5p + d.lambda_3p) / 2.0f;
-            sum_frag += d.frag_len_mean;
-            sum_ratio += d.damage_cov_ratio;
-        }
-        int n = damage_profiles.size();
-        log.info("aDNA features: mean_lambda=" + std::to_string(sum_lambda/n) +
-                 ", mean_frag_len=" + std::to_string(sum_frag/n) +
-                 ", mean_damage_cov_ratio=" + std::to_string(sum_ratio/n));
-    }
 
     // COMEBin-style encoding
     std::vector<std::vector<float>> embeddings;
+    std::vector<std::vector<float>> raw_features;  // n_contigs × 138, saved to .abin
     auto train_start = std::chrono::steady_clock::now();
 
     // Compute N50 for temperature selection (COMEBin: 0.07 if N50>10kb, else 0.15)
@@ -1222,8 +1152,8 @@ int run_bin2(const Bin2Config& config) {
                  ", hidden=" + std::to_string(config.hidden_dim) +
                  ", layers=" + std::to_string(config.n_layer));
 
-        // COMEBin default: 6 views (original + 5 augmented substrings)
-        const int n_views = 6;
+        // Number of augmented views (COMEBin default: 6; 2 is better for SupCon)
+        const int n_views = config.n_views;
         log.info("Generating " + std::to_string(n_views) + " views with substring augmentation...");
 
         // Extract sequences for augmentation
@@ -1386,7 +1316,8 @@ int run_bin2(const Bin2Config& config) {
         trainer_config.damage_wmin = config.damage_wmin;
         // SCG hard negative mining settings
         trainer_config.use_scg_infonce = config.use_scg_infonce;
-        trainer_config.scg_boost = config.scg_boost;
+        trainer_config.scg_boost       = config.scg_boost;
+        trainer_config.use_scg_supcon  = config.use_scg_supcon;
         // Encoder seed for reproducibility
         trainer_config.seed = config.encoder_seed;
         // Gradient clipping and EMA
@@ -1395,7 +1326,11 @@ int run_bin2(const Bin2Config& config) {
         trainer_config.ema_decay = config.ema_decay;
 
         bin2::AmberTrainer trainer(trainer_config);
-        if (config.use_damage_infonce && !damage_profiles.empty()) {
+        if (config.use_scg_supcon && !scg_lookup.empty()) {
+            log.info("Using SCG-SupCon training (co-genomic pairs as positives)" +
+                     std::string(config.use_damage_infonce && !damage_profiles.empty() ? " + damage weights" : ""));
+            trainer.train_multiview(amber_encoder, view_tensors, damage_profiles, scg_lookup);
+        } else if (config.use_damage_infonce && !damage_profiles.empty()) {
             log.info("Using damage-aware InfoNCE training" +
                      std::string(config.use_scg_infonce && !scg_lookup.empty() ? " + SCG hard negatives" : ""));
             trainer.train_multiview(amber_encoder, view_tensors, damage_profiles, scg_lookup);
@@ -1419,6 +1354,7 @@ int run_bin2(const Bin2Config& config) {
                 encode_features[i][j + 2] = tnf_views[0][i][j];
             }
         }
+        raw_features = encode_features;
         embeddings = amber_encoder->encode(encode_features);
 
         // AMBER-specific: Concatenate aDNA features to embeddings AFTER encoding
@@ -1485,203 +1421,12 @@ int run_bin2(const Bin2Config& config) {
         }
     }
 
-    // Consensus kNN: train N-1 additional encoders (run 0 is already done above),
-    // aggregate edges across all N runs, suppress low-frequency cross-genome bridges.
-    std::vector<bin2::WeightedEdge> consensus_edges;
-    int total_encoder_runs = config.n_encoder_restarts;
-    if (config.n_encoder_restarts > 1) {
-        log.info("Consensus kNN: " + std::to_string(config.n_encoder_restarts) +
-                 " encoder runs (base seed=" + std::to_string(config.encoder_seed) + ", hash-spread)");
-
-        // Pre-compute CGR features once (deterministic, identical for all encoder runs).
-        std::vector<bin2::MultiScaleCGRFeatures> cgr_feats_cached(N);
-        #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
-        for (int i = 0; i < N; i++)
-            cgr_feats_cached[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
-
-        bin2::ConsensusKnnConfig cknn_cfg;
-        cknn_cfg.k = config.k;
-        cknn_cfg.bandwidth = config.bandwidth;
-        cknn_cfg.partgraph_ratio = config.partgraph_ratio;
-        cknn_cfg.weight_mode = scg_lookup.empty()
-            ? bin2::ConsensusWeightMode::VOTE : bin2::ConsensusWeightMode::QUALITY;
-        const bool use_quality_weight = (cknn_cfg.weight_mode == bin2::ConsensusWeightMode::QUALITY);
-        bin2::ConsensusKnnBuilder consensus_builder(cknn_cfg);
-        std::vector<float> encoder_scores;
-        int extra_restarts = 0;
-        const int max_extra = config.encoder_qc_max_extra;
-        float best_sep_score = 0.0f;
-
-        // Run 0: already L2-normalized in `embeddings` (128+20+9 = 157 dims).
-        consensus_builder.add_embeddings(embeddings);
-
-        // SCG separation score for run 0
-        if (use_quality_weight) {
-            bin2::KnnConfig score_knn_cfg;
-            score_knn_cfg.k = config.k;
-            score_knn_cfg.ef_search = 200;
-            score_knn_cfg.M = 16;
-            score_knn_cfg.ef_construction = 200;
-            score_knn_cfg.random_seed = 42;
-            bin2::HnswKnnIndex score_index(score_knn_cfg);
-            score_index.build(embeddings);
-            auto score_neighbors = score_index.query_all();
-            float s0 = bin2::compute_scg_separation_score(
-                score_neighbors.ids, scg_lookup.contig_marker_ids);
-            encoder_scores.push_back(s0);
-            best_sep_score = s0;
-            log.info("  Encoder run 1/" + std::to_string(config.n_encoder_restarts) +
-                     " SCG separation score: " + std::to_string(s0));
-        }
-
-        // Runs 1..N-1: train fresh encoders with hash-spread seeds.
-        // Sequential encoder_seed+i has RNG correlation; spread_seed avoids this.
-        auto spread_seed = [](int base, int i) -> int {
-            uint32_t h = static_cast<uint32_t>(base) ^ (static_cast<uint32_t>(i) * 2654435761u);
-            h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16;
-            return static_cast<int>(h & 0x7fffffffu);
-        };
-        for (int run = 1; run < config.n_encoder_restarts + extra_restarts; ++run) {
-            const int run_seed = spread_seed(config.encoder_seed, run);
-            log.info("  Encoder run " + std::to_string(run + 1) + "/" +
-                     std::to_string(config.n_encoder_restarts + extra_restarts) +
-                     " (seed=" + std::to_string(run_seed) + ")" +
-                     (run >= config.n_encoder_restarts ? " [QC extra]" : ""));
-
-            bin2::AmberEncoder run_encoder(D, config.embedding_dim, config.hidden_dim,
-                                             config.n_layer, config.dropout, true);
-            bin2::AmberTrainer::Config run_tcfg;
-            run_tcfg.epochs          = config.epochs;
-            run_tcfg.batch_size      = config.batch_size;
-            run_tcfg.lr              = config.learning_rate;
-            run_tcfg.temperature     = config.temperature;
-            run_tcfg.hidden_sz       = config.hidden_dim;
-            run_tcfg.n_layer         = config.n_layer;
-            run_tcfg.out_dim         = config.embedding_dim;
-            run_tcfg.dropout         = config.dropout;
-            run_tcfg.n_views         = n_views;
-            run_tcfg.use_substring_aug = true;
-            run_tcfg.earlystop       = false;
-            run_tcfg.use_scheduler   = true;
-            run_tcfg.warmup_epochs   = 10;
-            run_tcfg.use_damage_infonce = config.use_damage_infonce;
-            run_tcfg.damage_lambda   = config.damage_lambda;
-            run_tcfg.damage_wmin     = config.damage_wmin;
-            run_tcfg.use_scg_infonce = config.use_scg_infonce;
-            run_tcfg.scg_boost       = config.scg_boost;
-            run_tcfg.seed            = run_seed;
-            run_tcfg.grad_clip       = config.grad_clip;
-            run_tcfg.use_ema         = config.use_ema;
-            run_tcfg.ema_decay       = config.ema_decay;
-
-            bin2::AmberTrainer run_trainer(run_tcfg);
-            if (config.use_damage_infonce && !damage_profiles.empty())
-                run_trainer.train_multiview(run_encoder, view_tensors, damage_profiles, scg_lookup);
-            else if (config.use_scg_infonce && !scg_lookup.empty())
-                run_trainer.train_multiview(run_encoder, view_tensors, scg_lookup);
-            else
-                run_trainer.train_multiview(run_encoder, view_tensors);
-
-            // Encode using view-0 features (same encode_features as run 0).
-            auto run_embeddings = run_encoder->encode(encode_features);
-
-            // Append aDNA features (20 dims, identical offsets as run 0).
-            if (has_adna) {
-                for (int i = 0; i < N; i++) {
-                    const auto& dmg = damage_profiles[i];
-                    for (int j = 0; j < 5; j++) run_embeddings[i].push_back(dmg.ct_rate_5p[j]);
-                    for (int j = 0; j < 5; j++) run_embeddings[i].push_back(dmg.ga_rate_3p[j]);
-                    run_embeddings[i].push_back(dmg.lambda_5p / 2.0f);
-                    run_embeddings[i].push_back(dmg.lambda_3p / 2.0f);
-                    run_embeddings[i].push_back(dmg.frag_len_mean / 150.0f);
-                    run_embeddings[i].push_back(dmg.frag_len_std / 50.0f);
-                    run_embeddings[i].push_back(std::log1p(dmg.cov_damaged_reads) / 5.0f);
-                    run_embeddings[i].push_back(std::log1p(dmg.cov_undamaged_reads) / 5.0f);
-                    run_embeddings[i].push_back(dmg.mm_5p_tc);
-                    run_embeddings[i].push_back(dmg.mm_3p_ct);
-                    run_embeddings[i].push_back(dmg.mm_5p_other);
-                    run_embeddings[i].push_back(dmg.mm_3p_other);
-                }
-            }
-
-            // Append CGR features (9 dims, length-weighted).
-            for (int i = 0; i < N; i++) {
-                float w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
-                for (float f : cgr_feats_cached[i].to_vector())
-                    run_embeddings[i].push_back(f * w);
-            }
-
-            // L2 normalize.
-            if (config.l2_normalize) {
-                for (auto& emb : run_embeddings) {
-                    float norm = 0.0f;
-                    for (float v : emb) norm += v * v;
-                    norm = std::sqrt(norm);
-                    if (norm > 1e-10f)
-                        for (float& v : emb) v /= norm;
-                }
-            }
-
-            consensus_builder.add_embeddings(run_embeddings);
-
-            // SCG separation score for this run
-            if (use_quality_weight) {
-                bin2::KnnConfig score_knn_cfg;
-                score_knn_cfg.k = config.k;
-                score_knn_cfg.ef_search = 200;
-                score_knn_cfg.M = 16;
-                score_knn_cfg.ef_construction = 200;
-                score_knn_cfg.random_seed = 42 + run;
-                bin2::HnswKnnIndex score_index(score_knn_cfg);
-                score_index.build(run_embeddings);
-                auto score_neighbors = score_index.query_all();
-                float s = bin2::compute_scg_separation_score(
-                    score_neighbors.ids, scg_lookup.contig_marker_ids);
-                encoder_scores.push_back(s);
-                log.info("  Encoder run " + std::to_string(run + 1) + "/" +
-                         std::to_string(config.n_encoder_restarts + extra_restarts) +
-                         " SCG separation score: " + std::to_string(s));
-                if (s > best_sep_score) best_sep_score = s;
-                // QC gate: if this run is much worse than best, trigger extra restart
-                if (s < config.encoder_qc_threshold * best_sep_score
-                    && extra_restarts < max_extra) {
-                    ++extra_restarts;
-                    log.info("  QC gate: score " + std::to_string(s) +
-                             " < " + std::to_string(config.encoder_qc_threshold) +
-                             " * " + std::to_string(best_sep_score) +
-                             " -> extra restart (" + std::to_string(extra_restarts) +
-                             "/" + std::to_string(max_extra) + ")");
-                }
-            }
-        }
-
-        if (use_quality_weight) {
-            consensus_builder.set_encoder_scores(encoder_scores);
-            log.info("Consensus kNN: using quality-weighted aggregation");
-        }
-
-        total_encoder_runs = config.n_encoder_restarts + extra_restarts;
-        if (extra_restarts > 0) {
-            log.info("QC gate triggered " + std::to_string(extra_restarts) +
-                     " extra restart(s), total encoder runs: " + std::to_string(total_encoder_runs));
-        }
-
-        consensus_edges = consensus_builder.build();
-        log.info("Consensus kNN: " + std::to_string(consensus_edges.size()) + " edges after " +
-                 (use_quality_weight ? "quality threshold>=" + std::to_string(cknn_cfg.quality_threshold)
-                                     : "freq>=" + std::to_string(cknn_cfg.min_freq)) + " filter");
-    }
-
-    // contig_lengths already computed above (line ~1323) for N50 calc
-    // Used below for Leiden node_sizes (RBER null model)
-
     // Load or auto-generate seed markers (marker_hits_by_contig pre-populated by early scan above)
     std::unordered_set<std::string> seed_set;
     std::string seed_path = config.seed_file;
     if (seed_path.empty()) {
         seed_path = config.output_dir + "/auto_seeds.txt";
         if (marker_hits_by_contig.empty()) {
-            // Early scan failed or was skipped — re-run SeedGenerator
             std::string hmm_path = config.hmm_file.empty() ? find_amber_data("auxiliary/checkm_markers_only.hmm") : config.hmm_file;
             std::string hmmsearch = config.hmmsearch_path.empty() ? "hmmsearch" : config.hmmsearch_path;
             std::string fgs = config.fraggenescan_path.empty() ? "FragGeneScan" : config.fraggenescan_path;
@@ -1696,7 +1441,6 @@ int run_bin2(const Bin2Config& config) {
                 marker_hits_by_contig = gen.get_hits_by_contig();
             }
         } else {
-            // Reuse results from early pre-scan
             seed_set.insert(early_seeds.begin(), early_seeds.end());
             log.info("Using pre-scanned " + std::to_string(seed_set.size()) + " seed marker contigs");
         }
@@ -1720,37 +1464,14 @@ int run_bin2(const Bin2Config& config) {
         log.info("Assigned " + std::to_string(seed_cluster_id) + " seed contigs to fixed clusters");
     }
 
-    // Colocation-guided marker contig pre-assignment.
-    //
-    // Theoretical max HQ bins = seed_cluster_id (= median marker copy count, i.e.
-    // the number of detectable genomes).  We close the gap by pre-assigning ALL
-    // non-seed marker-bearing contigs before Leiden runs:
-    //
-    //   Colocation (hard filter)  — a seed is INCOMPATIBLE if it already holds a
-    //     copy of the same single-copy marker.  Assigning there would create
-    //     contamination before Leiden even starts.
-    //
-    //   Embedding distance (ranking) — among compatible seeds, pick the one whose
-    //     embedding (TNF + coverage + aDNA + CGR) is closest in L2 space.
-    //
-    // Processing order: most-constrained first (fewest compatible seeds), so
-    // unambiguous assignments anchor the space before uncertain ones.
-    //
-    // Result: all ~269 marker-bearing contigs are fixed; Leiden only optimises the
-    // ~89k non-marker contigs that cannot cause marker-level contamination.
+    // Colocation-guided marker contig pre-assignment (uses run-0 embeddings).
     if (seed_cluster_id > 0 && !marker_hits_by_contig.empty() && !embeddings.empty()) {
         std::string bacteria_ms = config.bacteria_ms_file.empty()
                                 ? find_amber_data("scripts/checkm_ms/bacteria.ms")
                                 : config.bacteria_ms_file;
         if (std::filesystem::exists(bacteria_ms)) {
-            // marker_hits_by_contig is keyed by contig name → list of markers
-            // (the variable name is misleading; the seed generator returns this orientation)
             const auto& contig_to_markers = marker_hits_by_contig;
 
-            // Build valid marker set from bacteria.ms — only single-copy CheckM markers
-            // participate in colocation scoring.  The HMM database has 206 profiles but
-            // bacteria.ms only lists the single-copy subset; we must filter hits to avoid
-            // treating non-single-copy HMM hits as contamination signals.
             std::unordered_set<std::string> valid_markers;
             {
                 bin2::CheckMMarkerParser ms_parser;
@@ -1760,11 +1481,7 @@ int run_bin2(const Bin2Config& config) {
                         valid_markers.insert(m);
             }
 
-            // For each seed cluster: track how many copies of each marker it holds.
-            // Initially populated from the seed contigs themselves.
-            // Layout: seed_marker_counts[cluster_id][marker_name] = copy_count
             std::vector<std::unordered_map<std::string, int>> seed_marker_counts(seed_cluster_id);
-            // Also record the embedding index for each seed cluster
             std::vector<int> seed_emb_idx(seed_cluster_id, -1);
             for (size_t i = 0; i < contigs.size(); i++) {
                 if (!is_membership_fixed[i]) continue;
@@ -1777,7 +1494,6 @@ int run_bin2(const Bin2Config& config) {
                             seed_marker_counts[sc][m]++;
             }
 
-            // Helper: extract only valid (bacteria.ms) markers for a contig
             auto get_valid_markers = [&](const std::vector<std::string>& all_markers) {
                 std::vector<std::string> result;
                 for (const auto& m : all_markers)
@@ -1786,9 +1502,6 @@ int run_bin2(const Bin2Config& config) {
                 return result;
             };
 
-            // Collect non-seed marker contigs and sort most-constrained first
-            // (ascending compatible-seed count → deterministic, reproducible)
-            // Only contigs with ≥1 valid bacteria.ms marker are candidates.
             struct Candidate { int idx; int n_compatible; std::vector<std::string> vmarkers; };
             std::vector<Candidate> candidates;
             for (size_t i = 0; i < contigs.size(); i++) {
@@ -1813,9 +1526,8 @@ int run_bin2(const Bin2Config& config) {
                       [](const Candidate& a, const Candidate& b) {
                           return a.n_compatible < b.n_compatible; });
 
-            // Greedily assign each candidate to its closest compatible seed
             int n_preassigned = 0;
-            const int D = static_cast<int>(embeddings[0].size());
+            const int emb_D = static_cast<int>(embeddings[0].size());
             for (const auto& cand : candidates) {
                 int ci = cand.idx;
                 const auto& vmarkers = cand.vmarkers;
@@ -1832,16 +1544,14 @@ int run_bin2(const Bin2Config& config) {
                     int si = seed_emb_idx[sc];
                     if (si < 0) continue;
                     float dist = 0.0f;
-                    for (int d = 0; d < D; d++) {
+                    for (int d = 0; d < emb_D; d++) {
                         float diff = embeddings[ci][d] - embeddings[si][d];
                         dist += diff * diff;
                     }
                     if (dist < best_dist) { best_dist = dist; best_sc = sc; }
                 }
-                if (best_sc < 0) continue;  // no compatible seed — leave free
+                if (best_sc < 0) continue;
 
-                // Assign to best seed cluster (not fixed — Leiden can still move it,
-                // but it starts co-located with its genome anchor rather than isolated)
                 initial_membership[ci] = best_sc;
                 for (const auto& m : vmarkers)
                     seed_marker_counts[best_sc][m]++;
@@ -1854,56 +1564,18 @@ int run_bin2(const Bin2Config& config) {
         }
     }
 
-    // Build kNN graph (skipped when consensus_edges already built by encoder restarts).
-    bin2::NeighborList neighbors;
-    if (consensus_edges.empty()) {
-        log.info("Building HNSW kNN index (k=" + std::to_string(config.k) + ")");
-        bin2::KnnConfig knn_config;
-        knn_config.k = config.k;
-        knn_config.ef_search = 200;
-        knn_config.M = 16;
-        bin2::HnswKnnIndex knn_index(knn_config);
-        knn_index.build(embeddings);
-        neighbors = knn_index.query_all();
-        log.info("Built kNN graph with " + std::to_string(neighbors.size()) + " nodes");
-    }
-
-
-    // Build weighted edges: use consensus kNN when encoder restarts were run,
-    // otherwise use the single-encoder kNN with pgr=50.
-    std::vector<bin2::WeightedEdge> edges;
-    if (!consensus_edges.empty()) {
-        edges = std::move(consensus_edges);
-        log.info("Using consensus kNN edges (" + std::to_string(edges.size()) + " edges, " +
-                 std::to_string(total_encoder_runs) + " encoder runs)");
-    } else {
-        bin2::GraphConfig graph_config;
-        graph_config.bandwidth = config.bandwidth;
-        graph_config.damage_beta = 0.0f;
-        graph_config.partgraph_ratio = config.partgraph_ratio;
-        bin2::DamageAwareEdgeWeighter weighter(graph_config);
-        edges = weighter.compute_edges(neighbors, config.partgraph_ratio);
-        log.info("Computed " + std::to_string(edges.size()) + " edges (pgr=" +
-                 std::to_string(config.partgraph_ratio) + ")");
-    }
-
-    // Run Leiden clustering with COMEBin-exact settings
+    // Leiden config: constructed once, shared across all encoder runs.
     bin2::LeidenConfig leiden_config;
     leiden_config.resolution = config.resolution;
-    leiden_config.max_iterations = -1;  // COMEBin: unlimited iterations
+    leiden_config.max_iterations = -1;
     leiden_config.random_seed = config.random_seed;
-    leiden_config.null_model = bin2::NullModel::ErdosRenyi;  // COMEBin: RBER model
+    leiden_config.null_model = bin2::NullModel::ErdosRenyi;
     leiden_config.use_node_sizes = true;
     leiden_config.node_sizes.resize(contigs.size());
     for (size_t i = 0; i < contigs.size(); i++) {
         leiden_config.node_sizes[i] = static_cast<double>(contigs[i].second.length());
     }
 
-    // Apply seed constraints if available.
-    // Replace -1 placeholders (unassigned contigs) with unique singleton IDs
-    // so libleidenalg gets a valid initial partition where seeds + colocation
-    // pre-assigned contigs start in their genome clusters (0..seed_cluster_id-1)
-    // and all other contigs start as isolated singletons.
     if (seed_cluster_id > 0) {
         int next_singleton = seed_cluster_id;
         for (size_t i = 0; i < contigs.size(); i++)
@@ -1916,8 +1588,7 @@ int run_bin2(const Bin2Config& config) {
         leiden_config.is_membership_fixed = is_membership_fixed;
     }
 
-    // Build marker index and CheckM estimator if quality Leiden or bandwidth
-    // restarts are requested. Both must outlive the backend.
+    // MarkerIndex and CheckM estimator: built once, shared across all runs.
     bin2::MarkerIndex marker_index;
     std::vector<std::string> bin2_contig_names;
     bin2::CheckMQualityEstimator bin2_checkm_est;
@@ -1940,8 +1611,6 @@ int run_bin2(const Bin2Config& config) {
                      " contigs, " + std::to_string(marker_index.num_markers()) +
                      " markers, " + std::to_string(marker_index.num_sets()) + " sets");
 
-            // Build CheckM estimator for restart scoring and Phase 2 split criterion.
-            // Uses the same colocation sets so quality scores are consistent.
             bin2_checkm_est.load_marker_sets(bacteria_ms, archaea_ms);
             bin2_checkm_est.set_hits(marker_hits_by_contig);
             log.info("CheckMQualityEstimator ready for colocation-based scoring");
@@ -1954,49 +1623,347 @@ int run_bin2(const Bin2Config& config) {
         }
     }
 
-    std::unique_ptr<bin2::ILeidenBackend> backend;
-    bin2::QualityLeidenBackend* qb_ptr = nullptr;
-    if (config.n_leiden_restarts > 1 && marker_index.num_marker_contigs() > 0) {
-        log.info("Using seed sweep over plain Leiden (K="
-                 + std::to_string(config.n_leiden_restarts)
-                 + ", bw=" + std::to_string(config.bandwidth)
-                 + ", CheckM lexicographic scoring)");
+    // Helper 1: Build kNN graph and compute edges (THREAD-SAFE, expensive O(N log N))
+    // Can be called in parallel for different embedding sets.
+    auto build_knn_and_edges = [&](const std::vector<std::vector<float>>& run_emb)
+        -> std::vector<bin2::WeightedEdge> {
+        // Build kNN
+        bin2::KnnConfig knn_config;
+        knn_config.k = config.k;
+        knn_config.ef_search = 1000;
+        knn_config.M = 16;
+        knn_config.random_seed = config.random_seed;
+        bin2::HnswKnnIndex knn_index(knn_config);
+        knn_index.build(run_emb);
+        auto run_neighbors = knn_index.query_all();
 
-        auto qb = std::make_unique<bin2::QualityLeidenBackend>();
-        qb->set_marker_index(&marker_index);
-        if (bin2_checkm_est.has_marker_sets())
-            qb->set_checkm_estimator(&bin2_checkm_est, &bin2_contig_names);
-        bin2::QualityLeidenConfig qcfg;
-        qcfg.n_leiden_restarts   = config.n_leiden_restarts;
-        qcfg.original_bandwidth  = config.bandwidth;
-        qcfg.restart_stage1_res  = config.restart_stage1_res;
-        qcfg.n_threads           = config.threads;
-        qcfg.phase4e_entry_contamination   = config.phase4e_entry_contamination;
-        qcfg.phase4e_sigma_threshold       = config.phase4e_sigma_threshold;
-        // Seed sweep: no marker edge penalization, no Phase 2.
-        qcfg.marker_edge_penalty = 0.0f;
-        qcfg.skip_phase2         = true;
-        qb->set_quality_config(qcfg);
-        qb_ptr = qb.get();
-        backend = std::move(qb);
+        // Compute edges
+        bin2::GraphConfig graph_config;
+        graph_config.bandwidth = config.bandwidth;
+        graph_config.partgraph_ratio = config.partgraph_ratio;
+        bin2::DamageAwareEdgeWeighter weighter(graph_config);
+        auto run_edges = weighter.compute_edges(run_neighbors, config.partgraph_ratio);
+
+        // SCG complement edge bonus
+        if (!scg_lookup.empty()) {
+            constexpr float kComplementBonus = 0.3f;
+            constexpr float kSharedPenalty   = 3.0f;
+            for (auto& e : run_edges) {
+                const auto& m_u = scg_lookup.contig_marker_ids[e.u];
+                const auto& m_v = scg_lookup.contig_marker_ids[e.v];
+                if (m_u.empty() || m_v.empty()) continue;
+                int n_shared = 0;
+                {
+                    size_t a = 0, b = 0;
+                    while (a < m_u.size() && b < m_v.size()) {
+                        if      (m_u[a] < m_v[b]) ++a;
+                        else if (m_v[b] < m_u[a]) ++b;
+                        else { ++n_shared; ++a; ++b; }
+                    }
+                }
+                if (n_shared == 0)
+                    e.w *= (1.0f + kComplementBonus);
+                else
+                    e.w *= std::exp(-kSharedPenalty * n_shared);
+            }
+        }
+        return run_edges;
+    };
+
+    // Helper 2: Run Leiden clustering on pre-built edges (NOT THREAD-SAFE due to igraph)
+    // Must be called sequentially.
+    auto run_leiden_on_edges = [&](const std::vector<bin2::WeightedEdge>& run_edges,
+                                   const std::vector<std::vector<float>>& run_emb,
+                                   const std::string& run_label) -> std::vector<int> {
+        // Build backend and cluster
+        std::unique_ptr<bin2::ILeidenBackend> run_backend;
+        bin2::QualityLeidenBackend* run_qb = nullptr;
+        if (config.n_leiden_restarts > 1 && marker_index.num_marker_contigs() > 0) {
+            auto qb = std::make_unique<bin2::QualityLeidenBackend>();
+            qb->set_marker_index(&marker_index);
+            if (bin2_checkm_est.has_marker_sets())
+                qb->set_checkm_estimator(&bin2_checkm_est, &bin2_contig_names);
+            bin2::QualityLeidenConfig qcfg;
+            qcfg.n_leiden_restarts   = config.n_leiden_restarts;
+            qcfg.original_bandwidth  = config.bandwidth;
+            qcfg.n_threads           = config.threads;
+            qcfg.phase4e_entry_contamination = config.phase4e_entry_contamination;
+            qcfg.phase4e_sigma_threshold     = config.phase4e_sigma_threshold;
+            qcfg.skip_phase2         = true;
+            qb->set_quality_config(qcfg);
+            run_qb = qb.get();
+            run_backend = std::move(qb);
+        } else {
+            run_backend = bin2::create_leiden_backend(true);
+        }
+
+        auto run_result = run_backend->cluster(run_edges, static_cast<int>(contigs.size()), leiden_config);
+        std::vector<int> run_labels = run_result.labels;
+
+        // Phase 4 decontamination per run
+        if (run_qb && bin2_checkm_est.has_marker_sets()) {
+            run_qb->set_embeddings(&run_emb);
+            run_qb->decontaminate(run_labels, leiden_config, 0.0f);
+        }
+
+        log.info(run_label + ": " + std::to_string(run_result.num_clusters) + " clusters (modularity=" +
+                 std::to_string(run_result.modularity) + ")");
+        return run_labels;
+    };
+
+    // Helper: append aDNA + CGR features and L2-normalize an embedding set.
+    // Pre-computed CGR features used when R > 1.
+    std::vector<bin2::MultiScaleCGRFeatures> cgr_feats_cached;
+    if (config.n_encoder_restarts > 1) {
+        cgr_feats_cached.resize(N);
+        #pragma omp parallel for num_threads(config.threads) schedule(dynamic)
+        for (int i = 0; i < N; i++)
+            cgr_feats_cached[i] = bin2::MultiScaleCGRExtractor::extract(sequences[i], 500);
+    }
+
+    auto append_features_and_normalize = [&](std::vector<std::vector<float>>& embs) {
+        if (has_adna) {
+            for (int i = 0; i < N; i++) {
+                const auto& dmg = damage_profiles[i];
+                for (int j = 0; j < 5; j++) embs[i].push_back(dmg.ct_rate_5p[j]);
+                for (int j = 0; j < 5; j++) embs[i].push_back(dmg.ga_rate_3p[j]);
+                embs[i].push_back(dmg.lambda_5p / 2.0f);
+                embs[i].push_back(dmg.lambda_3p / 2.0f);
+                embs[i].push_back(dmg.frag_len_mean / 150.0f);
+                embs[i].push_back(dmg.frag_len_std / 50.0f);
+                embs[i].push_back(std::log1p(dmg.cov_damaged_reads) / 5.0f);
+                embs[i].push_back(std::log1p(dmg.cov_undamaged_reads) / 5.0f);
+                embs[i].push_back(dmg.mm_5p_tc);
+                embs[i].push_back(dmg.mm_3p_ct);
+                embs[i].push_back(dmg.mm_5p_other);
+                embs[i].push_back(dmg.mm_3p_other);
+            }
+        }
+        for (int i = 0; i < N; i++) {
+            float w = bin2::MultiScaleCGRExtractor::length_weight(sequences[i].size());
+            for (float f : cgr_feats_cached[i].to_vector())
+                embs[i].push_back(f * w);
+        }
+        if (config.l2_normalize) {
+            for (auto& emb : embs) {
+                float norm = 0.0f;
+                for (float v : emb) norm += v * v;
+                norm = std::sqrt(norm);
+                if (norm > 1e-10f)
+                    for (float& v : emb) v /= norm;
+            }
+        }
+    };
+
+    // Per-encoder partition consensus: each encoder run produces its own
+    // kNN → edges → Leiden → Phase4 labels. When R>1, merge via co-binning vote.
+    std::vector<int> labels;
+
+    if (config.n_encoder_restarts > 1) {
+        const int R = config.n_encoder_restarts;
+        log.info("Partition consensus: " + std::to_string(R) +
+                 " encoder runs (base seed=" + std::to_string(config.encoder_seed) +
+                 ", threshold=" + std::to_string(config.consensus_threshold) + ")");
+
+        auto spread_seed = [](int base, int i) -> int {
+            uint32_t h = static_cast<uint32_t>(base) ^ (static_cast<uint32_t>(i) * 2654435761u);
+            h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16;
+            return static_cast<int>(h & 0x7fffffffu);
+        };
+
+        // Phase 1: Train all encoders sequentially (GPU bound), collect embeddings
+        log.info("Phase 1: Training " + std::to_string(R) + " encoders (sequential, GPU)");
+        std::vector<std::vector<std::vector<float>>> all_embeddings(R);
+        all_embeddings[0] = embeddings;  // Run 0 already trained
+
+        for (int run = 1; run < R; ++run) {
+            const int run_seed = spread_seed(config.encoder_seed, run);
+            log.info("  Encoder " + std::to_string(run + 1) + "/" + std::to_string(R) +
+                     " (seed=" + std::to_string(run_seed) + ")");
+
+            bin2::AmberEncoder run_encoder(D, config.embedding_dim, config.hidden_dim,
+                                           config.n_layer, config.dropout, true);
+            bin2::AmberTrainer::Config run_tcfg;
+            run_tcfg.epochs          = config.epochs;
+            run_tcfg.batch_size      = config.batch_size;
+            run_tcfg.lr              = config.learning_rate;
+            run_tcfg.temperature     = config.temperature;
+            run_tcfg.hidden_sz       = config.hidden_dim;
+            run_tcfg.n_layer         = config.n_layer;
+            run_tcfg.out_dim         = config.embedding_dim;
+            run_tcfg.dropout         = config.dropout;
+            run_tcfg.n_views         = n_views;
+            run_tcfg.use_substring_aug = true;
+            run_tcfg.earlystop       = false;
+            run_tcfg.use_scheduler   = true;
+            run_tcfg.warmup_epochs   = 10;
+            run_tcfg.use_damage_infonce = config.use_damage_infonce;
+            run_tcfg.damage_lambda   = config.damage_lambda;
+            run_tcfg.damage_wmin     = config.damage_wmin;
+            run_tcfg.use_scg_infonce = config.use_scg_infonce;
+            run_tcfg.scg_boost       = config.scg_boost;
+            run_tcfg.use_scg_supcon  = config.use_scg_supcon;
+            run_tcfg.seed            = run_seed;
+            run_tcfg.grad_clip       = config.grad_clip;
+            run_tcfg.use_ema         = config.use_ema;
+            run_tcfg.ema_decay       = config.ema_decay;
+
+            bin2::AmberTrainer run_trainer(run_tcfg);
+            if (config.use_scg_supcon && !scg_lookup.empty())
+                run_trainer.train_multiview(run_encoder, view_tensors, damage_profiles, scg_lookup);
+            else if (config.use_damage_infonce && !damage_profiles.empty())
+                run_trainer.train_multiview(run_encoder, view_tensors, damage_profiles, scg_lookup);
+            else if (config.use_scg_infonce && !scg_lookup.empty())
+                run_trainer.train_multiview(run_encoder, view_tensors, scg_lookup);
+            else
+                run_trainer.train_multiview(run_encoder, view_tensors);
+
+            all_embeddings[run] = run_encoder->encode(encode_features);
+            append_features_and_normalize(all_embeddings[run]);
+        }
+
+        // Phase 2: Run R Leiden pipelines in PARALLEL
+        // Run R pipelines in parallel with nested OMP disabled per thread for determinism.
+        // Each thread runs its own Leiden with full thread budget; no nested parallelism.
+        log.info("Phase 2: Running " + std::to_string(R) + " Leiden pipelines (parallel, deterministic)");
+        std::vector<std::vector<int>> all_partitions(R);
+        omp_set_max_active_levels(1);
+        #pragma omp parallel for num_threads(R) schedule(static)
+        for (int run = 0; run < R; ++run) {
+            auto edges = build_knn_and_edges(all_embeddings[run]);
+            all_partitions[run] = run_leiden_on_edges(edges, all_embeddings[run],
+                "Leiden run " + std::to_string(run + 1) + "/" + std::to_string(R));
+        }
+
+        // Log partition sizes
+        for (int run = 0; run < R; ++run) {
+            int nc = *std::max_element(all_partitions[run].begin(), all_partitions[run].end()) + 1;
+            log.info("  Run " + std::to_string(run + 1) + ": " + std::to_string(nc) + " clusters");
+        }
+
+        // Phase 3: Leiden consensus on co-binning affinity graph
+        log.info("Phase 3: Leiden consensus (threshold=" + std::to_string(config.consensus_threshold) + ")");
+        labels = bin2::partition_consensus(all_partitions, N, config.consensus_threshold, config.resolution);
+        int n_consensus = *std::max_element(labels.begin(), labels.end()) + 1;
+        log.info("  Consensus: " + std::to_string(n_consensus) + " clusters");
+
+        // Track best embeddings by SCG score for downstream use
+        float best_scg_score = -1e30f;
+        int best_run_idx = 0;
+        for (int run = 0; run < R; ++run) {
+            if (!scg_lookup.empty()) {
+                bin2::KnnConfig score_knn_cfg;
+                score_knn_cfg.k = config.k;
+                score_knn_cfg.ef_search = 200;
+                score_knn_cfg.M = 16;
+                score_knn_cfg.ef_construction = 200;
+                score_knn_cfg.random_seed = 42 + run;
+                bin2::HnswKnnIndex score_index(score_knn_cfg);
+                score_index.build(all_embeddings[run]);
+                auto score_neighbors = score_index.query_all();
+                float s = bin2::compute_scg_separation_score(
+                    score_neighbors.ids, scg_lookup.contig_marker_ids);
+                if (s > best_scg_score) {
+                    best_scg_score = s;
+                    best_run_idx = run;
+                }
+            }
+        }
+        embeddings = std::move(all_embeddings[best_run_idx]);
+        log.info("Using embeddings from run " + std::to_string(best_run_idx + 1) +
+                 " (SCG=" + std::to_string(best_scg_score) + ")");
     } else {
-        backend = bin2::create_leiden_backend(true);  // Use Leiden (not Louvain)
-    }
-    auto result = backend->cluster(edges, static_cast<int>(contigs.size()), leiden_config);
+        // Single encoder run (R=1): original flow, no consensus needed.
+        // Build kNN
+        log.info("Building HNSW kNN index (k=" + std::to_string(config.k) + ")");
+        bin2::KnnConfig knn_config;
+        knn_config.k = config.k;
+        knn_config.ef_search = 1000;
+        knn_config.M = 16;
+        knn_config.random_seed = config.random_seed;
+        bin2::HnswKnnIndex knn_index(knn_config);
+        knn_index.build(embeddings);
+        auto neighbors = knn_index.query_all();
+        log.info("Built kNN graph with " + std::to_string(neighbors.size()) + " nodes");
 
-    std::vector<int> labels = result.labels;
+        // Compute edges
+        bin2::GraphConfig graph_config;
+        graph_config.bandwidth = config.bandwidth;
+        graph_config.partgraph_ratio = config.partgraph_ratio;
+        bin2::DamageAwareEdgeWeighter weighter(graph_config);
+        auto edges = weighter.compute_edges(neighbors, config.partgraph_ratio);
+        log.info("Computed " + std::to_string(edges.size()) + " edges (pgr=" +
+                 std::to_string(config.partgraph_ratio) + ")");
 
-    // Phase 4: targeted decontamination — runs for all configs that have the
-    // QualityLeidenBackend (restarts or quality-leiden) and CheckM marker sets.
-    // Splits bins >= 85% completeness with > 5.5% contamination.
-    if (qb_ptr && bin2_checkm_est.has_marker_sets()) {
-        log.info("Phase 4: chimeric decontamination (iterative, no completeness floor)");
-        qb_ptr->set_embeddings(&embeddings);
-        int n_after = qb_ptr->decontaminate(labels, leiden_config, 0.0f);
-        log.info("Phase 4 done: " + std::to_string(n_after) + " clusters");
+        // SCG complement edge bonus
+        if (!scg_lookup.empty()) {
+            constexpr float kComplementBonus = 0.3f;
+            constexpr float kSharedPenalty   = 3.0f;
+            int n_boosted = 0, n_penalised = 0;
+            for (auto& e : edges) {
+                const auto& m_u = scg_lookup.contig_marker_ids[e.u];
+                const auto& m_v = scg_lookup.contig_marker_ids[e.v];
+                if (m_u.empty() || m_v.empty()) continue;
+                int n_shared = 0;
+                {
+                    size_t a = 0, b = 0;
+                    while (a < m_u.size() && b < m_v.size()) {
+                        if      (m_u[a] < m_v[b]) ++a;
+                        else if (m_v[b] < m_u[a]) ++b;
+                        else { ++n_shared; ++a; ++b; }
+                    }
+                }
+                if (n_shared == 0) {
+                    e.w *= (1.0f + kComplementBonus);
+                    ++n_boosted;
+                } else {
+                    e.w *= std::exp(-kSharedPenalty * n_shared);
+                    ++n_penalised;
+                }
+            }
+            log.info("SCG edge bonus: boosted " + std::to_string(n_boosted) +
+                     " complementary, penalised " + std::to_string(n_penalised) + " shared-marker edges");
+        }
+
+        // Leiden clustering
+        std::unique_ptr<bin2::ILeidenBackend> backend;
+        bin2::QualityLeidenBackend* qb_ptr = nullptr;
+        if (config.n_leiden_restarts > 1 && marker_index.num_marker_contigs() > 0) {
+            log.info("Using seed sweep over plain Leiden (K="
+                     + std::to_string(config.n_leiden_restarts)
+                     + ", bw=" + std::to_string(config.bandwidth)
+                     + ", CheckM lexicographic scoring)");
+
+            auto qb = std::make_unique<bin2::QualityLeidenBackend>();
+            qb->set_marker_index(&marker_index);
+            if (bin2_checkm_est.has_marker_sets())
+                qb->set_checkm_estimator(&bin2_checkm_est, &bin2_contig_names);
+            bin2::QualityLeidenConfig qcfg;
+            qcfg.n_leiden_restarts   = config.n_leiden_restarts;
+            qcfg.original_bandwidth  = config.bandwidth;
+            qcfg.n_threads           = config.threads;
+            qcfg.phase4e_entry_contamination = config.phase4e_entry_contamination;
+            qcfg.phase4e_sigma_threshold     = config.phase4e_sigma_threshold;
+            qcfg.skip_phase2         = true;
+            qb->set_quality_config(qcfg);
+            qb_ptr = qb.get();
+            backend = std::move(qb);
+        } else {
+            backend = bin2::create_leiden_backend(true);
+        }
+        auto result = backend->cluster(edges, static_cast<int>(contigs.size()), leiden_config);
+        labels = result.labels;
+
+        // Phase 4 decontamination
+        if (qb_ptr && bin2_checkm_est.has_marker_sets()) {
+            log.info("Phase 4: chimeric decontamination (iterative, no completeness floor)");
+            qb_ptr->set_embeddings(&embeddings);
+            int n_after = qb_ptr->decontaminate(labels, leiden_config, 0.0f);
+            log.info("Phase 4 done: " + std::to_string(n_after) + " clusters");
+        }
+        log.info("Leiden found " + std::to_string(result.num_clusters) + " clusters (modularity=" +
+                 std::to_string(result.modularity) + ")");
     }
-    log.info("Leiden found " + std::to_string(result.num_clusters) + " clusters (modularity=" +
-             std::to_string(result.modularity) + ")");
 
     // Count clusters
     std::map<int, std::vector<size_t>> clusters;
@@ -2004,6 +1971,26 @@ int run_bin2(const Bin2Config& config) {
         clusters[labels[i]].push_back(i);
     }
     log.info("Found " + std::to_string(clusters.size()) + " clusters");
+
+    // Post-processing confidence scoring: rebuild edges from final embeddings for scoring.
+    bin2::KnnConfig conf_knn_cfg;
+    conf_knn_cfg.k = config.k;
+    conf_knn_cfg.ef_search = 1000;
+    conf_knn_cfg.M = 16;
+    conf_knn_cfg.random_seed = config.random_seed;
+    bin2::HnswKnnIndex conf_knn_index(conf_knn_cfg);
+    conf_knn_index.build(embeddings);
+    auto conf_neighbors = conf_knn_index.query_all();
+    bin2::GraphConfig conf_graph_cfg;
+    conf_graph_cfg.bandwidth = config.bandwidth;
+    conf_graph_cfg.partgraph_ratio = config.partgraph_ratio;
+    bin2::DamageAwareEdgeWeighter conf_weighter(conf_graph_cfg);
+    auto conf_edges = conf_weighter.compute_edges(conf_neighbors, config.partgraph_ratio);
+
+    bin2::BinConfidenceScorer confidence_scorer;
+    auto bin_conf = confidence_scorer.score(labels, embeddings, damage_profiles,
+                                            scg_lookup, conf_edges);
+    log.info("Bin confidence scoring done");
 
     // Per-bin damage summary: pool raw counts, re-fit damage model, classify
     if (!damage_profiles.empty()) {
@@ -2077,6 +2064,7 @@ int run_bin2(const Bin2Config& config) {
     // Write bins (only those meeting min_bin_size)
     int bin_idx = 0;
     size_t total_binned = 0;
+    std::unordered_map<int, std::string> label_to_name;  // cluster_id → display name
     std::ofstream stats(config.output_dir + "/bin_stats.tsv");
     stats << "bin\tcontigs\ttotal_bp\tmean_coverage\tmean_gc\n";
 
@@ -2093,6 +2081,7 @@ int run_bin2(const Bin2Config& config) {
         }
 
         std::string bin_name = "bin_" + std::to_string(bin_idx);
+        label_to_name[cluster_id] = bin_name;
         std::ofstream out(config.output_dir + "/" + bin_name + ".fa");
 
         double sum_cov = 0, sum_gc = 0;
@@ -2138,22 +2127,74 @@ int run_bin2(const Bin2Config& config) {
              std::to_string(total_binned) + " contigs)");
     log.info("Unbinned: " + std::to_string(n_unbinned) + " contigs");
 
-    // Write embeddings (pure: contig + dims only, no bin column).
-    // The reader (load_embeddings_tsv) parses all post-name tokens as floats,
-    // so a bin column would corrupt the embedding if fed back via --embeddings.
-    // Bin assignments are already in the output .fa files.
-    const int total_dims = embeddings.empty() ? config.embedding_dim : (int)embeddings[0].size();
-    std::ofstream emb_out(config.output_dir + "/embeddings.tsv");
-    emb_out << "contig";
-    for (int d = 0; d < total_dims; d++) emb_out << "\tdim_" << d;
-    emb_out << "\n";
+    // Write per-contig confidence scores
+    confidence_scorer.write_tsv(config.output_dir + "/bin_confidence.tsv",
+                                contigs, labels, bin_conf, label_to_name);
+    log.info("Wrote bin_confidence.tsv");
 
-    for (size_t i = 0; i < contigs.size(); i++) {
-        emb_out << contigs[i].first;
-        for (int d = 0; d < (int)embeddings[i].size(); d++) {
-            emb_out << "\t" << std::fixed << std::setprecision(6) << embeddings[i][d];
+    // Write .abin — embeddings, raw features, damage profiles, bin labels.
+    {
+        amber::AbinData abin;
+        abin.n_contigs = static_cast<uint32_t>(contigs.size());
+
+        abin.names.resize(contigs.size());
+        abin.lengths.resize(contigs.size());
+        for (size_t i = 0; i < contigs.size(); i++) {
+            abin.names[i]   = contigs[i].first;
+            abin.lengths[i] = static_cast<int32_t>(contigs[i].second.size());
         }
-        emb_out << "\n";
+
+        if (!embeddings.empty()) {
+            abin.emb_dim = static_cast<uint16_t>(embeddings[0].size());
+            abin.embeddings.reserve(contigs.size() * abin.emb_dim);
+            for (const auto& e : embeddings)
+                abin.embeddings.insert(abin.embeddings.end(), e.begin(), e.end());
+        }
+
+        if (!raw_features.empty()) {
+            abin.feat_dim = static_cast<uint16_t>(raw_features[0].size());
+            abin.features.reserve(contigs.size() * abin.feat_dim);
+            for (const auto& f : raw_features)
+                abin.features.insert(abin.features.end(), f.begin(), f.end());
+        }
+
+        // Damage: 6 basic stats + 25 CT rates + 25 GA rates + 4 decay + 3 frag = 63 dims
+        if (!damage_profiles.empty() && damage_profiles.size() == contigs.size()) {
+            constexpr uint16_t DMG_DIM = 63;
+            abin.dmg_dim = DMG_DIM;
+            abin.damage.reserve(contigs.size() * DMG_DIM);
+            for (const auto& d : damage_profiles) {
+                abin.damage.push_back(d.p_anc);
+                abin.damage.push_back(d.var_anc);
+                abin.damage.push_back(d.n_eff);
+                abin.damage.push_back(d.cov_ancient);
+                abin.damage.push_back(d.cov_modern);
+                abin.damage.push_back(d.log_ratio);
+                for (int p = 0; p < 25; p++) abin.damage.push_back(d.ct_rate_5p[p]);
+                for (int p = 0; p < 25; p++) abin.damage.push_back(d.ga_rate_3p[p]);
+                abin.damage.push_back(d.lambda_5p);
+                abin.damage.push_back(d.lambda_3p);
+                abin.damage.push_back(d.amplitude_5p);
+                abin.damage.push_back(d.amplitude_3p);
+                abin.damage.push_back(d.frag_len_mean);
+                abin.damage.push_back(d.frag_len_std);
+                abin.damage.push_back(d.frag_len_median);
+            }
+        }
+
+        abin.bin_labels.resize(contigs.size(), -1);
+        for (size_t i = 0; i < labels.size(); i++)
+            abin.bin_labels[i] = labels[i];
+
+        if (!scg_lookup.empty()) {
+            abin.total_markers = static_cast<uint32_t>(scg_lookup.total_markers);
+            abin.scg_markers   = scg_lookup.contig_marker_ids;
+        }
+
+        amber::abin_save(config.output_dir + "/run.abin", abin);
+        log.info("Wrote run.abin (" + std::to_string(contigs.size()) + " contigs, "
+                 + std::to_string(abin.emb_dim) + "-dim embeddings, "
+                 + std::to_string(abin.dmg_dim) + "-dim damage)");
     }
 
     return 0;
