@@ -252,9 +252,18 @@ struct ADNAAccumulator {
     double cov_damaged = 0.0;      // Reads with p_anc > 0.6
     double cov_undamaged = 0.0;    // Reads with p_anc < 0.4
 
-    // Mismatch spectrum counts at 5' end
+    // Mismatch spectrum counts at 5' end.
+    // mm_5p_tc (T in ref, C in read) = proxy for assembly-baked damage:
+    //   when the assembler incorporated C→T damage into the consensus (called T
+    //   at a position that is truly C), undamaged reads see a T→C mismatch here.
+    //   High mm_5p_tc with low ct_rate_5p indicates heavy assembly suppression.
+    // NOTE: ct_rate_5p (C in ref, T in read) measures RESIDUAL damage only — it
+    //   underestimates true ancient signal when f_ancient is high (>50%).
+    //   The combined signal ct_rate_5p + mm_5p_tc ≈ total terminal mismatch rate.
     int mm_5p_tc = 0, mm_5p_ag = 0, mm_5p_other = 0, mm_5p_total = 0;
-    // Mismatch spectrum counts at 3' end
+    // Mismatch spectrum counts at 3' end.
+    // mm_3p_ct (C in ref, T in read) is the residual 3' G→A complement.
+    // mm_3p_tc (T in ref, C in read) is the baked-in 3' G→A proxy (symmetric to mm_5p_tc).
     int mm_3p_ct = 0, mm_3p_tc = 0, mm_3p_other = 0, mm_3p_total = 0;
 
     // Read counts
