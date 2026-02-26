@@ -270,6 +270,15 @@ if(AMBER_USE_LIBLEIDENALG)
         igraph::igraph
         libleidenalg::libleidenalg
     )
+    # igraph_SOURCE_DIR/BINARY_DIR are set by FetchContent_MakeAvailable(igraph)
+    # and are reliable on all cmake versions, unlike the cached IGRAPH_INCLUDE_DIR
+    # which depends on FetchContent_Populate (deprecated in cmake 3.31)
+    target_include_directories(amber PRIVATE
+        ${igraph_SOURCE_DIR}/include
+        ${igraph_BINARY_DIR}/include
+        ${libleidenalg_SOURCE_DIR}/include
+        ${libleidenalg_SOURCE_DIR}/include/libleidenalg
+    )
 endif()
 
 if(AMBER_USE_TORCH)
