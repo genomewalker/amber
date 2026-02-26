@@ -22,32 +22,21 @@ AMBER recovers 2–6 additional HQ bins compared with competing methods. SemiBin
 
 ## AMBER — per-bin quality (resolve consensus)
 
-11 HQ bins + 9 near-HQ / MQ bins shown. Genome sizes in Mbp.
+All 11 HQ bins. Genome sizes in Mbp.
 
-| Bin | Completeness | Contamination | Size (Mbp) | Tier |
-|-----|-------------|---------------|------------|------|
-| bin_28 | 100.0% | 4.45% | 3.63 | **HQ** |
-| bin_77 | 99.9% | 0.69% | 0.84 | **HQ** |
-| bin_53 | 99.9% | 1.86% | 3.30 | **HQ** |
-| bin_42 | 98.2% | 0.05% | 1.12 | **HQ** |
-| bin_24 | 97.7% | 0.23% | 3.19 | **HQ** |
-| bin_26 | 96.5% | 2.09% | 0.77 | **HQ** |
-| bin_38 | 95.0% | 2.65% | 3.34 | **HQ** |
-| bin_35 | 94.6% | 0.90% | 2.45 | **HQ** |
-| bin_4 | 92.3% | 1.90% | 1.91 | **HQ** |
-| bin_8 | 90.6% | 2.29% | 2.76 | **HQ** |
-| bin_47 | 90.1% | 2.62% | 3.58 | **HQ** |
-| bin_10 | 84.9% | 4.97% | 3.27 | near-HQ |
-| bin_18 | 82.7% | 1.18% | 2.32 | near-HQ |
-| bin_15 | 80.2% | 2.71% | 2.58 | near-HQ |
-| bin_32 | 80.1% | 4.36% | 0.76 | near-HQ |
-| bin_19 | 79.7% | 3.62% | 2.20 | near-HQ |
-| bin_16 | 73.6% | 2.84% | 2.61 | MQ |
-| bin_3 | 73.0% | 3.06% | 1.03 | MQ |
-| bin_6 | 55.9% | 1.96% | 2.09 | MQ |
-| bin_9 | 38.5% | 0.64% | 2.20 | partial |
-
-*bin_31 (84.6%, 7.75% contamination) excluded from near-HQ — contamination above 5%.*
+| Bin | Completeness | Contamination | Size (Mbp) |
+|-----|-------------|---------------|------------|
+| bin_28 | 100.0% | 4.45% | 3.63 |
+| bin_77 | 99.9% | 0.69% | 0.84 |
+| bin_53 | 99.9% | 1.86% | 3.30 |
+| bin_42 | 98.2% | 0.05% | 1.12 |
+| bin_24 | 97.7% | 0.23% | 3.19 |
+| bin_26 | 96.5% | 2.09% | 0.77 |
+| bin_38 | 95.0% | 2.65% | 3.34 |
+| bin_35 | 94.6% | 0.90% | 2.45 |
+| bin_4 | 92.3% | 1.90% | 1.91 |
+| bin_8 | 90.6% | 2.29% | 2.76 |
+| bin_47 | 90.1% | 2.62% | 3.58 |
 
 ---
 
@@ -66,21 +55,15 @@ Best of 3 SemiBin2 self-supervised runs. All 6 HQ bins shown; SemiBin2 produces 
 
 ---
 
-## COMEBin — per-bin quality (best replicate, 9 HQ)
+## COMEBin — per-bin quality (best replicate, top 3 HQ)
 
-Best of 8 COMEBin runs. All 9 HQ bins shown; COMEBin produces 16–17 MQ bins per run.
+Best of 8 COMEBin runs. Top 3 HQ bins shown; COMEBin recovers up to 9 HQ and 16–17 MQ bins per run.
 
 | Bin | Completeness | Contamination | Size (Mbp) | Tier |
 |-----|-------------|---------------|------------|------|
 | 27966 | 100.0% | 2.15% | 3.54 | **HQ** |
 | 25795 | 100.0% | 4.31% | 3.56 | **HQ** |
 | 28106 | 99.8% | 0.66% | 0.96 | **HQ** |
-| 25284 | 99.2% | 0.41% | 3.33 | **HQ** |
-| 27724 | 97.5% | 0.05% | 1.14 | **HQ** |
-| 27394 | 93.3% | 1.67% | 3.53 | **HQ** |
-| 26333 | 93.2% | 2.10% | 1.65 | **HQ** |
-| 25942 | 91.9% | 0.94% | 2.72 | **HQ** |
-| 23134 | 91.3% | 2.04% | 2.41 | **HQ** |
 
 *Two COMEBin bins with completeness > 99% had contamination > 50% (likely chimeric) and are excluded.*
 
@@ -95,35 +78,6 @@ Best of 8 COMEBin runs. All 9 HQ bins shown; COMEBin produces 16–17 MQ bins pe
 **Contamination control:** AMBER's median contamination across 11 HQ bins is 2.09%; COMEBin best rep median is 1.94%; SemiBin2 best rep median is 1.36% — all comparable. Two COMEBin bins had > 50% contamination (excluded above); AMBER's worst HQ bin is bin_28 at 4.45%.
 
 **Reproducibility:** AMBER produces exactly 11 HQ bins in every replicate run. SemiBin2 is stable (5–6 HQ) but recovers fewer genomes. COMEBin varies between 6 and 9 HQ across 8 independent runs on identical data, due to Leiden stochasticity without a resolution sweep.
-
----
-
-## Deconvolution validation (S17 incubation sample)
-
-The S17 sample contains a known mixture of ancient and modern DNA from a controlled incubation experiment. `amber deconvolve` results on bin_4 (1.9 Mbp, *Candidatus* sp.):
-
-| Source | Completeness | Contamination | Classification |
-|--------|-------------|---------------|----------------|
-| All reads (no deconvolution) | 90.8% | 5.0% | Ancient + modern mixed |
-| `amber deconvolve` ancient consensus | 90.8% | 5.0% | Ancient population, 4,080 damage corrections |
-| De novo assembly from modern reads only | 26.8% | 2.3% | Modern only — insufficient depth |
-
-De novo assembly from EM-classified modern reads (177 bp) achieves only 26.8% completeness — confirming that reference-guided deconvolution is required at this coverage. The `amber deconvolve` ancient consensus is fully polished (4,080 C→T and G→A corrections).
-
----
-
-## Dataset details
-
-| Parameter | Value |
-|-----------|-------|
-| Site | Kap København Formation, North Greenland |
-| Sample type | Holocene lake sediment |
-| Sequencing | Illumina paired-end, 150 bp |
-| Assembly | MEGAHIT, 119 time-point co-assembly |
-| Total assembly | ~2.8 Gbp |
-| Contigs ≥ 2,500 bp | ~280,000 |
-| CheckM2 version | v1.0.2 |
-| CheckM2 database | DIAMOND v3 |
 
 ---
 
