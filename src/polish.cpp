@@ -667,6 +667,10 @@ struct DeconvolveConfig {
 
     // Per-position uncertainty output
     bool write_position_stats = false;
+
+    // Modern read BAM output
+    bool write_modern_bam = false;
+    double modern_bam_threshold = 0.2;  // p_ancient <= this → written to modern BAM
 };
 
 int run_deconvolver(int argc, char** argv) {
@@ -735,6 +739,10 @@ int run_deconvolver(int argc, char** argv) {
             config.prior_ancient = std::stod(argv[++i]);
         } else if (arg == "--write-position-stats") {
             config.write_position_stats = true;
+        } else if (arg == "--write-modern-bam") {
+            config.write_modern_bam = true;
+        } else if (arg == "--modern-bam-threshold" && i + 1 < argc) {
+            config.modern_bam_threshold = std::stod(argv[++i]);
         }
     }
 
@@ -863,6 +871,8 @@ int run_deconvolver(int argc, char** argv) {
         deconv_config.auto_estimate_params = config.auto_estimate_params;
         deconv_config.prior_ancient = config.prior_ancient;
         deconv_config.write_position_stats = config.write_position_stats;
+        deconv_config.write_read_classifications = config.write_modern_bam;
+        deconv_config.p_modern_hard = config.modern_bam_threshold;
 
         #pragma omp for schedule(dynamic, 50)
         for (size_t ci = 0; ci < contigs.size(); ci++) {
@@ -878,6 +888,41 @@ int run_deconvolver(int argc, char** argv) {
         hts_idx_destroy(t_idx);
         bam_hdr_destroy(t_hdr);
         sam_close(t_sf);
+    }
+
+    // Write modern reads BAM (second pass — pairs of modern-classified reads)
+    if (config.write_modern_bam) {
+        log.info("Writing modern reads BAM (p_ancient <= " +
+                 std::to_string(config.modern_bam_threshold) + ")...");
+
+        std::unordered_set<std::string> modern_qnames;
+        for (size_t ci = 0; ci < results.size(); ci++)
+            for (const auto& qn : results[ci].deconv.modern_read_names)
+                modern_qnames.insert(qn);
+
+        log.info("Modern read qnames collected: " + std::to_string(modern_qnames.size()));
+
+        samFile* in_sf  = sam_open(config.bam_file.c_str(), "r");
+        bam_hdr_t* in_hdr = sam_hdr_read(in_sf);
+        std::string out_bam_path = config.output_dir + "/modern_reads.bam";
+        samFile* out_sf = sam_open(out_bam_path.c_str(), "wb");
+        sam_hdr_write(out_sf, in_hdr);
+
+        bam1_t* b2 = bam_init1();
+        size_t written = 0;
+        while (sam_read1(in_sf, in_hdr, b2) >= 0) {
+            if (modern_qnames.count(std::string(bam_get_qname(b2)))) {
+                sam_write1(out_sf, in_hdr, b2);
+                written++;
+            }
+        }
+        bam_destroy1(b2);
+        bam_hdr_destroy(in_hdr);
+        sam_close(in_sf);
+        sam_close(out_sf);
+
+        log.metric("Modern reads written to BAM", (int)written);
+        log.info("Output: " + out_bam_path);
     }
 
     // Write results

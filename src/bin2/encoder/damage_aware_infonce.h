@@ -3,13 +3,14 @@
 // Based on OpenCode collaboration (Feb 2026)
 #pragma once
 
-#ifdef USE_LIBTORCH
-
-#include <torch/torch.h>
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 
+// ---------------------------------------------------------------------------
+// Pure C++ types — available regardless of USE_LIBTORCH
+// ---------------------------------------------------------------------------
 namespace amber::bin2 {
 
 // Per-contig aDNA damage profile with comprehensive ancient DNA features
@@ -225,6 +226,17 @@ inline float compute_damage_compatibility(
     float f = 1.0f - p.lambda * cpair * (1.0f - f_combined);
     return std::clamp(f, p.wmin, 1.0f);
 }
+
+}  // namespace amber::bin2
+
+// ---------------------------------------------------------------------------
+// LibTorch-dependent class — only compiled with USE_LIBTORCH
+// ---------------------------------------------------------------------------
+#ifdef USE_LIBTORCH
+
+#include <torch/torch.h>
+
+namespace amber::bin2 {
 
 // Damage-aware InfoNCE loss
 // Weights negative pairs by damage compatibility, weights anchor loss by confidence

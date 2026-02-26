@@ -372,7 +372,8 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
     const std::string& bam_path,
     const std::vector<std::pair<std::string, std::string>>& contigs,
     int threads,
-    int n_terminal = 15) {
+    int n_terminal = 15,
+    int min_insert_size = 0) {
 
     // Damage model parameters (calibrated for ancient DNA)
     const DamageModelParams params = {
@@ -434,12 +435,29 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
 
                     int read_len = aln->core.l_qseq;
                     if (read_len < 10) continue;
+
+                    if (min_insert_size > 0 && (aln->core.flag & BAM_FPAIRED)) {
+                        int isize = std::abs(aln->core.isize);
+                        if (isize > 0 && isize < min_insert_size) continue;
+                    }
+
+                    // Soft-clip offsets: avoid comparing adapter/clipped bases against reference
+                    uint32_t* cigar = bam_get_cigar(aln);
+                    int n_cigar = aln->core.n_cigar;
+                    int sc5 = (n_cigar > 0 && bam_cigar_op(cigar[0]) == BAM_CSOFT_CLIP)
+                              ? (int)bam_cigar_oplen(cigar[0]) : 0;
+                    int sc3 = (n_cigar > 0 && bam_cigar_op(cigar[n_cigar-1]) == BAM_CSOFT_CLIP)
+                              ? (int)bam_cigar_oplen(cigar[n_cigar-1]) : 0;
+                    int aln_rlen = bam_cigar2rlen(n_cigar, cigar);
+                    int aln_qlen = read_len - sc5 - sc3;
+                    if (aln_qlen < 10) continue;
+
                     // n_lik: positions used for per-read likelihood (p_anc) — fixed at 5
                     //        keeps InfoNCE weights identical to the validated baseline
                     // n_smiley: positions tracked for smiley plot — up to n_terminal
-                    //           capped at read_len/2 to avoid 5'/3' overlap
-                    const int n_lik = std::min(5, read_len / 2);
-                    int eff_n = std::min(n_terminal, read_len / 2);
+                    //           capped at aln_qlen/2 to avoid 5'/3' overlap
+                    const int n_lik = std::min(5, aln_qlen / 2);
+                    int eff_n = std::min(n_terminal, aln_qlen / 2);
 
                     uint8_t* bam_seq = bam_get_seq(aln);
                     uint8_t* bam_qual = bam_get_qual(aln);
@@ -454,7 +472,7 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                     for (int i = 0; i < eff_n; i++) {
                         if (ref_pos + i >= contig_length) break;
                         char ref_base = std::toupper(seq[ref_pos + i]);
-                        char read_base = seq_nt16_str[bam_seqi(bam_seq, i)];
+                        char read_base = seq_nt16_str[bam_seqi(bam_seq, sc5 + i)];
                         double q_err = phred_to_error_prob(bam_qual[i]);
 
                         // Smiley plot: track all eff_n positions
@@ -483,8 +501,8 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
 
                     // 3' terminal: smiley tracking (eff_n positions) + likelihood (n_lik positions)
                     for (int i = 0; i < eff_n; i++) {
-                        int read_idx = read_len - 1 - i;
-                        int ref_idx = ref_pos + read_len - 1 - i;
+                        int read_idx = read_len - 1 - sc3 - i;
+                        int ref_idx = ref_pos + aln_rlen - 1 - i;
                         if (ref_idx >= (int)contig_length || ref_idx < 0) continue;
                         char ref_base = std::toupper(seq[ref_idx]);
                         char read_base = seq_nt16_str[bam_seqi(bam_seq, read_idx)];

@@ -34,6 +34,8 @@ REF_GENOMES = sorted(set(
     for p in _ref_dir.glob(f"*{ext}")
 ))
 PHYLO_SAMPLES = REF_GENOMES + ["ancient_consensus", "modern_consensus"]
+if config.get("incubation", {}).get("include_s17_assembly", False):
+    PHYLO_SAMPLES += ["s17_ancient_relative"]
 
 N_REPS = config["amber"].get("n_reps", 3)
 REPS   = list(range(1, N_REPS + 1))
@@ -43,7 +45,16 @@ REPS   = list(range(1, N_REPS + 1))
 # Target rules
 # ---------------------------------------------------------------------------
 
-localrules: link_ref_genome, link_ancient_consensus, link_modern_consensus
+localrules: link_ref_genome, link_ancient_consensus, link_modern_consensus, link_s17_assembly,
+    checkm2_rep, checkm2_final, fastani_bins, fastani_deconvolved,
+    gunc, gtdbtk, summary, deconvolve, amber_resolve,
+    prodigal, hmmsearch, extract_markers, align_marker, trim_alignment,
+    back_translate, concatenate_aa, trim_concat_aa, concatenate_codon, trim_concat_codon, codon_12only,
+    beast2_xml, beast2_snp_xml,
+    nucmer_align, extract_snps, build_snp_matrix,
+    treeannotator, treeannotator_snp,
+    validate_stasis,
+    combine_incubation_bins
 
 rule all:
     """Full pipeline: binning → QC → deconvolve → phylogenomics → BEAST2 XML"""
@@ -85,8 +96,26 @@ rule phylo:
     input:
         f"{PHYLO_DIR}/08_trees/aa_ml_tree.treefile",
         f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile",
+        f"{PHYLO_DIR}/08_trees/codon12_ml_tree.treefile",
         f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml",
         f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree.treefile"
+
+rule scf:
+    """Site concordance factors for codon and SNP trees (robustness check)"""
+    input:
+        f"{PHYLO_DIR}/08_trees/codon_scf.cf.tree",
+        f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_scf.cf.tree"
+
+rule beast2_snp:
+    """SNP-based BEAST2 tip-dating with ASC correction (+ stasis validation)"""
+    input:
+        f"{PHYLO_DIR}/09_beast2/snp_tipdating_mcc.tree",
+        f"{PHYLO_DIR}/validation/stasis_validation_report.txt"
+
+rule stasis_validate:
+    """Extreme validation of stasis claim (no BEAST2 required)"""
+    input:
+        f"{PHYLO_DIR}/validation/stasis_validation_report.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +602,7 @@ rule link_modern_consensus:
 
 
 def get_phylo_genome_path(wildcards):
-    if wildcards.sample in ["ancient_consensus", "modern_consensus"]:
+    if wildcards.sample in ["ancient_consensus", "modern_consensus", "s17_ancient_relative"]:
         return f"{PHYLO_DIR}/01_genomes/{wildcards.sample}.fa"
     return f"{PHYLO_DIR}/01_genomes/{wildcards.sample}.fna"
 
@@ -762,9 +791,14 @@ rule back_translate:
 
 
 rule concatenate_aa:
-    """Concatenate trimmed AA alignments into protein supermatrix"""
+    """Concatenate untrimmed AA alignments into protein supermatrix.
+    BMGE is applied AFTER concatenation (trim_concat_aa) to preserve
+    signal — per-marker BMGE on short alignments is too aggressive and
+    discards ~74% of sites vs concatenated BMGE (2204 vs 8549 cols).
+    Per-marker trim_alignment is kept only for the codon/back-translate path.
+    """
     input:
-        expand(f"{PHYLO_DIR}/06_trimmed/{{marker}}.trimmed.faa", marker=MARKERS)
+        expand(f"{PHYLO_DIR}/05_aligned/{{marker}}.aln.faa", marker=MARKERS)
     output:
         f"{PHYLO_DIR}/07_concatenated/concat_aa.faa"
     params:
@@ -778,10 +812,37 @@ rule concatenate_aa:
         "scripts/concatenate_aa.py"
 
 
+rule trim_concat_aa:
+    """Apply BMGE to the concatenated AA supermatrix.
+    Matches Guillaume Borrel's approach: trim after concatenation so the
+    entropy calculation is stable across the full alignment (~8000 sites)
+    rather than per-marker (~60 sites after aggressive trimming).
+    """
+    input:
+        f"{PHYLO_DIR}/07_concatenated/concat_aa.faa"
+    output:
+        f"{PHYLO_DIR}/07_concatenated/concat_aa.bmge.faa"
+    params:
+        matrix = config["bmge_matrix"],
+        env    = "/maps/projects/fernandezguerra/apps/opt/conda/envs/phylogenomics_gb"
+    log: f"{PHYLO_DIR}/logs/trim_concat_aa.log"
+    resources:
+        mem_mb = 8000,
+        runtime = 10,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        bmge -i {input} -t AA -m {params.matrix} -of {output} 2> {log}
+        """
+
+
 rule iqtree_aa:
     """Build ML phylogeny with IQ-TREE on protein supermatrix (LG+F+R10)"""
     input:
-        f"{PHYLO_DIR}/07_concatenated/concat_aa.faa"
+        f"{PHYLO_DIR}/07_concatenated/concat_aa.bmge.faa"
     output:
         tree = f"{PHYLO_DIR}/08_trees/aa_ml_tree.treefile",
         log_ = f"{PHYLO_DIR}/08_trees/aa_ml_tree.log"
@@ -805,8 +866,9 @@ rule iqtree_aa:
             -m LG+F+R10 \
             -bb {params.bootstrap} -alrt {params.alrt} \
             -nt {threads} \
-            --prefix {params.prefix} \
+            --prefix {params.prefix} --redo \
             2> {log}
+        echo "Sites used: $(awk 'NR==2{{print length($0)}}' {input}) AA columns" >> {log}
         """
 
 
@@ -828,11 +890,96 @@ rule concatenate_codon:
         "scripts/concatenate_codon.py"
 
 
-rule iqtree_codon:
-    """Build ML phylogeny with IQ-TREE on codon supermatrix"""
+rule trim_concat_codon:
+    """Codon-aware gap filter on concatenated codon supermatrix.
+    Removes codon triplets (3-nt units) where gap fraction exceeds max_gap,
+    preserving reading frame. Outputs updated partition file with corrected
+    marker boundaries. Mirrors the post-concatenation BMGE approach used for
+    the AA tree to retain maximum signal.
+    """
     input:
         aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
         partitions = f"{PHYLO_DIR}/07_concatenated/partitions.txt"
+    output:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.trimmed.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.trimmed.txt"
+    params:
+        max_gap = config.get("codon_max_gap", 0.2)
+    log: f"{PHYLO_DIR}/logs/trim_concat_codon.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 5,
+        slurm_partition = "compregular"
+    script:
+        "scripts/codon_bmge.py"
+
+
+rule codon_12only:
+    """Strip 3rd codon positions from concatenated codon supermatrix.
+    3rd positions are saturated at Methanoflorentales divergence distances
+    (entropy=1.46 vs 1.0 for 1st+2nd), adding noise rather than signal.
+    Dropping them recovers AA-level support values (SH-aLRT ~74% vs ~56%).
+    """
+    input:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.txt"
+    output:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.12only.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.12only.txt"
+    params:
+        max_gap     = config.get("codon_max_gap", 0.2),
+        strip_third = True
+    log: f"{PHYLO_DIR}/logs/codon_12only.log"
+    resources:
+        mem_mb = 4000,
+        runtime = 5,
+        slurm_partition = "compregular"
+    script:
+        "scripts/codon_bmge.py"
+
+
+rule iqtree_codon_12:
+    """ML tree on 1st+2nd codon positions only (3rd positions removed).
+    Serves as a robustness check: if SOIL placement support recovers to ~74%,
+    it confirms 3rd position saturation was the cause of weak support.
+    """
+    input:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.12only.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.12only.txt"
+    output:
+        tree = f"{PHYLO_DIR}/08_trees/codon12_ml_tree.treefile",
+        log_ = f"{PHYLO_DIR}/08_trees/codon12_ml_tree.log"
+    params:
+        model     = config["iqtree_model"],
+        bootstrap = config["iqtree_bootstrap"],
+        alrt      = config["iqtree_alrt"],
+        prefix    = f"{PHYLO_DIR}/08_trees/codon12_ml_tree",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_codon12.log"
+    threads: config["threads"]
+    resources:
+        mem_mb = 32000,
+        runtime = 240,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input.aln} -p {input.partitions} \
+            -m {params.model} \
+            -bb {params.bootstrap} -alrt {params.alrt} \
+            -nt {threads} \
+            --prefix {params.prefix} --redo \
+            2> {log}
+        """
+
+
+rule iqtree_codon:
+    """Build ML phylogeny with IQ-TREE on codon supermatrix"""
+    input:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.trimmed.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.trimmed.txt"
     output:
         tree = f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile",
         log_ = f"{PHYLO_DIR}/08_trees/codon_ml_tree.log"
@@ -862,10 +1009,48 @@ rule iqtree_codon:
         """
 
 
+rule iqtree_codon_scf:
+    """Compute site concordance factors (sCF) on the codon ML tree.
+    sCF counts what fraction of parsimony-informative sites support each
+    branch vs the two alternatives — more robust than UFBoot for short
+    internodes in concatenated alignments.
+    Output tree annotates nodes as SH-aLRT/UFBoot|sCF.
+    """
+    input:
+        aln        = f"{PHYLO_DIR}/07_concatenated/concat_codon.trimmed.fna",
+        partitions = f"{PHYLO_DIR}/07_concatenated/partitions.trimmed.txt",
+        tree       = f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile"
+    output:
+        cf_tree = f"{PHYLO_DIR}/08_trees/codon_scf.cf.tree",
+        cf_stat = f"{PHYLO_DIR}/08_trees/codon_scf.cf.stat"
+    params:
+        n_quartet = config.get("iqtree_scf_quartets", 100),
+        prefix    = f"{PHYLO_DIR}/08_trees/codon_scf",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_codon_scf.log"
+    threads: config["threads"]
+    resources:
+        mem_mb   = 32000,
+        runtime  = 120,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input.aln} -p {input.partitions} \
+            -t {input.tree} \
+            --scf {params.n_quartet} \
+            -nt {threads} \
+            --prefix {params.prefix} --redo \
+            2> {log}
+        """
+
+
 rule beast2_xml:
     """Generate BEAST2 XML for tip-dating"""
     input:
-        aln  = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
+        aln  = f"{PHYLO_DIR}/07_concatenated/concat_codon.trimmed.fna",
         tree = f"{PHYLO_DIR}/08_trees/codon_ml_tree.treefile"
     output:
         xml    = f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml",
@@ -887,7 +1072,7 @@ rule beast2_xml:
 
 
 rule beast2_run:
-    """Run BEAST2 tip-dating analysis (GPU-accelerated)"""
+    """Run BEAST2 tip-dating analysis (2x A100 GPU via sbatch --wait)"""
     input:
         xml = f"{PHYLO_DIR}/09_beast2/codon_tipdating.xml"
     output:
@@ -895,22 +1080,163 @@ rule beast2_run:
         trees  = f"{PHYLO_DIR}/09_beast2/codon_tipdating.trees"
     params:
         beagle_lib = config["beagle_lib"],
-        workdir    = f"{PHYLO_DIR}/09_beast2"
+        workdir    = f"{PHYLO_DIR}/09_beast2",
+        beast2_bin = "/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber/beast2_2.7/beast/bin/beast",
+        java_home  = "/maps/projects/fernandezguerra/apps/opt/conda/envs/java17/lib/jvm"
     log: f"{PHYLO_DIR}/logs/beast2_run.log"
-    threads: 8
-    resources:
-        mem_mb     = 64000,
-        runtime    = 720,
-        slurm_partition = "compregular",
-        gres        = "gpu:a100:2"
-    conda: "envs/beast2.yaml"
     shell:
         """
-        export LD_LIBRARY_PATH="{params.beagle_lib}:$LD_LIBRARY_PATH"
-        cd {params.workdir}
-        beast -beagle_GPU -beagle_order 0,1 -threads {threads} \
-            -overwrite codon_tipdating.xml 2> {log}
+        sbatch --wait \
+            --job-name=beast2_2gpu \
+            --partition=compregular \
+            --gres=gpu:a100:2 \
+            --cpus-per-task=32 \
+            --mem=64G \
+            --time=12:00:00 \
+            --output={log} \
+            --error={log} \
+            --wrap='
+                export JAVA_HOME="{params.java_home}"
+                export PATH="{params.java_home}/bin:${{PATH}}"
+                export LD_LIBRARY_PATH="{params.beagle_lib}:${{LD_LIBRARY_PATH:-}}"
+                export LD_PRELOAD="{params.beagle_lib}/libhmsbeagle.so.1"
+                cd {params.workdir}
+                "{params.beast2_bin}" \
+                    -beagle_GPU -beagle_order 1,2 -beagle_double \
+                    -instances 2 -threads 32 \
+                    -overwrite codon_tipdating.xml
+            '
         """
+
+
+rule treeannotator:
+    """Summarise BEAST2 posterior trees into MCC tree (10% burnin)"""
+    input:
+        trees = f"{PHYLO_DIR}/09_beast2/codon_tipdating.trees"
+    output:
+        mcc = f"{PHYLO_DIR}/09_beast2/codon_tipdating_mcc.tree"
+    params:
+        burnin         = config.get("beast2_burnin_pct", 10),
+        treeannotator  = "/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber/beast2_2.7/beast/bin/treeannotator",
+        java_home      = "/maps/projects/fernandezguerra/apps/opt/conda/envs/java17/lib/jvm"
+    log: f"{PHYLO_DIR}/logs/treeannotator.log"
+    shell:
+        """
+        export JAVA_HOME="{params.java_home}"
+        export PATH="{params.java_home}/bin:${{PATH}}"
+        "{params.treeannotator}" \
+            -burnin {params.burnin} \
+            -height mean \
+            {input.trees} {output.mcc} \
+            > {log} 2>&1
+        """
+
+
+# ---------------------------------------------------------------------------
+# PART E2: SNP-based BEAST2 tip-dating (with ASC correction)
+# ---------------------------------------------------------------------------
+
+rule beast2_snp_xml:
+    """Generate BEAST2 XML for SNP-based tip-dating with ASC correction"""
+    input:
+        aln  = f"{PHYLO_DIR}/10_snp_tree/snp_alignment_tvonly.fna",
+        ref  = f"{PHYLO_DIR}/01_genomes/{config['snp_reference']}.fna",
+        tree = f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree.contree"
+    output:
+        xml = f"{PHYLO_DIR}/09_beast2/snp_tipdating.xml"
+    params:
+        chain_length    = config["beast2_chain_length"],
+        log_every       = config["beast2_log_every"],
+        tip_dates       = {"ancient_consensus": config["sample_age"]},
+        clock_rate_mean = config.get("beast2_snp_clock_rate_mean", 1e-9)
+    log: f"{PHYLO_DIR}/logs/beast2_snp_xml.log"
+    script:
+        "scripts/create_beast2_snp_xml.py"
+
+
+rule beast2_snp_run:
+    """Run SNP-based BEAST2 tip-dating (2x A100 GPU via sbatch --wait)"""
+    input:
+        xml = f"{PHYLO_DIR}/09_beast2/snp_tipdating.xml"
+    output:
+        log_   = f"{PHYLO_DIR}/09_beast2/snp_tipdating.log",
+        trees  = f"{PHYLO_DIR}/09_beast2/snp_tipdating.trees"
+    params:
+        beagle_lib = config["beagle_lib"],
+        workdir    = f"{PHYLO_DIR}/09_beast2",
+        beast2_bin = "/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber/beast2_2.7/beast/bin/beast",
+        java_home  = "/maps/projects/fernandezguerra/apps/opt/conda/envs/java17/lib/jvm"
+    log: f"{PHYLO_DIR}/logs/beast2_snp_run.log"
+    shell:
+        """
+        sbatch --wait \
+            --job-name=beast2_snp \
+            --partition=compregular \
+            --gres=gpu:a100:2 \
+            --cpus-per-task=32 \
+            --mem=64G \
+            --time=12:00:00 \
+            --output={log} \
+            --error={log} \
+            --wrap='
+                export JAVA_HOME="{params.java_home}"
+                export PATH="{params.java_home}/bin:${{PATH}}"
+                export LD_LIBRARY_PATH="{params.beagle_lib}:${{LD_LIBRARY_PATH:-}}"
+                export LD_PRELOAD="{params.beagle_lib}/libhmsbeagle.so.1"
+                cd {params.workdir}
+                "{params.beast2_bin}" \
+                    -beagle_GPU -beagle_order 1,2 -beagle_double \
+                    -instances 2 -threads 32 \
+                    -overwrite snp_tipdating.xml
+            '
+        """
+
+
+rule treeannotator_snp:
+    """Summarise SNP BEAST2 posterior trees into MCC tree (10% burnin)"""
+    input:
+        trees = f"{PHYLO_DIR}/09_beast2/snp_tipdating.trees"
+    output:
+        mcc = f"{PHYLO_DIR}/09_beast2/snp_tipdating_mcc.tree"
+    params:
+        burnin        = config.get("beast2_burnin_pct", 10),
+        treeannotator = "/maps/projects/caeg/people/kbd606/scratch/kapk-assm/amber/beast2_2.7/beast/bin/treeannotator",
+        java_home     = "/maps/projects/fernandezguerra/apps/opt/conda/envs/java17/lib/jvm"
+    log: f"{PHYLO_DIR}/logs/treeannotator_snp.log"
+    shell:
+        """
+        export JAVA_HOME="{params.java_home}"
+        export PATH="{params.java_home}/bin:${{PATH}}"
+        "{params.treeannotator}" \
+            -burnin {params.burnin} \
+            -height mean \
+            {input.trees} {output.mcc} \
+            > {log} 2>&1
+        """
+
+
+# ---------------------------------------------------------------------------
+# PART G: Extreme stasis validation
+# ---------------------------------------------------------------------------
+
+rule validate_stasis:
+    """
+    Extreme validation of evolutionary stasis claim:
+    - SNP damage artifact check (C>T / G>A enrichment)
+    - Pairwise distances ancient vs modern vs all taxa (codon + SNP)
+    - Deconvolution quality metrics (damage rates, fragment lengths)
+    """
+    input:
+        codon_aln   = f"{PHYLO_DIR}/07_concatenated/concat_codon.fna",
+        snp_aln     = f"{PHYLO_DIR}/10_snp_tree/snp_alignment_tvonly.fna",
+        snps_dir    = f"{PHYLO_DIR}/10_snp_tree/snps",
+        deconv_dir  = f"{OUTDIR}/deconvolve",
+        resolve_dir = RESOLVE_DIR
+    output:
+        report = f"{PHYLO_DIR}/validation/stasis_validation_report.txt"
+    log: f"{PHYLO_DIR}/logs/validate_stasis.log"
+    script:
+        "scripts/validate_stasis.py"
 
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1351,43 @@ rule iqtree_snp_tvonly:
         """
 
 
+rule iqtree_snp_scf:
+    """Compute site concordance factors on the transversion-only SNP tree.
+    Resolves the SOIL100000032 placement where UFBoot=96 but SH-aLRT=56.4
+    — sCF directly reports what fraction of TV-only sites support the
+    branch, independent of bootstrap inflation from short internodes.
+    """
+    input:
+        aln  = f"{PHYLO_DIR}/10_snp_tree/snp_alignment_tvonly.fna",
+        tree = f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_tree.treefile"
+    output:
+        cf_tree = f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_scf.cf.tree",
+        cf_stat = f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_scf.cf.stat"
+    params:
+        n_quartet = config.get("iqtree_scf_quartets", 100),
+        model     = config["snp_tree_model"],
+        prefix    = f"{PHYLO_DIR}/10_snp_tree/snp_tvonly_scf",
+        env       = "/maps/projects/fernandezguerra/apps/opt/conda/envs/gtdbtk"
+    log: f"{PHYLO_DIR}/logs/iqtree_snp_scf.log"
+    threads: 8
+    resources:
+        mem_mb   = 16000,
+        runtime  = 60,
+        slurm_partition = "compregular"
+    shell:
+        """
+        set +u
+        source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+        conda activate {params.env}
+        iqtree3 -s {input.aln} -m {params.model} \
+            -t {input.tree} \
+            --scf {params.n_quartet} \
+            -nt {threads} \
+            --prefix {params.prefix} --redo \
+            2> {log}
+        """
+
+
 rule iqtree_snp_all:
     """Build ML tree from all SNPs"""
     input:
@@ -1051,3 +1414,598 @@ rule iqtree_snp_all:
             -bb {params.bootstrap} -nt {threads} \
             --prefix {params.prefix} --redo 2> {log}
         """
+
+
+# ---------------------------------------------------------------------------
+# PART H: Incubation comparison — dRep dereplication + S17 read mapping
+# ---------------------------------------------------------------------------
+
+_INCUB = config.get("incubation", {})
+_DREP  = config.get("drep", {})
+
+if _INCUB and _DREP:
+
+    rule incubation_compare:
+        """Dereplicate paper + S17 bins; map S17 longDNA reads against the result"""
+        input:
+            f"{OUTDIR}/drep/s17_vs_drep.sorted.bam",
+            f"{OUTDIR}/drep/s17_mapping_stats.txt"
+
+
+    rule combine_incubation_bins:
+        """Symlink paper HQ/MQ bins, deconvolved consensi, and S17 HQ/MQ bins into
+        a single dir for dRep.
+        Prefixes: paper_ · ancient_ · modern_ · s17hq_ · s17mq_
+        """
+        input:
+            paper_bins   = get_hq_mq_bins,
+            ancient      = f"{OUTDIR}/deconvolve/ancient_consensus.fa",
+            modern       = f"{OUTDIR}/deconvolve/modern_consensus.fa",
+            selected_bin = f"{OUTDIR}/selected_bin.txt",
+            incub_hq     = _INCUB["hq_bins_dir"],
+            incub_mq     = _INCUB["mq_bins_dir"]
+        output:
+            combined = directory(f"{OUTDIR}/drep/input_bins")
+        run:
+            import glob
+            os.makedirs(output.combined, exist_ok=True)
+            # Exclude the raw mixed bin — replaced by its deconvolved consensi
+            excluded = open(input.selected_bin).read().strip() + ".fa"
+            # Directory sources with prefix
+            prefix_map = {
+                input.paper_bins: "paper",
+                input.incub_hq:   "s17hq",
+                input.incub_mq:   "s17mq",
+            }
+            for src_dir, pfx in prefix_map.items():
+                for src in sorted(glob.glob(f"{src_dir}/*.fa")):
+                    if os.path.basename(src) == excluded and pfx == "paper":
+                        continue
+                    dst = os.path.join(output.combined, f"{pfx}_{os.path.basename(src)}")
+                    if not os.path.exists(dst):
+                        os.symlink(os.path.abspath(src), dst)
+            # Deconvolved consensi replace the mixed bin
+            for src, name in [(input.ancient, "ancient_consensus.fa"),
+                               (input.modern,  "modern_consensus.fa")]:
+                dst = os.path.join(output.combined, name)
+                if not os.path.exists(dst):
+                    os.symlink(os.path.abspath(src), dst)
+
+
+    rule drep_dereplicate:
+        """dRep species-level dereplication (95% primary / 99% secondary ANI).
+        Manually copies winners to dereplicated_genomes/ (dRep v3.6.2 skips this
+        when --ignoreGenomeQuality is used).
+        """
+        input:
+            bins = f"{OUTDIR}/drep/input_bins"
+        output:
+            derep = directory(f"{OUTDIR}/drep/dereplicated_genomes")
+        params:
+            outdir = f"{OUTDIR}/drep",
+            ani    = _DREP["ani"],
+            s_ani  = _DREP["secondary_ani"],
+            cov    = _DREP["min_overlap"],
+            env    = _DREP["env"]
+        threads: config["threads"]
+        resources:
+            mem_mb  = 32000,
+            runtime = 120,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/drep.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+
+            dRep dereplicate {params.outdir} \
+                -g {input.bins}/*.fa \
+                -pa {params.ani} \
+                -sa {params.s_ani} \
+                -nc {params.cov} \
+                --ignoreGenomeQuality \
+                -p {threads} \
+                2>&1 | tee {log}
+
+            # dRep v3.6.2 bug: winners not copied when --ignoreGenomeQuality
+            mkdir -p {output.derep}
+            python3 -c "
+import csv, os, shutil
+widb = '{params.outdir}/data_tables/Widb.csv'
+src  = '{input.bins}'
+dst  = '{output.derep}'
+with open(widb) as f:
+    for row in csv.DictReader(f):
+        shutil.copy2(os.path.join(src, row['genome']), os.path.join(dst, row['genome']))
+print(f'Copied {{len(os.listdir(dst))}} representative genomes to {output.derep}')
+"
+            """
+
+
+    rule map_incubation_s17:
+        """Map S17 longDNA reads against dereplicated MAG set (bwa-mem2)"""
+        input:
+            derep = f"{OUTDIR}/drep/dereplicated_genomes",
+            r1    = _INCUB["reads_r1"],
+            r2    = _INCUB["reads_r2"]
+        output:
+            bam   = f"{OUTDIR}/drep/s17_vs_drep.sorted.bam",
+            bai   = f"{OUTDIR}/drep/s17_vs_drep.sorted.bam.bai",
+            stats = f"{OUTDIR}/drep/s17_mapping_stats.txt"
+        params:
+            ref = f"{OUTDIR}/drep/derep_cat.fa",
+            env = "/maps/projects/fernandezguerra/apps/opt/conda/envs/modern-meta"
+        threads: config["threads"]
+        resources:
+            mem_mb  = 64000,
+            runtime = 240,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/map_incubation_s17.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            cat {input.derep}/*.fa > {params.ref}
+            bwa-mem2 index {params.ref} 2>> {log}
+            bwa-mem2 mem -t {threads} {params.ref} {input.r1} {input.r2} \
+                2>> {log} \
+                | samtools sort -@ {threads} -m 2G -o {output.bam} 2>> {log}
+            samtools index {output.bam} 2>> {log}
+            samtools flagstat {output.bam} > {output.stats} 2>> {log}
+            """
+
+
+    rule extract_s17_ancient_reads:
+        """Extract S17 reads mapped to ancient_consensus; convert to paired FASTQs.
+        Filters to properly-paired reads with >=98% identity (qlen-NM)/qlen>=0.98.
+        98% chosen over 97%: 0% contamination, 70% completeness, GUNC passes (CSS=0.32).
+        """
+        input:
+            bam    = f"{OUTDIR}/drep/s17_vs_drep.sorted.bam",
+            bai    = f"{OUTDIR}/drep/s17_vs_drep.sorted.bam.bai",
+            genome = f"{OUTDIR}/drep/dereplicated_genomes/ancient_consensus.fa"
+        output:
+            r1 = f"{OUTDIR}/s17_assembly/reads/ancient_reads_R1.fastq.gz",
+            r2 = f"{OUTDIR}/s17_assembly/reads/ancient_reads_R2.fastq.gz"
+        params:
+            env = ENV_ASSEMBLY
+        threads: 8
+        resources:
+            mem_mb  = 16000,
+            runtime = 60,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/extract_s17_ancient_reads.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+
+            mkdir -p $(dirname {output.r1})
+            grep "^>" {input.genome} | sed 's/>//' \
+                > $(dirname {output.r1})/contigs.txt
+
+            samtools view -@ {threads} -f 0x3 -e '(qlen-[NM])/qlen>=0.98' -b {input.bam} \
+                $(cat $(dirname {output.r1})/contigs.txt | tr '\\n' ' ') \
+                2>> {log} \
+            | samtools sort -n -@ {threads} -m 2G 2>> {log} \
+            | samtools fastq -@ {threads} \
+                -1 {output.r1} -2 {output.r2} \
+                -0 /dev/null -s /dev/null \
+                2>> {log}
+            """
+
+
+    rule assemble_s17_ancient_relative:
+        """metaSPAdes assembly of S17 reads from the ancient genome lineage.
+        Produces the modern relative genome (t0, longDNA extraction) for
+        inclusion in the phylogenetic tree and BEAST tip-dating.
+        """
+        input:
+            r1 = f"{OUTDIR}/s17_assembly/reads/ancient_reads_R1.fastq.gz",
+            r2 = f"{OUTDIR}/s17_assembly/reads/ancient_reads_R2.fastq.gz"
+        output:
+            fasta = f"{OUTDIR}/s17_assembly/assembly/final.contigs.fa"
+        params:
+            outdir = f"{OUTDIR}/s17_assembly/assembly",
+            env    = ENV_ASSEMBLY
+        threads: config["threads"]
+        resources:
+            mem_mb  = 64000,
+            runtime = 240,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/assemble_s17_ancient_relative.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+
+            rm -rf {params.outdir}
+            spades.py --meta \
+                -1 {input.r1} -2 {input.r2} \
+                -o {params.outdir} \
+                -t {threads} \
+                -m {resources.mem_mb}000 \
+                2>&1 | tee {log}
+            mv {params.outdir}/scaffolds.fasta {output.fasta}
+            """
+
+
+    rule map_s17_to_ancient:
+        """Map S17 ancient-lineage reads to ancient_consensus reference.
+        Produces a BAM in reference coordinate space for consensus calling.
+        Reads are already >=97% identity filtered by extract_s17_ancient_reads.
+        """
+        input:
+            r1  = f"{OUTDIR}/s17_assembly/reads/ancient_reads_R1.fastq.gz",
+            r2  = f"{OUTDIR}/s17_assembly/reads/ancient_reads_R2.fastq.gz",
+            ref = f"{OUTDIR}/deconvolve/ancient_consensus.fa"
+        output:
+            bam = f"{OUTDIR}/s17_assembly/consensus/s17_vs_ancient.sorted.bam",
+            bai = f"{OUTDIR}/s17_assembly/consensus/s17_vs_ancient.sorted.bam.bai"
+        params:
+            env = ENV_ASSEMBLY
+        threads: config["threads"]
+        resources:
+            mem_mb  = 16000,
+            runtime = 60,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/map_s17_to_ancient.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+
+            mkdir -p $(dirname {output.bam})
+            minimap2 -a -x sr -t {threads} {input.ref} {input.r1} {input.r2} \
+                2>> {log} \
+            | samtools sort -@ {threads} -m 2G -o {output.bam} 2>> {log}
+            samtools index {output.bam} 2>> {log}
+            """
+
+
+    rule consensus_s17_ancient_relative:
+        """Call reference-guided consensus of S17 ancient lineage from mapping to ancient_consensus.
+        Reference-guided consensus preserves marker gene positions → proper phylogenomic placement.
+        Uncovered positions (7.6% at >=97% id threshold) become N.
+        """
+        input:
+            bam = f"{OUTDIR}/s17_assembly/consensus/s17_vs_ancient.sorted.bam",
+            bai = f"{OUTDIR}/s17_assembly/consensus/s17_vs_ancient.sorted.bam.bai"
+        output:
+            fasta = f"{OUTDIR}/s17_assembly/consensus/s17_ancient_relative.fa"
+        params:
+            env = ENV_ASSEMBLY
+        threads: 4
+        resources:
+            mem_mb  = 8000,
+            runtime = 30,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/consensus_s17_ancient_relative.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+
+            samtools consensus -m simple --min-depth 1 --min-BQ 15 -l 0 \
+                -o {output.fasta} {input.bam} 2>> {log}
+            """
+
+
+    rule checkm2_s17_assembly:
+        """CheckM2 quality assessment of the S17 ancient-relative assembly"""
+        input:
+            fasta = f"{OUTDIR}/s17_assembly/assembly/final.contigs.fa"
+        output:
+            report = f"{OUTDIR}/s17_assembly/checkm2/quality_report.tsv"
+        params:
+            bindir = f"{OUTDIR}/s17_assembly/bins",
+            outdir = f"{OUTDIR}/s17_assembly/checkm2",
+            env    = ENV_ASSEMBLY
+        threads: config["checkm2"]["threads"]
+        resources:
+            mem_mb  = 32000,
+            runtime = 60,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/checkm2_s17_assembly.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            mkdir -p {params.bindir}
+            cp {input.fasta} {params.bindir}/s17_ancient_relative.fa
+
+            checkm2 predict \
+                --input {params.bindir} \
+                --output-directory {params.outdir} \
+                --extension fa \
+                --threads {threads} \
+                --force \
+                2>&1 | tee {log}
+            """
+
+
+    rule gunc_s17_assembly:
+        """GUNC chimera detection on S17 ancient-relative assembly"""
+        input:
+            fasta = f"{OUTDIR}/s17_assembly/assembly/final.contigs.fa"
+        output:
+            report = f"{OUTDIR}/s17_assembly/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv"
+        params:
+            bindir = f"{OUTDIR}/s17_assembly/bins",
+            outdir = f"{OUTDIR}/s17_assembly/gunc",
+            db     = config["gunc"]["db"],
+            env    = ENV_GUNC
+        threads: config["gunc"]["threads"]
+        resources:
+            mem_mb  = 32000,
+            runtime = 120,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/gunc_s17_assembly.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            mkdir -p {params.bindir} {params.outdir}
+            cp {input.fasta} {params.bindir}/s17_ancient_relative.fa
+
+            gunc run \
+                --input_dir {params.bindir} \
+                --out_dir {params.outdir} \
+                --db_file {params.db} \
+                --threads {threads} \
+                2>&1 | tee {log}
+            """
+
+
+    rule gtdbtk_s17_assembly:
+        """GTDB-Tk taxonomic classification of S17 ancient-relative assembly"""
+        input:
+            fasta = f"{OUTDIR}/s17_assembly/assembly/final.contigs.fa"
+        output:
+            ar53   = f"{OUTDIR}/s17_assembly/gtdbtk/gtdbtk.ar53.summary.tsv",
+            bac120 = f"{OUTDIR}/s17_assembly/gtdbtk/gtdbtk.bac120.summary.tsv"
+        params:
+            bindir = f"{OUTDIR}/s17_assembly/bins",
+            outdir = f"{OUTDIR}/s17_assembly/gtdbtk",
+            db     = config["gtdbtk"]["db"],
+            env    = ENV_GTDBTK
+        threads: config["gtdbtk"]["threads"]
+        resources:
+            mem_mb  = 128000,
+            runtime = 240,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/gtdbtk_s17_assembly.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+            export GTDBTK_DATA_PATH={params.db}
+
+            rm -rf {params.outdir}
+            mkdir -p {params.bindir} {params.outdir}
+            cp {input.fasta} {params.bindir}/s17_ancient_relative.fa
+
+            gtdbtk classify_wf \
+                --genome_dir {params.bindir} \
+                --out_dir {params.outdir} \
+                --extension fa \
+                --cpus {threads} \
+                --skip_ani_screen \
+                2>&1 | tee {log}
+
+            touch {params.outdir}/gtdbtk.ar53.summary.tsv
+            touch {params.outdir}/gtdbtk.bac120.summary.tsv
+            """
+
+
+    rule deconvolve_s17:
+        """Run amber deconvolve on S17 reads mapped to ancient_consensus.
+        Uses the original bwa-mem2 mapping against the dereplicated MAG set,
+        subsetted to ancient_consensus contigs. Separates ancient (damaged) vs
+        modern (undamaged) S17 signal; modern_consensus.fa is used for phylogenomics.
+        """
+        input:
+            bam     = f"{OUTDIR}/drep/s17_vs_drep.sorted.bam",
+            bai     = f"{OUTDIR}/drep/s17_vs_drep.sorted.bam.bai",
+            contigs = f"{OUTDIR}/deconvolve/ancient_consensus.fa"
+        output:
+            ancient     = f"{OUTDIR}/s17_assembly/deconvolve/ancient_consensus.fa",
+            modern      = f"{OUTDIR}/s17_assembly/deconvolve/modern_consensus.fa",
+            smiley      = f"{OUTDIR}/s17_assembly/deconvolve/smiley_data.tsv",
+            trace       = f"{OUTDIR}/s17_assembly/deconvolve/deconvolve_trace.log",
+            mask        = f"{OUTDIR}/s17_assembly/deconvolve/high_confidence_mask.bed",
+            modern_bam  = f"{OUTDIR}/s17_assembly/deconvolve/modern_reads.bam"
+        params:
+            amber        = config["amber"]["binary"],
+            library_type = config["deconvolve"]["library_type"],
+            em_iters     = config["deconvolve"]["em_iterations"],
+            outdir       = f"{OUTDIR}/s17_assembly/deconvolve",
+            env          = ENV_ASSEMBLY
+        threads: config["deconvolve"]["threads"]
+        resources:
+            mem_mb          = 32000,
+            runtime         = 60,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/deconvolve_s17.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            mkdir -p {params.outdir}
+
+            # Subset drep BAM to ancient_consensus contigs, >=98% identity filter
+            # (validated by CheckM2/GUNC: removes related-organism reads that
+            # competitively mapped to ancient_consensus at 90-97% identity)
+            SUBSET_BAM={params.outdir}/s17_vs_ancient_subset.sorted.bam
+            CONTIGS=$(grep "^>" {input.contigs} | sed 's/>//' | tr '\\n' ' ')
+            samtools view -@ {threads} -f 0x3 -e '(qlen-[NM])/qlen>=0.98' -b {input.bam} $CONTIGS \
+                | samtools sort -@ {threads} -m 2G -o $SUBSET_BAM
+            samtools index $SUBSET_BAM
+
+            {params.amber} deconvolve \
+                --contigs {input.contigs} \
+                --bam $SUBSET_BAM \
+                --output {params.outdir} \
+                --library-type {params.library_type} \
+                --em-iterations {params.em_iters} \
+                --write-position-stats \
+                --write-modern-bam \
+                --threads {threads} \
+                2>&1 | tee {log}
+            """
+
+
+    rule assemble_s17_modern:
+        """De novo metaSPAdes assembly of EM-classified modern reads from S17.
+        Avoids reference bias of the reference-guided modern_consensus.fa approach.
+        Input: modern_reads.bam (p_ancient <= 0.2 from amber deconvolve EM).
+        """
+        input:
+            bam = f"{OUTDIR}/s17_assembly/deconvolve/modern_reads.bam"
+        output:
+            fasta = f"{OUTDIR}/s17_assembly/deconvolve/modern_assembly/scaffolds.fasta"
+        params:
+            outdir = f"{OUTDIR}/s17_assembly/deconvolve/modern_assembly",
+            env    = ENV_ASSEMBLY
+        threads: config["threads"]
+        resources:
+            mem_mb          = 64000,
+            runtime         = 240,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/assemble_s17_modern.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+
+            samtools sort -n -@ {threads} -m 2G {input.bam} \
+                | samtools fastq -@ {threads} \
+                    -1 {params.outdir}_R1.fastq.gz \
+                    -2 {params.outdir}_R2.fastq.gz \
+                    -0 /dev/null -s /dev/null \
+                    2>> {log}
+
+            rm -rf {params.outdir}
+            spades.py --meta \
+                -1 {params.outdir}_R1.fastq.gz \
+                -2 {params.outdir}_R2.fastq.gz \
+                -o {params.outdir} \
+                -t {threads} \
+                -m {resources.mem_mb}000 \
+                2>&1 | tee -a {log}
+            """
+
+
+    rule checkm2_s17_deconvolve:
+        """CheckM2 quality assessment of the S17 deconvolved modern consensus."""
+        input:
+            fasta = f"{OUTDIR}/s17_assembly/deconvolve/modern_consensus.fa"
+        output:
+            report = f"{OUTDIR}/s17_assembly/deconvolve/checkm2/quality_report.tsv"
+        params:
+            bindir = f"{OUTDIR}/s17_assembly/deconvolve/bins",
+            outdir = f"{OUTDIR}/s17_assembly/deconvolve/checkm2",
+            env    = ENV_ASSEMBLY
+        threads: config["checkm2"]["threads"]
+        resources:
+            mem_mb          = 32000,
+            runtime         = 60,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/checkm2_s17_deconvolve.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            mkdir -p {params.bindir}
+            cp {input.fasta} {params.bindir}/s17_modern.fa
+
+            checkm2 predict \
+                --input {params.bindir} \
+                --output-directory {params.outdir} \
+                --extension fa \
+                --threads {threads} \
+                --force \
+                2>&1 | tee {log}
+            """
+
+
+    rule gunc_s17_deconvolve:
+        """GUNC chimera detection on the S17 deconvolved modern consensus."""
+        input:
+            fasta = f"{OUTDIR}/s17_assembly/deconvolve/modern_consensus.fa"
+        output:
+            report = f"{OUTDIR}/s17_assembly/deconvolve/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv"
+        params:
+            bindir = f"{OUTDIR}/s17_assembly/deconvolve/bins",
+            outdir = f"{OUTDIR}/s17_assembly/deconvolve/gunc",
+            db     = config["gunc"]["db"],
+            env    = ENV_GUNC
+        threads: config["gunc"]["threads"]
+        resources:
+            mem_mb          = 32000,
+            runtime         = 120,
+            slurm_partition = "compregular"
+        log: f"{OUTDIR}/logs/gunc_s17_deconvolve.log"
+        shell:
+            """
+            set +u
+            source /maps/projects/fernandezguerra/apps/opt/conda/etc/profile.d/conda.sh
+            conda activate {params.env}
+            export LD_LIBRARY_PATH={params.env}/lib:$LD_LIBRARY_PATH
+
+            mkdir -p {params.bindir} {params.outdir}
+            cp {input.fasta} {params.bindir}/s17_modern.fa
+
+            gunc run \
+                --input_dir {params.bindir} \
+                --out_dir {params.outdir} \
+                --db_file {params.db} \
+                --threads {threads} \
+                2>&1 | tee {log}
+            """
+
+
+    rule link_s17_assembly:
+        """Symlink S17 deconvolved modern consensus into phylogenomics genome dir.
+        Uses amber deconvolve modern output (undamaged long-fragment fraction)
+        for proper ancient/modern separation — not samtools consensus.
+        QC gates: CheckM2 >=90% completeness / <5% contamination, GUNC pass.
+        """
+        input:
+            fasta   = f"{OUTDIR}/s17_assembly/deconvolve/modern_consensus.fa",
+            checkm2 = f"{OUTDIR}/s17_assembly/deconvolve/checkm2/quality_report.tsv",
+            gunc    = f"{OUTDIR}/s17_assembly/deconvolve/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv"
+        output: f"{PHYLO_DIR}/01_genomes/s17_ancient_relative.fa"
+        shell:  "mkdir -p $(dirname {output}) && ln -sf $(realpath {input.fasta}) {output}"
+
+
+rule s17_assembly:
+    """Extract S17 reads from ancient lineage, assemble, CheckM2, GUNC, GTDB-Tk, deconvolve"""
+    input:
+        f"{OUTDIR}/s17_assembly/checkm2/quality_report.tsv",
+        f"{OUTDIR}/s17_assembly/gunc/GUNC.progenomes_2.1.maxCSS_level.tsv",
+        f"{OUTDIR}/s17_assembly/gtdbtk/gtdbtk.ar53.summary.tsv",
+        f"{OUTDIR}/s17_assembly/deconvolve/smiley_data.tsv" if config.get("incubation", {}).get("include_s17_assembly", False) else []

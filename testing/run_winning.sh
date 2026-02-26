@@ -9,9 +9,9 @@
 #SBATCH --time=3:00:00
 #SBATCH --array=1-3
 
-# Winning configuration: DamageInfoNCE + SCG hard negatives + Consensus kNN (3 encoder restarts) + Leiden seed sweep (25)
+# Winning configuration: DamageInfoNCE + SCG hard negatives + Partition consensus (3 encoder restarts) + Leiden seed sweep (25)
 # Attacks both root causes:
-#   - Completeness variance: 3 encoder restarts → averaged kNN → stable neighborhoods
+#   - Completeness variance: 3 encoder runs → independent kNN+Leiden per run → co-binning vote (threshold=0.5)
 #   - Contamination: SCG hard negatives push cross-genome pairs apart; Phase 4 decontamination
 
 set -e
@@ -23,6 +23,7 @@ conda activate assembly
 
 export CUDA_HOME=/usr/local/cuda
 export CUDACXX=/usr/local/cuda/bin/nvcc
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 REP_ID=${SLURM_ARRAY_TASK_ID}
 
@@ -59,7 +60,7 @@ fi
 echo "=========================================="
 echo "AMBER Winning Config — Rep $REP_ID"
 echo "Commit: $GIT_COMMIT"
-echo "Flags: defaults (damage-infonce + scg-infonce on) --encoder-restarts 3 --leiden-restarts 25"
+echo "Flags: --damage-infonce --encoder-restarts 3 --leiden-restarts 25 (partition consensus)"
 echo "Output: $OUTPUT_DIR"
 echo "=========================================="
 
@@ -68,8 +69,8 @@ echo "=========================================="
     --bam "$BAM" \
     --output "$OUTPUT_DIR/bins" \
     --hmm auxiliary/checkm_markers_only.hmm \
-    --encoder-seed 42 \
-    --random-seed 1006 \
+    --encoder-seed $(  [ "$REP_ID" -eq 1 ] && echo 42        || [ "$REP_ID" -eq 2 ] && echo 862081050  || echo 713448392  ) \
+    --random-seed $(   [ "$REP_ID" -eq 1 ] && echo 1006      || [ "$REP_ID" -eq 2 ] && echo 918766527  || echo 417609785  ) \
     --resolution 5.0 \
     --bandwidth 0.2 \
     --partgraph-ratio 50 \

@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build binary (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: amber-linux-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            cmake build-essential pkg-config \
+            libhts-dev libeigen3-dev zlib1g-dev \
+            libgomp1
+
+      - name: Configure (CPU-only release binary)
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAMBER_USE_TORCH=OFF \
+            -DBUILD_TESTING=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Rename binary
+        run: cp build/amber ${{ matrix.artifact }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Compute SHA256 of source tarball
+        id: sha256
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          curl -sL "$URL" -o source.tar.gz
+          SHA=$(sha256sum source.tar.gz | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update conda recipe
+        run: |
+          sed -i "s/sha256:.*/sha256: ${{ steps.sha256.outputs.sha256 }}/" conda_recipe/meta.yaml
+          sed -i "s/{%- set version = .* -%}/{%- set version = \"${GITHUB_REF_NAME#v}\" -%}/" conda_recipe/meta.yaml
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/amber-linux-x86_64/amber-linux-x86_64
+          body: |
+            ## Installation
+
+            **From source (recommended):**
+            ```bash
+            git clone https://github.com/${{ github.repository }}.git
+            cd amber && mkdir build && cd build
+            cmake -DCMAKE_BUILD_TYPE=Release ..
+            cmake --build . --parallel
+            ```
+
+            **Pre-built binary (Linux x86_64, no GPU):**
+            Download `amber-linux-x86_64` from assets, then:
+            ```bash
+            chmod +x amber-linux-x86_64 && mv amber-linux-x86_64 ~/.local/bin/amber
+            ```
+
+            For GPU / `amber bin` support, build from source with LibTorch — see README.
+
+            SHA256 of source tarball: `${{ steps.sha256.outputs.sha256 }}`

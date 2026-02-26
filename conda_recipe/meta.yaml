@@ -1,0 +1,57 @@
+{%- set version = "1.0.0" -%}
+
+package:
+  name: amber-adna
+  version: {{ version }}
+
+source:
+  url: https://github.com/genomewalker/amber/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: 0000000000000000000000000000000000000000000000000000000000000000
+
+build:
+  number: 0
+  run_exports:
+    - {{ pin_subpackage('amber-adna', max_pin='x') }}
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake >=3.18
+    - make
+    - pkg-config
+    - git
+  host:
+    - htslib
+    - eigen
+    - zlib
+    - libgomp        # [linux]
+    - llvm-openmp    # [osx]
+  run:
+    - htslib
+    - zlib
+    - libgomp        # [linux]
+    - llvm-openmp    # [osx]
+
+test:
+  commands:
+    - amber --version
+    - amber --help
+    - amber deconvolve --help
+    - amber resolve --help
+    - amber damage --help
+    - amber chimera --help
+
+about:
+  home: https://github.com/genomewalker/amber
+  license: MIT
+  license_file: LICENSE
+  summary: AMBER - Ancient Metagenomic BinnER
+  description: |
+    AMBER bins metagenomic contigs from ancient DNA samples using
+    damage-aware contrastive learning and quality-guided Leiden clustering.
+  doc_url: https://github.com/genomewalker/amber
+  dev_url: https://github.com/genomewalker/amber
+
+extra:
+  recipe-maintainers:
+    - genomewalker

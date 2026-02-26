@@ -1,0 +1,21 @@
+name: amber
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - cxx-compiler
+  - cmake >=3.18
+  - make
+  - pkg-config
+  - git
+  - htslib
+  - eigen
+  - zlib
+  - libgomp        # [linux]
+  - llvm-openmp    # [osx]
+  # For amber bin (CPU training — optional):
+  # - pytorch
+  # - cpuonly
+  # For CheckM2 validation:
+  # - checkm2

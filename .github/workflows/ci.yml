@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            cmake build-essential pkg-config \
+            libhts-dev libeigen3-dev zlib1g-dev \
+            libgomp1
+
+      - name: Configure (CPU-only, no LibTorch)
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAMBER_USE_TORCH=OFF \
+            -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Smoke tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Check amber bin stub message
+        run: |
+          build/amber bin --help 2>&1 | grep -q "AMBER_USE_TORCH" || \
+          build/amber bin 2>&1 | grep -q "LibTorch"

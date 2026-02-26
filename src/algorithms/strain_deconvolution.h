@@ -200,6 +200,7 @@ struct DeconvolutionResult {
     bool fraction_converged = false;         // Whether EM converged
 
     std::vector<PositionStat> position_stats;  // populated iff write_position_stats=true
+    std::vector<std::string> modern_read_names;  // populated iff write_read_classifications=true
 };
 
 // Compute optimal thresholds from p_ancient histogram using valley detection
@@ -747,7 +748,9 @@ inline DeconvolutionResult deconvolve_contig(
 
         int span = rd.end_pos - rd.start_pos;
         rd.observations.resize(span, {-1, 0, 0, 0});
-        rd.full_data.read_length = r->core.l_qseq;
+        // For paired-end reads use the insert size (TLEN); for SE/merged reads use the query length
+        rd.full_data.read_length = ((r->core.flag & BAM_FPAIRED) && abs(r->core.isize) > 0)
+            ? abs(r->core.isize) : r->core.l_qseq;
 
         uint32_t* cigar = bam_get_cigar(r);
 
@@ -1215,6 +1218,8 @@ inline DeconvolutionResult deconvolve_contig(
             result.length_hist_ancient[len_bin]++;
         } else if (p <= config.p_modern_hard) {
             result.length_hist_modern[len_bin]++;
+            if (config.write_read_classifications)
+                result.modern_read_names.emplace_back(bam_get_qname(rd.read));
         } else {
             result.length_hist_ambiguous[len_bin]++;
         }
@@ -1492,10 +1497,10 @@ inline DeconvolutionResult deconvolve_contig(
     if (config.polish_ancient) {
         // Tunable thresholds (calibrated for aDNA damage correction)
         constexpr double kMinEffDepth = 3.0;          // Σw required overall
-        constexpr double kMinEffInterior = 2.0;       // Σw required interior
+        constexpr double kMinEffInterior = 1.0;       // Σw required interior
         constexpr double kLogBFStrong = 0.0;          // Any positive BF (for diagnostic)
         constexpr double kLogBFRelaxed = -1.0;        // Even slightly negative (for diagnostic)
-        constexpr double kLogBFInteriorSupport = 2.3; // BF ~10 interior supports
+        constexpr double kLogBFInteriorSupport = 0.5; // BF ~1.6 interior supports
         constexpr double kLogBFInteriorVeto = -999.0; // Disable interior veto
         constexpr double kMinWeight = 1e-3;           // Ignore tiny weights
         constexpr double kEps = 1e-10;
