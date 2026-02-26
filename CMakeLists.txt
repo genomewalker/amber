@@ -96,14 +96,10 @@ if(AMBER_USE_LIBLEIDENALG)
     set(IGRAPH_USE_INTERNAL_GMP ON CACHE BOOL "" FORCE)
     set(IGRAPH_USE_INTERNAL_PLFIT ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(igraph)
-    message(STATUS "igraph_SOURCE_DIR: ${igraph_SOURCE_DIR}")
-    message(STATUS "igraph_BINARY_DIR: ${igraph_BINARY_DIR}")
 
     if(NOT TARGET igraph::igraph)
         add_library(igraph::igraph ALIAS igraph)
     endif()
-    get_target_property(_igraph_iface igraph INTERFACE_INCLUDE_DIRECTORIES)
-    message(STATUS "igraph INTERFACE_INCLUDE_DIRECTORIES: ${_igraph_iface}")
 
     message(STATUS "Fetching libleidenalg v0.9.0 from GitHub...")
     FetchContent_Declare(
@@ -273,15 +269,6 @@ if(AMBER_USE_LIBLEIDENALG)
     target_link_libraries(amber
         igraph::igraph
         libleidenalg::libleidenalg
-    )
-    # igraph_SOURCE_DIR/BINARY_DIR are set by FetchContent_MakeAvailable(igraph)
-    # and are reliable on all cmake versions, unlike the cached IGRAPH_INCLUDE_DIR
-    # which depends on FetchContent_Populate (deprecated in cmake 3.31)
-    target_include_directories(amber PRIVATE
-        ${igraph_SOURCE_DIR}/include
-        ${igraph_BINARY_DIR}/include
-        ${libleidenalg_SOURCE_DIR}/include
-        ${libleidenalg_SOURCE_DIR}/include/libleidenalg
     )
 endif()
 

@@ -901,7 +901,7 @@ ClusteringResult LeidenBackend::cluster(
 
 }  // temporarily close namespace amber::bin2
 
-#include <igraph/igraph.h>
+#include <igraph.h>
 #include <GraphHelper.h>
 #include <RBERVertexPartition.h>
 #include <Optimiser.h>
