@@ -11,6 +11,7 @@ namespace amber {
     int cmd_bin(int argc, char** argv);
     int cmd_chimera(int argc, char** argv);
     int cmd_deconvolve(int argc, char** argv);
+    int cmd_polish(int argc, char** argv);
     int cmd_seeds(int argc, char** argv);
     int cmd_resolve(int argc, char** argv);
     int cmd_damage(int argc, char** argv);
@@ -32,6 +33,7 @@ static void print_usage(const char* prog) {
     std::cerr << "  resolve          Aggregate bins from multiple independent runs\n";
     std::cerr << "  chimera          Detect chimeric contigs and misassemblies\n";
     std::cerr << "  deconvolve       Separate ancient and modern DNA populations\n";
+    std::cerr << "  polish           Correct post-mortem damage in an assembled FASTA\n";
     std::cerr << "  seeds            Generate SCG marker seeds for binning\n";
     std::cerr << "  damage           Compute per-bin aDNA damage statistics\n";
     std::cerr << "\n";
@@ -72,6 +74,8 @@ int main(int argc, char** argv) {
         return amber::cmd_chimera(argc - 1, argv + 1);
     } else if (cmd == "deconvolve") {
         return amber::cmd_deconvolve(argc - 1, argv + 1);
+    } else if (cmd == "polish") {
+        return amber::cmd_polish(argc - 1, argv + 1);
     } else if (cmd == "seeds") {
         return amber::cmd_seeds(argc - 1, argv + 1);
     } else if (cmd == "damage") {

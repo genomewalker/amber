@@ -213,6 +213,7 @@ set(AMBER_CORE_SOURCES
     src/cli/cmd_seeds.cpp
     src/cli/cmd_resolve.cpp
     src/cli/cmd_damage.cpp
+    src/cli/cmd_polish.cpp
     src/seeds/seed_generator.cpp
     src/polish.cpp
     src/chimera.cpp
