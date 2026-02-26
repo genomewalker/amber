@@ -96,10 +96,14 @@ if(AMBER_USE_LIBLEIDENALG)
     set(IGRAPH_USE_INTERNAL_GMP ON CACHE BOOL "" FORCE)
     set(IGRAPH_USE_INTERNAL_PLFIT ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(igraph)
+    message(STATUS "igraph_SOURCE_DIR: ${igraph_SOURCE_DIR}")
+    message(STATUS "igraph_BINARY_DIR: ${igraph_BINARY_DIR}")
 
     if(NOT TARGET igraph::igraph)
         add_library(igraph::igraph ALIAS igraph)
     endif()
+    get_target_property(_igraph_iface igraph INTERFACE_INCLUDE_DIRECTORIES)
+    message(STATUS "igraph INTERFACE_INCLUDE_DIRECTORIES: ${_igraph_iface}")
 
     message(STATUS "Fetching libleidenalg v0.9.0 from GitHub...")
     FetchContent_Declare(
