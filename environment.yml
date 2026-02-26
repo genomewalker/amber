@@ -12,6 +12,7 @@ dependencies:
   - htslib
   - eigen
   - zlib
+  - hmmer             # provides hmmsearch for SCG marker detection
   - libgomp        # [linux]
   - llvm-openmp    # [osx]
   # For amber bin (CPU training — optional):
