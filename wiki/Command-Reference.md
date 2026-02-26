@@ -166,27 +166,6 @@ amber damage --bam FILE --bins DIR --output FILE [options]
 
 ---
 
-## amber chimera
-
-Detect chimeric contigs and misassemblies using coverage breakpoints and damage discontinuities.
-
-```
-amber chimera --contigs FILE --bam FILE --output DIR [options]
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--contigs FILE` | — | Input contigs FASTA |
-| `--bam FILE` | — | Input BAM |
-| `--output DIR` | — | Output directory |
-| `--min-length N` | 1000 | Minimum contig length to analyse |
-| `--min-confidence F` | 0.5 | Minimum confidence to call a breakpoint |
-| `--chimera-action` | `split` | `split` or `flag` |
-| `--damage-positions N` | 15 | Terminal positions |
-| `--threads N` | 1 | CPU threads |
-
----
-
 ## amber seeds
 
 Generate SCG marker seeds for kNN-guided binning initialisation.

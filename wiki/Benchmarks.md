@@ -12,15 +12,16 @@ Same assembly, same BAM, same CheckM2 database.
 
 | Tool | Rep 1 | Rep 2 | Rep 3 | Mean HQ | Mean MQ |
 |------|-------|-------|-------|---------|---------|
-| SemiBin2 (self-supervised) | 6 | 6 | 5 | **5.7** | — |
-| AMBER (baseline, no aDNA features) | 9 | 10 | 8 | **9.0** | — |
-| AMBER (damage_infonce) | 11 | 9 | 9 | **9.7** | — |
-| **AMBER (winning, damage_infonce + 25 seeds)** | **11** | **11** | **11** | **11.0** | — |
+| SemiBin2 (self-supervised) | 6 | 6 | 5 | **5.7** | 17 |
+| COMEBin | 6 | 7 | 6 | **6.3** | 17 |
+| AMBER (baseline, no aDNA features) | 9 | 10 | 8 | **9.0** | 19 |
+| AMBER (+ damage_infonce) | 11 | 9 | 9 | **9.7** | 19 |
+| **AMBER (winning, damage_infonce + 25 seeds)** | **11** | **11** | **11** | **11.0** | 19 |
 
-*AMBER baseline = COMEBin-style InfoNCE without aDNA features or quality-guided Leiden.*
-*Reps = independent runs with different random seeds.*
+*AMBER baseline = AMBER encoder without aDNA features or quality-guided Leiden (comparable architecture to COMEBin).*
+*Reps = independent runs with different random seeds. COMEBin reps from 3 complete independent runs (1 run did not converge to bins).*
 
-The consistent 11 HQ across 3 replicates with the winning configuration demonstrates that the quality-guided Leiden refinement (Phases 2–3) stabilises results that would otherwise vary between 7–11 HQ.
+The consistent 11 HQ across 3 replicates with the winning configuration demonstrates that SCG-supervised contrastive learning and the quality-guided Leiden refinement together stabilise results that would otherwise vary between 7–11 HQ.
 
 ---
 

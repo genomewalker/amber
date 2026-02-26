@@ -212,7 +212,6 @@ amber damage \
 | `amber resolve` | Consensus binning from multiple independent runs |
 | `amber deconvolve` | Separate ancient and modern DNA via EM on damage + fragment length |
 | `amber damage` | Compute per-bin aDNA damage statistics from BAM |
-| `amber chimera` | Detect chimeric contigs and misassemblies |
 | `amber seeds` | Generate SCG marker seeds for binning |
 
 For subcommand help: `amber <command> --help`
