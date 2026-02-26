@@ -53,10 +53,10 @@ $$\hat{\lambda} = \arg\min_\lambda \sum_{p=1}^{P} \left(\hat{\delta}_p - d \cdot
 Mean and standard deviation of aligned read lengths for reads mapped to the contig. Ancient reads are typically 50–100 bp; modern reads 150–300 bp.
 
 ### Damage-stratified coverage (2 dims)
-Coverage from **confident-ancient reads** (p_ancient > 0.6) and **confident-modern reads** (p_ancient < 0.4), normalised by contig length. The ratio is a genome-specific signal: a truly ancient genome has high cov_ancient/cov_modern; a modern genome has low or zero.
+Log-normalised coverage from **confident-ancient reads** (p_ancient > 0.6) and **confident-modern reads** (p_ancient < 0.4): `log1p(cov_ancient)/5` and `log1p(cov_modern)/5`. A truly ancient genome has high cov_ancient and low cov_modern; a modern genome the reverse. The ratio cov_ancient/(cov_ancient + cov_modern) is a useful summary but the two raw values are what enters the feature vector.
 
 ### Mismatch spectrum (4 dims)
-Terminal mismatch rates for: T→C at 5′ (reverse-complement of G→A damage on the complementary strand), A→G at 5′, C→T at 3′ (reverse complement), and all other mismatches. These complement the primary C→T / G→A signal.
+Four terminal mismatch rates: T→C at 5′, other mismatches at 5′, C→T at 3′, other mismatches at 3′. These complement the primary C→T / G→A damage signal and help distinguish single-stranded from double-stranded library preparations.
 
 ---
 

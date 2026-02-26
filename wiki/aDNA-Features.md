@@ -1,6 +1,6 @@
 # aDNA Feature Space
 
-AMBER embeds each contig into a **157-dimensional** space that combines a 128-dim self-supervised encoder with a 29-dim hand-crafted aDNA feature vector. The aDNA features are critical for binning ancient samples: they capture signals that the encoder alone cannot learn from tetranucleotide and coverage information.
+AMBER embeds each contig into a **157-dimensional** space: 128 dims from the InfoNCE encoder, 20 dims from hand-crafted aDNA damage features, and 9 dims from multi-scale CGR composition features. The aDNA and CGR features bypass the encoder and are concatenated after training.
 
 ---
 
@@ -81,11 +81,11 @@ The **damage coverage ratio** cov_ancient / (cov_ancient + cov_modern) is a clea
 Terminal substitution rates beyond the primary C→T and G→A signals:
 
 **Dim 17:** T→C rate at 5′ (reverse-complement of G→A damage on the complementary strand; present in single-stranded library preps)
-**Dim 18:** A→G rate at 5′
+**Dim 18:** All other mismatch types at 5′
 **Dim 19:** C→T rate at 3′ (reverse-complement; complements the G→A at 3′)
 **Dim 20:** All other mismatch types at 3′
 
-These distinguish single-stranded from double-stranded library preparation protocols and provide additional discrimination between ancient and modern contigs.
+These four dimensions distinguish single-stranded from double-stranded library preparation protocols and complement the primary C→T / G→A damage signal.
 
 ---
 
@@ -111,9 +111,12 @@ $$\Lambda = \frac{\text{Var}(\text{occupancy at scale } r)}{\text{Mean}(\text{oc
 
 Captures regularity of repetitive elements and genomic architecture.
 
-The **slopes** of entropy, occupancy, and lacunarity across the three scales (16→32→64) encode how genome composition varies with k-mer length — a scale-invariant fingerprint that complements the 4-mer-based encoder.
+The actual 9 values are **6 scale-transition slopes** (how each metric changes between consecutive resolutions) plus **3 absolute values at the middle resolution**:
 
-**Dims 21–29:** [entropy_16, entropy_32, entropy_64, occ_16, occ_32, occ_64, lac_16, lac_32, lac_64] (or equivalently, the three metrics at each of three resolutions)
+**Dims 21–26:** ΔH(16→32), ΔH(32→64), ΔO(16→32), ΔO(32→64), ΔL(16→32), ΔL(32→64)
+**Dims 27–29:** H₃₂, O₃₂, L₃₂ (entropy, occupancy, lacunarity at 32×32)
+
+The slope dimensions capture how composition scales with k-mer length; the absolute values anchor the representation at the most informative resolution.
 
 ---
 
@@ -132,6 +135,6 @@ All 157 dimensions are standardised (zero mean, unit variance) across contigs be
 | 139–140 | 2 | Decay parameters (λ₅, λ₃) |
 | 141–142 | 2 | Fragment length (mean, std) |
 | 143–144 | 2 | Damage-stratified coverage (ancient, modern) |
-| 145–148 | 4 | Mismatch spectrum (T→C, A→G at 5′; C→T, other at 3′) |
-| 149–157 | 9 | CGR entropy/occupancy/lacunarity at 3 scales |
+| 145–148 | 4 | Mismatch spectrum (T→C at 5′, other at 5′, C→T at 3′, other at 3′) |
+| 149–157 | 9 | CGR: 6 scale-transition slopes (ΔH, ΔO, ΔL at 16→32 and 32→64) + H₃₂, O₃₂, L₃₂ |
 | **Total** | **157** | |

@@ -38,9 +38,9 @@ For each contig (minimum 2,500 bp), AMBER extracts a **157-dimensional feature v
 | Damage profile | 10 | C→T rates at 5′ pos 1–5; G→A rates at 3′ pos 1–5 |
 | Decay parameters | 2 | λ₅, λ₃ (exponential damage decay constants) |
 | Fragment length | 2 | Mean and std dev of aligned read lengths |
-| Damage coverage | 2 | Coverage ratio and effective N from damaged vs undamaged reads |
-| Mismatch spectrum | 4 | T→C, A→G and other mismatch rates |
-| CGR entropy | 9 | Multi-scale chaos game representation entropy/occupancy slopes |
+| Damage coverage | 2 | Log-normalised coverage from confident-ancient (p > 0.6) and confident-modern (p < 0.4) reads |
+| Mismatch spectrum | 4 | T→C at 5′, other at 5′, C→T at 3′, other at 3′ |
+| CGR features | 9 | 6 scale-transition slopes (ΔH, ΔO, ΔL at 16→32 and 32→64) + H₃₂, O₃₂, L₃₂ |
 
 See [[aDNA Features]] for the full mathematical derivation of each dimension.
 
