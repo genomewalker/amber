@@ -28,6 +28,12 @@ Post-mortem deamination converts cytosines to uracil (read as T) at fragment ter
 
 ---
 
+## Architecture
+
+![AMBER Architecture](amber_architecture.svg)
+
+---
+
 ## Wiki pages
 
 - [[Quick Start Tutorial]] — full walkthrough from BAM to HQ bins

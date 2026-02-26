@@ -1,0 +1,333 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1080" width="1400" height="1080">
+<defs>
+  <style>* { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; }</style>
+  <marker id="ag" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="6" markerHeight="6" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#334155"/>
+  </marker>
+  <marker id="aa" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="6" markerHeight="6" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#C27B0A"/>
+  </marker>
+</defs>
+
+<rect width="1400" height="1080" fill="#FAFAF8"/>
+
+<!-- ══ TITLE ══ -->
+<text x="700" y="30" text-anchor="middle" font-size="19" font-weight="800" fill="#0F172A" letter-spacing="3">AMBER</text>
+<text x="700" y="48" text-anchor="middle" font-size="10" fill="#64748B">Ancient Metagenomic Binning with aDNA-aware Encoder and Refinement</text>
+
+<!-- ══ INPUTS (y=58–140) ══ -->
+<rect x="12" y="58" width="270" height="82" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="147" y="76" text-anchor="middle" font-size="9.5" font-weight="700" fill="#334155">Contigs  (FASTA)</text>
+<text x="147" y="90" text-anchor="middle" font-size="8" fill="#64748B">assembled contigs ≥ 500 bp  ·  TNF 4-mers (136 d)  ·  length</text>
+<text x="147" y="104" text-anchor="middle" font-size="8" font-weight="600" fill="#92400E">→ CGR features (9 d): entropy · occupancy · lacunarity</text>
+<text x="147" y="117" text-anchor="middle" font-size="7.5" fill="#B45309">3 metrics × 3 scales  (16² · 32² · 64²  k-mer grids)</text>
+
+<rect x="294" y="58" width="270" height="82" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="429" y="76" text-anchor="middle" font-size="9.5" font-weight="700" fill="#334155">Read Alignment  (BAM)</text>
+<text x="429" y="90" text-anchor="middle" font-size="8" fill="#64748B">per-position coverage (2 d)  ·  aDNA damage pileup</text>
+<text x="429" y="104" text-anchor="middle" font-size="8" font-weight="600" fill="#92400E">→ 20 d features to concat  ·  damage rates → w<tspan dy="1.5" font-size="5.5">ij</tspan><tspan dy="-1.5"> in InfoNCE</tspan></text>
+<text x="429" y="117" text-anchor="middle" font-size="7.5" fill="#B45309">C→T (5′) · G→A (3′) · decay λ · fragment stats · mismatch</text>
+
+<!-- aDNA 20d features -->
+<rect x="576" y="58" width="267" height="82" rx="3" fill="#FFFBEF" stroke="#FCD34D" stroke-width="1"/>
+<text x="709" y="74" text-anchor="middle" font-size="9.5" font-weight="700" fill="#78350F">aDNA Damage Features  (20 d)</text>
+<text x="709" y="87" text-anchor="middle" font-size="7.5" fill="#92400E">damage profile (10 d): C→T at 5′ pos 1–5  ·  G→A at 3′ pos 1–5</text>
+<text x="709" y="98" text-anchor="middle" font-size="7.5" fill="#92400E">decay λ5′, λ3′  ·  fragment length μ, σ</text>
+<text x="709" y="109" text-anchor="middle" font-size="7.5" fill="#B45309">coverage ratio  ·  n_eff  ·  mismatch (4 d)</text>
+<text x="709" y="120" text-anchor="middle" font-size="7" fill="#B45309">bypasses encoder → concat after training</text>
+
+<!-- CGR 9d features -->
+<rect x="851" y="58" width="267" height="82" rx="3" fill="#FFFBEF" stroke="#FCD34D" stroke-width="1"/>
+<text x="984" y="74" text-anchor="middle" font-size="9.5" font-weight="700" fill="#78350F">CGR Features  (9 d)</text>
+<text x="984" y="87" text-anchor="middle" font-size="7.5" fill="#92400E">chaos game representation of k-mer space</text>
+<text x="984" y="98" text-anchor="middle" font-size="7.5" fill="#92400E">entropy  ·  occupancy  ·  lacunarity</text>
+<text x="984" y="109" text-anchor="middle" font-size="7.5" fill="#B45309">3 metrics × 3 scales  (16² · 32² · 64² grids)</text>
+<text x="984" y="120" text-anchor="middle" font-size="7" fill="#B45309">bypasses encoder → concat after training</text>
+
+<!-- HMM Markers narrowed -->
+<rect x="1126" y="58" width="262" height="82" rx="3" fill="#FFFBF0" stroke="#C27B0A" stroke-width="1.5"/>
+<text x="1257" y="74" text-anchor="middle" font-size="9.5" font-weight="700" fill="#78350F">HMM Marker Profiles  (SCG)</text>
+<text x="1257" y="87" text-anchor="middle" font-size="7.5" fill="#92400E">single-copy gene membership per contig</text>
+<text x="1257" y="98" text-anchor="middle" font-size="7.5" fill="#92400E">→ positive pairs P(i)  ·  seed anchors</text>
+<text x="1257" y="109" text-anchor="middle" font-size="7.5" fill="#B45309">→ edge weights  ·  SCG rescue criterion</text>
+<text x="1257" y="120" text-anchor="middle" font-size="7" fill="#9CA3AF">not a feature dimension  ·  bact. + arch.</text>
+
+<line x1="147" y1="140" x2="147" y2="154" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ag)"/>
+<line x1="429" y1="140" x2="429" y2="154" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ag)"/>
+<text x="439" y="151" font-size="7.5" fill="#64748B">coverage</text>
+<line x1="1257" y1="140" x2="1257" y2="154" stroke="#C27B0A" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#aa)"/>
+<text x="1267" y="151" font-size="7.5" fill="#92400E">SCG labels</text>
+
+<!-- ══ ENCODER TRAINING (y=156–516, h=360) ══ -->
+<rect x="12" y="156" width="1376" height="360" rx="4" fill="#FFFBF0" stroke="#FDE68A" stroke-width="1"/>
+<text x="700" y="173" text-anchor="middle" font-size="8" font-weight="700" fill="#92400E" letter-spacing="2">ENCODER  TRAINING</text>
+<line x1="308" y1="176" x2="308" y2="512" stroke="#FDE68A" stroke-width="1"/>
+<line x1="594" y1="176" x2="594" y2="512" stroke="#FDE68A" stroke-width="1"/>
+
+<!-- ── MLP column (x=20, w=284, cx=162) ── -->
+<rect x="20" y="182" width="284" height="22" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="162" y="197" text-anchor="middle" font-size="9" font-weight="700" fill="#334155">Input:  138 d   (TNF × 136  +  coverage × 2)</text>
+<line x1="162" y1="204" x2="162" y2="212" stroke="#C27B0A" stroke-width="1.5" marker-end="url(#aa)"/>
+
+<rect x="20" y="214" width="284" height="28" rx="3" fill="#FEF3C7" stroke="#C27B0A" stroke-width="1.5"/>
+<text x="162" y="232" text-anchor="middle" font-size="10" font-weight="700" fill="#78350F">FC   138 → 512</text>
+<line x1="162" y1="242" x2="162" y2="250" stroke="#C27B0A" stroke-width="1.5" marker-end="url(#aa)"/>
+
+<rect x="72" y="252" width="180" height="18" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="162" y="265" text-anchor="middle" font-size="8.5" fill="#64748B">BatchNorm  ·  ReLU</text>
+<line x1="162" y1="270" x2="162" y2="278" stroke="#C27B0A" stroke-width="1.5" marker-end="url(#aa)"/>
+
+<rect x="20" y="280" width="284" height="28" rx="3" fill="#FEF3C7" stroke="#C27B0A" stroke-width="1.5"/>
+<text x="162" y="298" text-anchor="middle" font-size="10" font-weight="700" fill="#78350F">FC   512 → 256</text>
+<line x1="162" y1="308" x2="162" y2="316" stroke="#C27B0A" stroke-width="1.5" marker-end="url(#aa)"/>
+
+<rect x="72" y="318" width="180" height="18" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="162" y="331" text-anchor="middle" font-size="8.5" fill="#64748B">BatchNorm  ·  ReLU</text>
+<line x1="162" y1="336" x2="162" y2="344" stroke="#C27B0A" stroke-width="1.5" marker-end="url(#aa)"/>
+
+<rect x="20" y="346" width="284" height="28" rx="3" fill="#FEF3C7" stroke="#C27B0A" stroke-width="1.5"/>
+<text x="162" y="364" text-anchor="middle" font-size="10" font-weight="700" fill="#78350F">FC   256 → 128</text>
+<line x1="162" y1="374" x2="162" y2="382" stroke="#C27B0A" stroke-width="1.5" marker-end="url(#aa)"/>
+
+<rect x="72" y="384" width="180" height="18" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="162" y="397" text-anchor="middle" font-size="8.5" fill="#64748B">L2  Normalize</text>
+<line x1="162" y1="402" x2="162" y2="410" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+
+<rect x="42" y="412" width="240" height="24" rx="12" fill="#1E293B"/>
+<text x="162" y="428" text-anchor="middle" font-size="9" font-weight="700" fill="#FFFFFF">Output:  128 d  embeddings</text>
+
+<rect x="20" y="452" width="284" height="20" rx="3" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="162" y="465" text-anchor="middle" font-size="8" fill="#334155">3 encoder seeds  ·  shared weights across 6 views</text>
+
+<!-- ── Augmentation column (x=316, w=274, cx=453) ── -->
+<rect x="316" y="182" width="274" height="310" rx="3" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="453" y="200" text-anchor="middle" font-size="8.5" font-weight="700" fill="#334155" letter-spacing="1">6  AUGMENTED  VIEWS</text>
+<line x1="316" y1="207" x2="590" y2="207" stroke="#F1F5F9" stroke-width="1"/>
+<text x="453" y="221" text-anchor="middle" font-size="7.5" fill="#64748B">one contig input  →  6 slightly perturbed versions</text>
+<text x="453" y="233" text-anchor="middle" font-size="7.5" fill="#64748B">all pass through same encoder weights</text>
+
+<!-- Coverage subsampling label -->
+<text x="328" y="251" font-size="7.5" font-weight="700" fill="#475569" letter-spacing="0.5">COVERAGE  SUBSAMPLING</text>
+
+<!-- v1: 33% subsample — lightest blue -->
+<rect x="326" y="256" width="74" height="40" rx="2" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+<rect x="336" y="282" width="54" height="8" rx="1" fill="#93C5FD"/>
+<text x="363" y="269" text-anchor="middle" font-size="8" font-weight="700" fill="#1E40AF">v₁</text>
+<text x="363" y="300" text-anchor="middle" font-size="6.5" fill="#3B82F6">33 %</text>
+
+<!-- v2: 66% subsample -->
+<rect x="408" y="256" width="74" height="40" rx="2" fill="#DBEAFE" stroke="#93C5FD" stroke-width="1"/>
+<rect x="418" y="272" width="54" height="22" rx="1" fill="#60A5FA"/>
+<text x="445" y="269" text-anchor="middle" font-size="8" font-weight="700" fill="#1E40AF">v₂</text>
+<text x="445" y="300" text-anchor="middle" font-size="6.5" fill="#2563EB">66 %</text>
+
+<!-- v3: 100% -->
+<rect x="490" y="256" width="74" height="40" rx="2" fill="#BFDBFE" stroke="#60A5FA" stroke-width="1"/>
+<rect x="500" y="260" width="54" height="32" rx="1" fill="#3B82F6"/>
+<text x="527" y="269" text-anchor="middle" font-size="8" font-weight="700" fill="#1E40AF">v₃</text>
+<text x="527" y="300" text-anchor="middle" font-size="6.5" fill="#1D4ED8">100 %</text>
+
+<!-- Feature noise label -->
+<text x="328" y="315" font-size="7.5" font-weight="700" fill="#475569" letter-spacing="0.5">FEATURE  NOISE  (TNF + coverage)</text>
+
+<!-- v4: low noise -->
+<rect x="326" y="320" width="74" height="40" rx="2" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+<path d="M334,340 Q344,333 354,340 Q364,347 374,340 Q384,333 392,340" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
+<text x="363" y="332" text-anchor="middle" font-size="8" font-weight="700" fill="#475569">v₄</text>
+
+<!-- v5: medium noise -->
+<rect x="408" y="320" width="74" height="40" rx="2" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<path d="M416,340 Q426,330 436,340 Q446,350 456,340 Q466,330 474,340" fill="none" stroke="#64748B" stroke-width="1.5"/>
+<text x="445" y="332" text-anchor="middle" font-size="8" font-weight="700" fill="#475569">v₅</text>
+
+<!-- v6: high noise -->
+<rect x="490" y="320" width="74" height="40" rx="2" fill="#E2E8F0" stroke="#64748B" stroke-width="1"/>
+<path d="M498,340 Q508,327 518,340 Q528,353 538,340 Q548,327 556,340" fill="none" stroke="#475569" stroke-width="1.5"/>
+<text x="527" y="332" text-anchor="middle" font-size="8" font-weight="700" fill="#475569">v₆</text>
+
+<line x1="316" y1="370" x2="590" y2="370" stroke="#F1F5F9" stroke-width="1"/>
+<text x="453" y="386" text-anchor="middle" font-size="8" fill="#334155">each view → encoder → 128 d embedding</text>
+<text x="453" y="400" text-anchor="middle" font-size="7.5" fill="#64748B">6 embeddings per contig enter InfoNCE loss</text>
+<text x="453" y="413" text-anchor="middle" font-size="7.5" fill="#64748B">positive: same genome (aug views + SCG co-members)</text>
+<text x="453" y="426" text-anchor="middle" font-size="7.5" fill="#64748B">negative: contigs with no shared SCG markers</text>
+
+<!-- ── Training objective column (x=598, w=780, cx=988) ── -->
+<rect x="598" y="182" width="780" height="310" rx="3" fill="#FFFFFF" stroke="#C27B0A" stroke-width="1"/>
+<text x="988" y="200" text-anchor="middle" font-size="9" font-weight="700" fill="#78350F">SCG-supervised  InfoNCE  objective</text>
+<line x1="598" y1="207" x2="1378" y2="207" stroke="#FDE68A" stroke-width="1"/>
+
+<!-- P(i) definition -->
+<text x="614" y="225" font-size="8.5" font-weight="600" fill="#78350F">Positive set   P(i)  =</text>
+<rect x="740" y="214" width="190" height="18" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+<text x="835" y="227" text-anchor="middle" font-size="8.5" fill="#334155">{v<tspan dy="1.5" font-size="6">1</tspan><tspan dy="-1.5">,…,v</tspan><tspan dy="1.5" font-size="6">6</tspan><tspan dy="-1.5">}  aug. views of  i</tspan></text>
+<text x="933" y="225" font-size="9" fill="#334155">  ∪  </text>
+<rect x="960" y="214" width="290" height="18" rx="3" fill="#FFFBF0" stroke="#C27B0A" stroke-width="1.5"/>
+<text x="1105" y="227" text-anchor="middle" font-size="8.5" font-weight="600" fill="#78350F">{j : SCG(j) = SCG(i) ≠ ∅}  ← HMM</text>
+
+<text x="614" y="248" font-size="8.5" fill="#334155">Excluded from denominator:   excl(i) = {k : M(i) ∩ M(k) ≠ ∅}</text>
+<text x="614" y="262" font-size="8.5" fill="#334155">Temperature:   τ = 0.1</text>
+
+<!-- Loss formula -->
+<text x="614" y="286" font-size="8.5" font-weight="600" fill="#78350F">Loss:</text>
+<text x="648" y="286" font-size="9" fill="#334155" font-style="italic">ℒ</text>
+<text x="655" y="288" font-size="7" fill="#334155">(i)</text>
+<text x="663" y="286" font-size="9" fill="#334155"> = −</text>
+<text x="686" y="279" font-size="8" fill="#334155">1</text>
+<line x1="685" y1="282" x2="710" y2="282" stroke="#334155" stroke-width="0.8"/>
+<text x="685" y="291" font-size="7.5" fill="#334155">|P(i)|</text>
+<text x="718" y="289" font-size="15" fill="#334155">∑</text>
+<text x="717" y="299" font-size="6.5" fill="#64748B">j∈P(i)</text>
+<text x="740" y="286" font-size="9" fill="#334155">log</text>
+<text x="765" y="278" font-size="8.5" fill="#334155">exp(</text>
+<text x="784" y="278" font-size="9" font-weight="700" fill="#92400E">w</text>
+<text x="791" y="280" font-size="6" fill="#92400E">ij</text>
+<text x="796" y="278" font-size="8.5" fill="#334155"> · z</text>
+<text x="807" y="280" font-size="6" fill="#334155">i</text>
+<text x="811" y="276" font-size="6" fill="#334155">⊤</text>
+<text x="815" y="278" font-size="8.5" fill="#334155"> z</text>
+<text x="823" y="280" font-size="6" fill="#334155">j</text>
+<text x="827" y="278" font-size="8.5" fill="#334155"> / τ)</text>
+<line x1="764" y1="283" x2="858" y2="283" stroke="#334155" stroke-width="0.8"/>
+<text x="769" y="293" font-size="7.5" fill="#334155">∑</text>
+<text x="777" y="297" font-size="6" fill="#64748B">k∉excl(i)</text>
+<text x="814" y="293" font-size="8.5" fill="#334155">exp( z</text>
+<text x="833" y="295" font-size="6" fill="#334155">i</text>
+<text x="837" y="291" font-size="6" fill="#334155">⊤</text>
+<text x="841" y="293" font-size="8.5" fill="#334155"> z</text>
+<text x="849" y="295" font-size="6" fill="#334155">k</text>
+<text x="853" y="293" font-size="8.5" fill="#334155"> / τ)</text>
+
+<!-- DURING / AFTER TRAINING box -->
+<rect x="614" y="308" width="756" height="60" rx="3" fill="#FFFBF0" stroke="#FDE68A" stroke-width="1"/>
+<rect x="617" y="310" width="750" height="24" rx="2" fill="#FDE68A"/>
+<text x="631" y="326" font-size="8.5" fill="#78350F"><tspan font-weight="700">DURING TRAINING:</tspan>  C→T / G→A damage rates  →  w<tspan dy="1.5" font-size="6">ij</tspan><tspan dy="-1.5">  →  up-weights same-damage positive pairs in InfoNCE</tspan></text>
+<text x="631" y="346" font-size="8.5" fill="#64748B"><tspan font-weight="700" fill="#94A3B8">AFTER TRAINING:</tspan>  20 d aDNA + 9 d CGR bypass encoder  →  concatenated directly into 157 d space</text>
+<text x="992" y="361" text-anchor="middle" font-size="7.5" fill="#B45309">6 aug. views: coverage subsampling + Gaussian noise on TNF and coverage features</text>
+
+<!-- ══ CONCAT BAR (y=528–572) ══ -->
+<line x1="162" y1="516" x2="162" y2="526" stroke="#334155" stroke-width="2" marker-end="url(#ag)"/>
+<line x1="700" y1="516" x2="700" y2="526" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ag)"/>
+<rect x="12" y="528" width="1376" height="44" rx="3" fill="#1E293B"/>
+<text x="108" y="554" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">Concatenate</text>
+<rect x="196" y="535" width="68" height="24" rx="12" fill="#334155" stroke="#475569" stroke-width="1"/>
+<text x="230" y="551" text-anchor="middle" font-size="9" font-weight="700" fill="#FFFFFF">128 d</text>
+<text x="270" y="553" font-size="13" fill="#475569">‖</text>
+<rect x="284" y="535" width="118" height="24" rx="12" fill="#334155" stroke="#64748B" stroke-width="1"/>
+<text x="343" y="551" text-anchor="middle" font-size="8.5" font-weight="600" fill="#CBD5E1">20 d  aDNA  (BAM)</text>
+<text x="408" y="553" font-size="13" fill="#475569">‖</text>
+<rect x="422" y="535" width="126" height="24" rx="12" fill="#334155" stroke="#64748B" stroke-width="1"/>
+<text x="485" y="551" text-anchor="middle" font-size="8.5" font-weight="600" fill="#CBD5E1">9 d  CGR  (Contigs)</text>
+<text x="554" y="553" font-size="12" font-weight="700" fill="#FFFFFF">  =   157-dim  feature  space</text>
+<text x="230" y="567" text-anchor="middle" font-size="7" fill="#64748B">encoder out</text>
+<text x="343" y="567" text-anchor="middle" font-size="7" fill="#64748B">bypasses encoder</text>
+<text x="485" y="567" text-anchor="middle" font-size="7" fill="#64748B">bypasses encoder</text>
+
+<!-- ══ GRAPH (y=586–682) ══ -->
+<line x1="700" y1="572" x2="700" y2="584" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+<rect x="12" y="586" width="1376" height="96" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="700" y="603" text-anchor="middle" font-size="8" font-weight="700" fill="#94A3B8" letter-spacing="2">GRAPH  CONSTRUCTION</text>
+
+<rect x="20" y="611" width="440" height="64" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="240" y="629" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">HNSW  k-NN  graph</text>
+<text x="240" y="643" text-anchor="middle" font-size="8.5" fill="#64748B">157-dim cosine distance  ·  k = 10  ·  ef_construction = 200</text>
+<text x="240" y="657" text-anchor="middle" font-size="8.5" fill="#64748B">one node per contig  ·  Gaussian kernel:  w = exp(−d / bw)</text>
+
+<rect x="474" y="611" width="440" height="64" rx="3" fill="#FFFFFF" stroke="#C27B0A" stroke-width="1"/>
+<text x="694" y="629" text-anchor="middle" font-size="9" font-weight="600" fill="#78350F">SCG-guided  edge  weights</text>
+<text x="694" y="643" text-anchor="middle" font-size="8.5" fill="#92400E">complement bonus: w × 1.3  (non-overlapping SCG sets)</text>
+<text x="694" y="657" text-anchor="middle" font-size="8.5" fill="#334155">shared-marker penalty: w × exp(−3 × n<tspan dy="1.5" font-size="6">shared</tspan><tspan dy="-1.5">)</tspan></text>
+
+<rect x="928" y="611" width="448" height="64" rx="3" fill="#FFFFFF" stroke="#C27B0A" stroke-width="1"/>
+<text x="1152" y="629" text-anchor="middle" font-size="9" font-weight="600" fill="#78350F">SCG  seed  anchors</text>
+<text x="1152" y="643" text-anchor="middle" font-size="8.5" fill="#334155">median-count marker  →  one anchor per genome</text>
+<text x="1152" y="657" text-anchor="middle" font-size="8.5" fill="#64748B">single-copy guarantee  ·  initialise Leiden partitions</text>
+
+<!-- ══ LEIDEN (y=696–890) ══ -->
+<line x1="700" y1="682" x2="700" y2="694" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+<rect x="12" y="696" width="1376" height="194" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="700" y="713" text-anchor="middle" font-size="8" font-weight="700" fill="#94A3B8" letter-spacing="2">LEIDEN  CLUSTERING  ·  3  PHASES</text>
+
+<rect x="20" y="721" width="432" height="90" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="236" y="738" text-anchor="middle" font-size="9" font-weight="700" fill="#334155">Phase 1  —  Quality Leiden</text>
+<line x1="20" y1="744" x2="452" y2="744" stroke="#F1F5F9" stroke-width="1"/>
+<text x="236" y="758" text-anchor="middle" font-size="8.5" fill="#334155">CPM  ·  resolution = 5.0  ·  earlystop = false</text>
+<text x="236" y="771" text-anchor="middle" font-size="8.5" fill="#64748B">SCG-penalized edges  +  seed-anchored initialisation</text>
+<text x="236" y="784" text-anchor="middle" font-size="8.5" fill="#64748B">parallel restarts  ·  IGRAPH_ENABLE_TLS  (thread-safe)</text>
+
+<rect x="466" y="721" width="432" height="90" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="682" y="738" text-anchor="middle" font-size="9" font-weight="700" fill="#334155">Phase 2  —  Contamination Split</text>
+<line x1="466" y1="744" x2="898" y2="744" stroke="#F1F5F9" stroke-width="1"/>
+<text x="682" y="758" text-anchor="middle" font-size="8.5" fill="#334155">detect bins with duplicate SCG excess</text>
+<text x="682" y="771" text-anchor="middle" font-size="8.5" fill="#64748B">re-run Leiden at 3× resolution on sub-graph</text>
+<text x="682" y="784" text-anchor="middle" font-size="8.5" fill="#64748B">accept split only if dup_excess decreases</text>
+
+<rect x="912" y="721" width="456" height="90" rx="3" fill="#FFFFFF" stroke="#C27B0A" stroke-width="1"/>
+<text x="1140" y="738" text-anchor="middle" font-size="9" font-weight="700" fill="#78350F">Phase 3  —  SCG  Rescue</text>
+<line x1="912" y1="744" x2="1368" y2="744" stroke="#FEF3C7" stroke-width="1"/>
+<text x="1140" y="758" text-anchor="middle" font-size="8.5" fill="#334155">target near-HQ bins  (75–90% compl.,  &lt;5% cont.)</text>
+<text x="1140" y="771" text-anchor="middle" font-size="8.5" fill="#92400E">recruit missing-marker k-NN neighbours</text>
+<text x="1140" y="784" text-anchor="middle" font-size="8.5" fill="#334155">accept non-conflicting SCG contigs only</text>
+
+<line x1="452" y1="766" x2="464" y2="766" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+<line x1="898" y1="766" x2="910" y2="766" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+
+<!-- Restart grid: 3 rows × 25 cells -->
+<text x="700" y="830" text-anchor="middle" font-size="8.5" font-weight="600" fill="#334155">75 parallel runs  =  3 encoder seeds  ×  25 Leiden seeds</text>
+<text x="224" y="844" text-anchor="end" font-size="7.5" fill="#64748B">enc 1</text>
+<text x="224" y="860" text-anchor="end" font-size="7.5" fill="#64748B">enc 2</text>
+<text x="224" y="876" text-anchor="end" font-size="7.5" fill="#64748B">enc 3</text>
+<g fill="#E5E7EB" stroke="#D1D5DB" stroke-width="0.5"><rect x="228" y="833" width="16" height="12" rx="1"/><rect x="246" y="833" width="16" height="12" rx="1"/><rect x="264" y="833" width="16" height="12" rx="1"/><rect x="282" y="833" width="16" height="12" rx="1"/><rect x="300" y="833" width="16" height="12" rx="1"/><rect x="318" y="833" width="16" height="12" rx="1"/><rect x="336" y="833" width="16" height="12" rx="1"/><rect x="354" y="833" width="16" height="12" rx="1"/><rect x="372" y="833" width="16" height="12" rx="1"/><rect x="390" y="833" width="16" height="12" rx="1"/><rect x="408" y="833" width="16" height="12" rx="1"/><rect x="426" y="833" width="16" height="12" rx="1"/><rect x="444" y="833" width="16" height="12" rx="1"/><rect x="462" y="833" width="16" height="12" rx="1"/><rect x="480" y="833" width="16" height="12" rx="1"/><rect x="498" y="833" width="16" height="12" rx="1"/><rect x="516" y="833" width="16" height="12" rx="1"/><rect x="534" y="833" width="16" height="12" rx="1"/><rect x="552" y="833" width="16" height="12" rx="1"/><rect x="570" y="833" width="16" height="12" rx="1"/><rect x="588" y="833" width="16" height="12" rx="1"/><rect x="606" y="833" width="16" height="12" rx="1"/><rect x="624" y="833" width="16" height="12" rx="1"/><rect x="642" y="833" width="16" height="12" rx="1"/><rect x="660" y="833" width="16" height="12" rx="1"/></g>
+<g fill="#CBD5E1" stroke="#94A3B8" stroke-width="0.5"><rect x="228" y="849" width="16" height="12" rx="1"/><rect x="246" y="849" width="16" height="12" rx="1"/><rect x="264" y="849" width="16" height="12" rx="1"/><rect x="282" y="849" width="16" height="12" rx="1"/><rect x="300" y="849" width="16" height="12" rx="1"/><rect x="318" y="849" width="16" height="12" rx="1"/><rect x="336" y="849" width="16" height="12" rx="1"/><rect x="354" y="849" width="16" height="12" rx="1"/><rect x="372" y="849" width="16" height="12" rx="1"/><rect x="390" y="849" width="16" height="12" rx="1"/><rect x="408" y="849" width="16" height="12" rx="1"/><rect x="426" y="849" width="16" height="12" rx="1"/><rect x="444" y="849" width="16" height="12" rx="1"/><rect x="462" y="849" width="16" height="12" rx="1"/><rect x="480" y="849" width="16" height="12" rx="1"/><rect x="498" y="849" width="16" height="12" rx="1"/><rect x="516" y="849" width="16" height="12" rx="1"/><rect x="534" y="849" width="16" height="12" rx="1"/><rect x="552" y="849" width="16" height="12" rx="1"/><rect x="570" y="849" width="16" height="12" rx="1"/><rect x="588" y="849" width="16" height="12" rx="1"/><rect x="606" y="849" width="16" height="12" rx="1"/><rect x="624" y="849" width="16" height="12" rx="1"/><rect x="642" y="849" width="16" height="12" rx="1"/><rect x="660" y="849" width="16" height="12" rx="1"/></g>
+<g fill="#94A3B8" stroke="#64748B" stroke-width="0.5"><rect x="228" y="865" width="16" height="12" rx="1"/><rect x="246" y="865" width="16" height="12" rx="1"/><rect x="264" y="865" width="16" height="12" rx="1"/><rect x="282" y="865" width="16" height="12" rx="1"/><rect x="300" y="865" width="16" height="12" rx="1"/><rect x="318" y="865" width="16" height="12" rx="1"/><rect x="336" y="865" width="16" height="12" rx="1"/><rect x="354" y="865" width="16" height="12" rx="1"/><rect x="372" y="865" width="16" height="12" rx="1"/><rect x="390" y="865" width="16" height="12" rx="1"/><rect x="408" y="865" width="16" height="12" rx="1"/><rect x="426" y="865" width="16" height="12" rx="1"/><rect x="444" y="865" width="16" height="12" rx="1"/><rect x="462" y="865" width="16" height="12" rx="1"/><rect x="480" y="865" width="16" height="12" rx="1"/><rect x="498" y="865" width="16" height="12" rx="1"/><rect x="516" y="865" width="16" height="12" rx="1"/><rect x="534" y="865" width="16" height="12" rx="1"/><rect x="552" y="865" width="16" height="12" rx="1"/><rect x="570" y="865" width="16" height="12" rx="1"/><rect x="588" y="865" width="16" height="12" rx="1"/><rect x="606" y="865" width="16" height="12" rx="1"/><rect x="624" y="865" width="16" height="12" rx="1"/><rect x="642" y="865" width="16" height="12" rx="1"/><rect x="660" y="865" width="16" height="12" rx="1"/></g>
+<text x="684" y="844" font-size="7" fill="#94A3B8">← 25 Leiden seeds each →</text>
+
+<!-- ══ RESOLVE (y=904–1025) ══ -->
+<line x1="700" y1="890" x2="700" y2="902" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+<rect x="12" y="904" width="1376" height="121" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="700" y="921" text-anchor="middle" font-size="8" font-weight="700" fill="#94A3B8" letter-spacing="2">AMBER  RESOLVE  ·  ENSEMBLE  CONSENSUS</text>
+
+<!-- Box 1: N runs -->
+<rect x="20" y="929" width="290" height="88" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="165" y="944" text-anchor="middle" font-size="8.5" font-weight="600" fill="#334155">N independent binning runs</text>
+<line x1="20" y1="950" x2="310" y2="950" stroke="#F1F5F9" stroke-width="1"/>
+<text x="165" y="964" text-anchor="middle" font-size="7.5" fill="#64748B">each run stores: bin labels, SCG,</text>
+<text x="165" y="976" text-anchor="middle" font-size="7.5" fill="#64748B">embeddings (157 d)  ·  one file per run</text>
+<text x="165" y="988" text-anchor="middle" font-size="7.5" fill="#64748B">runs differ by encoder + Leiden seed</text>
+<text x="165" y="1001" text-anchor="middle" font-size="7" fill="#94A3B8">embeddings stored for downstream use only</text>
+
+<!-- Box 2: Co-binning affinity with fraction -->
+<rect x="318" y="929" width="430" height="88" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="533" y="944" text-anchor="middle" font-size="8.5" font-weight="600" fill="#334155">Co-binning affinity</text>
+<line x1="318" y1="950" x2="748" y2="950" stroke="#F1F5F9" stroke-width="1"/>
+<text x="328" y="968" font-size="9" fill="#334155">P<tspan dy="1.5" font-size="6">ij</tspan><tspan dy="-1.5">  =</tspan></text>
+<text x="530" y="962" text-anchor="middle" font-size="8" fill="#334155">| { r  :  b<tspan dy="1.5" font-size="6">r</tspan><tspan dy="-1.5">(i) = b</tspan><tspan dy="1.5" font-size="6">r</tspan><tspan dy="-1.5">(j) } |</tspan></text>
+<line x1="378" y1="967" x2="680" y2="967" stroke="#334155" stroke-width="0.8"/>
+<text x="530" y="979" text-anchor="middle" font-size="8" fill="#334155">min ( n<tspan dy="1.5" font-size="6">i</tspan><tspan dy="-1.5"> ,  n</tspan><tspan dy="1.5" font-size="6">j</tspan><tspan dy="-1.5"> )</tspan></text>
+<text x="328" y="993" font-size="7.5" fill="#64748B">n<tspan dy="1.5" font-size="5.5">i</tspan><tspan dy="-1.5"> = # runs where contig i received a bin assignment</tspan></text>
+<text x="328" y="1005" font-size="7.5" fill="#64748B">P<tspan dy="1.5" font-size="5.5">ij</tspan><tspan dy="-1.5"> ∈ [0, 1]  ·  affinity graph  ≠  embedding distance</tspan></text>
+
+<!-- Box 3: Leiden on affinity graph -->
+<rect x="756" y="929" width="280" height="88" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="896" y="944" text-anchor="middle" font-size="8.5" font-weight="600" fill="#334155">Leiden on affinity graph</text>
+<line x1="756" y1="950" x2="1036" y2="950" stroke="#F1F5F9" stroke-width="1"/>
+<text x="896" y="964" text-anchor="middle" font-size="7.5" fill="#64748B">edge weights  =  P<tspan dy="1.5" font-size="5.5">ij</tspan><tspan dy="-1.5"> (co-assignment freq.)</tspan></text>
+<text x="896" y="976" text-anchor="middle" font-size="7.5" fill="#64748B">SCG-guided resolution sweep</text>
+<text x="896" y="988" text-anchor="middle" font-size="7.5" fill="#64748B">best partition selected by SCG score</text>
+<text x="896" y="1001" text-anchor="middle" font-size="7" fill="#94A3B8">not 157-dim embedding space</text>
+
+<!-- Box 4: Consensus -->
+<rect x="1044" y="929" width="344" height="88" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+<text x="1216" y="944" text-anchor="middle" font-size="8.5" font-weight="600" fill="#334155">Consensus bins</text>
+<line x1="1044" y1="950" x2="1388" y2="950" stroke="#F1F5F9" stroke-width="1"/>
+<text x="1216" y="964" text-anchor="middle" font-size="8.5" fill="#334155">J(A, B) = |A ∩ B| / |A ∪ B|  ≥  θ</text>
+<text x="1216" y="976" text-anchor="middle" font-size="7.5" fill="#64748B">bins consistent across ≥ 2/3 of runs</text>
+<text x="1216" y="988" text-anchor="middle" font-size="7.5" fill="#64748B">merged into single consensus bin</text>
+<text x="1216" y="1001" text-anchor="middle" font-size="7" fill="#94A3B8">mean 10–11 HQ  ·  reproducible</text>
+
+<!-- ══ OUTPUT (y=1039–1071) ══ -->
+<line x1="700" y1="1025" x2="700" y2="1037" stroke="#334155" stroke-width="1.5" marker-end="url(#ag)"/>
+<rect x="12" y="1039" width="1376" height="32" rx="3" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1"/>
+<text x="700" y="1053" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">Genomic bins (.fa)  ·  HQ ≥ 90% completeness / &lt;5% contamination  ·  MQ ≥ 50% / &lt;10%</text>
+<text x="700" y="1066" text-anchor="middle" font-size="8" fill="#64748B">per-bin: SCG profile  ·  aDNA damage rates  ·  completeness  ·  contamination  ·  Jaccard  ·  embeddings</text>
+
+</svg>
