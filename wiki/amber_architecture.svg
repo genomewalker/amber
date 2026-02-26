@@ -1,133 +1,139 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="1000" height="420">
-<defs>
-  <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-    <path d="M0,0 L10,5 L0,10 Z" fill="#64748B"/>
-  </marker>
-  <linearGradient id="amber" x1="0%" y1="0%" x2="0%" y2="100%">
-    <stop offset="0%" style="stop-color:#FEF3C7"/>
-    <stop offset="100%" style="stop-color:#FDE68A"/>
-  </linearGradient>
-</defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="1000" height="420" role="img" aria-label="AMBER architecture overview">
+  <defs>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#64748B"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#E8A838"/>
+    </marker>
 
-<rect width="1000" height="420" fill="#FFFFFF"/>
+    <style><![CDATA[
+      .font { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+      .title { font-size:16px; font-weight:700; fill:#0F172A; letter-spacing:3px; }
+      .subtitle { font-size:9px; font-weight:500; fill:#64748B; }
 
-<!-- TITLE -->
-<text x="500" y="26" text-anchor="middle" font-size="15" font-weight="700" fill="#1E293B" font-family="Helvetica Neue, Arial, sans-serif" letter-spacing="3">AMBER</text>
-<text x="500" y="42" text-anchor="middle" font-size="9" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Ancient Metagenomic BinnER</text>
+      .kicker { font-size:8px; font-weight:700; fill:#94A3B8; letter-spacing:1.4px; }
 
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- COL 1: INPUTS (x=20, w=120) -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<text x="80" y="66" text-anchor="middle" font-size="8" font-weight="600" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif" letter-spacing="1">INPUTS</text>
+      .h { font-size:10px; font-weight:650; fill:#0F172A; }
+      .h-novel { font-size:10px; font-weight:700; fill:#92400E; }
+      .meta { font-size:8px; font-weight:500; fill:#475569; }
+      .meta-soft { font-size:8px; font-weight:500; fill:#64748B; }
+      .meta-novel { font-size:8px; font-weight:600; fill:#92400E; }
+      .monoish { letter-spacing:0.3px; }
 
-<rect x="20" y="76" width="120" height="40" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="80" y="96" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B" font-family="Helvetica Neue, Arial, sans-serif">Contigs</text>
-<text x="80" y="108" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">FASTA</text>
+      .box-std { fill:#F8FAFC; stroke:#CBD5E1; stroke-width:1.1; }
+      .box-run { fill:#FFFFFF; stroke:#CBD5E1; stroke-width:1.1; }
+      .box-novel { fill:#FFF4D6; stroke:#E8A838; stroke-width:1.6; }
+      .box-parallel { fill:#F1F5F9; stroke:#94A3B8; stroke-width:1.2; stroke-dasharray:5,3; }
 
-<rect x="20" y="124" width="120" height="40" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="80" y="144" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B" font-family="Helvetica Neue, Arial, sans-serif">Alignments</text>
-<text x="80" y="156" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">BAM</text>
+      .line { fill:none; stroke:#64748B; stroke-width:1.7; stroke-linecap:round; }
+      .line-strong { fill:none; stroke:#E8A838; stroke-width:2.4; stroke-linecap:round; }
+    ]]></style>
+  </defs>
 
-<rect x="20" y="172" width="120" height="40" rx="3" fill="url(#amber)" stroke="#D97706" stroke-width="1"/>
-<text x="80" y="192" text-anchor="middle" font-size="9" font-weight="600" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">SCG Markers</text>
-<text x="80" y="204" text-anchor="middle" font-size="7" fill="#B45309" font-family="Helvetica Neue, Arial, sans-serif">206 HMM</text>
+  <rect x="0" y="0" width="1000" height="420" fill="#FFFFFF"/>
 
-<line x1="140" y1="145" x2="162" y2="145" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Title -->
+  <text class="font title" x="500" y="28" text-anchor="middle">AMBER</text>
+  <text class="font subtitle" x="500" y="44" text-anchor="middle">Ancient Metagenomic BinnER</text>
 
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- COL 2: FEATURES (x=170, w=130) -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<text x="235" y="66" text-anchor="middle" font-size="8" font-weight="600" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif" letter-spacing="1">FEATURES</text>
+  <!-- Column headers -->
+  <text class="font kicker" x="120" y="76" text-anchor="middle">INPUTS</text>
+  <text class="font kicker" x="335" y="76" text-anchor="middle">FEATURES</text>
+  <text class="font kicker" x="575" y="76" text-anchor="middle">ENCODER</text>
 
-<rect x="170" y="76" width="130" height="52" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="235" y="94" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B" font-family="Helvetica Neue, Arial, sans-serif">Encoder Input</text>
-<text x="235" y="108" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">TNF (136d) + cov (2d)</text>
-<text x="235" y="120" text-anchor="middle" font-size="9" font-weight="700" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">138 d</text>
+  <!-- Inputs -->
+  <rect class="box-std" x="40" y="88" width="160" height="46" rx="10"/>
+  <text class="font h" x="120" y="108" text-anchor="middle">Contigs</text>
+  <text class="font meta-soft" x="120" y="124" text-anchor="middle">FASTA</text>
 
-<rect x="170" y="136" width="130" height="56" rx="3" fill="url(#amber)" stroke="#D97706" stroke-width="1"/>
-<text x="235" y="154" text-anchor="middle" font-size="9" font-weight="600" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">aDNA Damage (20d)</text>
-<text x="235" y="170" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">InfoNCE weights</text>
-<text x="235" y="184" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">+ concat to embedding</text>
+  <rect class="box-std" x="40" y="144" width="160" height="46" rx="10"/>
+  <text class="font h" x="120" y="164" text-anchor="middle">Alignments</text>
+  <text class="font meta-soft" x="120" y="180" text-anchor="middle">BAM</text>
 
-<rect x="170" y="200" width="130" height="40" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="235" y="218" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B" font-family="Helvetica Neue, Arial, sans-serif">CGR (9d)</text>
-<text x="235" y="232" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">concat only (bypass)</text>
+  <rect class="box-novel" x="40" y="200" width="160" height="46" rx="10"/>
+  <text class="font h-novel" x="120" y="220" text-anchor="middle">SCG markers</text>
+  <text class="font meta-novel" x="120" y="236" text-anchor="middle">206 HMM</text>
 
-<line x1="300" y1="145" x2="322" y2="145" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Features -->
+  <rect class="box-std" x="240" y="88" width="190" height="58" rx="10"/>
+  <text class="font h" x="335" y="110" text-anchor="middle">Encoder input</text>
+  <text class="font meta-soft" x="335" y="128" text-anchor="middle">TNF (136d) + coverage (2d)</text>
+  <text class="font meta" x="335" y="142" text-anchor="middle"><tspan class="monoish" font-weight="700">138d</tspan></text>
 
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- COL 3: ENCODER (x=330, w=150) -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<text x="405" y="66" text-anchor="middle" font-size="8" font-weight="600" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif" letter-spacing="1">ENCODER</text>
+  <rect class="box-novel" x="240" y="156" width="190" height="66" rx="10"/>
+  <text class="font h-novel" x="335" y="178" text-anchor="middle">aDNA damage (20d)</text>
+  <text class="font meta-novel" x="335" y="196" text-anchor="middle">InfoNCE weights + concat</text>
+  <text class="font meta" x="335" y="214" text-anchor="middle"><tspan class="monoish" font-weight="700" fill="#92400E">20d</tspan></text>
 
-<rect x="330" y="76" width="150" height="164" rx="3" fill="url(#amber)" stroke="#D97706" stroke-width="1.5"/>
+  <rect class="box-std" x="240" y="232" width="190" height="46" rx="10"/>
+  <text class="font h" x="335" y="252" text-anchor="middle">CGR (9d)</text>
+  <text class="font meta-soft" x="335" y="268" text-anchor="middle">concat only (bypass)</text>
 
-<text x="405" y="96" text-anchor="middle" font-size="9" font-weight="700" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">Damage-aware</text>
-<text x="405" y="110" text-anchor="middle" font-size="9" font-weight="700" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">SCG-supervised InfoNCE</text>
+  <!-- Encoder -->
+  <rect class="box-novel" x="450" y="88" width="250" height="190" rx="12"/>
+  <text class="font h-novel" x="575" y="112" text-anchor="middle">Damage-aware SCG-supervised InfoNCE</text>
 
-<rect x="342" y="120" width="126" height="18" rx="2" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
-<text x="405" y="133" text-anchor="middle" font-size="7" fill="#374151" font-family="Helvetica Neue, Arial, sans-serif">MLP: 138 - 512 - 256 - 128</text>
+  <rect class="box-run" x="468" y="126" width="214" height="34" rx="9"/>
+  <text class="font meta" x="575" y="148" text-anchor="middle">MLP: 138 - 512 - 256 - 128</text>
 
-<rect x="342" y="144" width="126" height="18" rx="2" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
-<text x="405" y="157" text-anchor="middle" font-size="7" fill="#374151" font-family="Helvetica Neue, Arial, sans-serif">6 augmented views</text>
+  <rect class="box-run" x="468" y="166" width="214" height="34" rx="9"/>
+  <text class="font meta" x="575" y="188" text-anchor="middle">6 augmented views</text>
 
-<rect x="342" y="168" width="126" height="18" rx="2" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
-<text x="405" y="181" text-anchor="middle" font-size="7" fill="#374151" font-family="Helvetica Neue, Arial, sans-serif">w_ij from aDNA damage</text>
+  <rect class="box-run" x="468" y="206" width="214" height="34" rx="9"/>
+  <text class="font meta" x="575" y="228" text-anchor="middle">Pair weights from aDNA damage</text>
 
-<text x="405" y="206" text-anchor="middle" font-size="8" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">128d + 20d aDNA + 9d CGR</text>
-<text x="405" y="222" text-anchor="middle" font-size="10" font-weight="700" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">= 157 d</text>
+  <text class="font meta-soft" x="575" y="256" text-anchor="middle">Embedding: 128d + 20d aDNA + 9d CGR</text>
+  <text class="font h-novel" x="575" y="272" text-anchor="middle">157d</text>
 
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- 3 PARALLEL RUNS BOX -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<rect x="330" y="256" width="480" height="122" rx="4" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1" stroke-dasharray="4,2"/>
-<text x="570" y="274" text-anchor="middle" font-size="9" font-weight="700" fill="#475569" font-family="Helvetica Neue, Arial, sans-serif">3 ENCODER RESTARTS x 25 LEIDEN SEEDS  =  75 PARALLEL RUNS</text>
+  <!-- Flow arrows (top row) -->
+  <line class="line" x1="200" y1="167" x2="232" y2="167" marker-end="url(#arrow-slate)"/>
+  <line class="line" x1="430" y1="183" x2="444" y2="183" marker-end="url(#arrow-slate)"/>
 
-<!-- Run 1 -->
-<rect x="345" y="288" width="145" height="76" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
-<text x="417" y="306" text-anchor="middle" font-size="8" font-weight="600" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">Run 1</text>
-<text x="417" y="322" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">k-NN graph</text>
-<text x="417" y="336" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Quality Leiden (3 phases)</text>
-<text x="417" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">bins + .abin</text>
+  <!-- Parallel search block -->
+  <rect class="box-parallel" x="380" y="292" width="420" height="96" rx="12"/>
+  <text class="font meta" x="590" y="314" text-anchor="middle">
+    <tspan font-weight="700" fill="#334155">Parallel search:</tspan>
+    <tspan fill="#475569"> 3 encoder restarts x 25 Leiden seeds = </tspan>
+    <tspan font-weight="800" fill="#92400E">75 runs</tspan>
+  </text>
 
-<!-- Run 2 -->
-<rect x="500" y="288" width="145" height="76" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
-<text x="572" y="306" text-anchor="middle" font-size="8" font-weight="600" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">Run 2</text>
-<text x="572" y="322" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">k-NN graph</text>
-<text x="572" y="336" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Quality Leiden (3 phases)</text>
-<text x="572" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">bins + .abin</text>
+  <!-- Runs -->
+  <rect class="box-run" x="396" y="328" width="120" height="48" rx="10"/>
+  <text class="font meta" x="456" y="346" text-anchor="middle" font-weight="650" fill="#334155">Run A</text>
+  <text class="font meta-soft" x="456" y="362" text-anchor="middle">k-NN graph + Leiden</text>
+  <text class="font meta-soft" x="456" y="376" text-anchor="middle">(quality, 3 phases)</text>
 
-<!-- Run 3 -->
-<rect x="655" y="288" width="145" height="76" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
-<text x="727" y="306" text-anchor="middle" font-size="8" font-weight="600" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">Run 3</text>
-<text x="727" y="322" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">k-NN graph</text>
-<text x="727" y="336" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Quality Leiden (3 phases)</text>
-<text x="727" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">bins + .abin</text>
+  <rect class="box-run" x="530" y="328" width="120" height="48" rx="10"/>
+  <text class="font meta" x="590" y="346" text-anchor="middle" font-weight="650" fill="#334155">Run B</text>
+  <text class="font meta-soft" x="590" y="362" text-anchor="middle">k-NN graph + Leiden</text>
+  <text class="font meta-soft" x="590" y="376" text-anchor="middle">(quality, 3 phases)</text>
 
-<!-- Arrow from encoder to parallel box -->
-<line x1="405" y1="240" x2="405" y2="254" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect class="box-run" x="664" y="328" width="120" height="48" rx="10"/>
+  <text class="font meta" x="724" y="346" text-anchor="middle" font-weight="650" fill="#334155">Run C</text>
+  <text class="font meta-soft" x="724" y="362" text-anchor="middle">k-NN graph + Leiden</text>
+  <text class="font meta-soft" x="724" y="376" text-anchor="middle">(quality, 3 phases)</text>
 
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- RESOLVE -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<line x1="810" y1="326" x2="832" y2="326" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Arrow from encoder down to parallel -->
+  <line class="line" x1="575" y1="278" x2="575" y2="288" marker-end="url(#arrow-slate)"/>
 
-<rect x="840" y="288" width="140" height="76" rx="3" fill="url(#amber)" stroke="#D97706" stroke-width="1.5"/>
-<text x="910" y="310" text-anchor="middle" font-size="10" font-weight="700" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">amber resolve</text>
-<text x="910" y="328" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">co-binning affinity</text>
-<text x="910" y="342" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">consensus Leiden</text>
-<text x="910" y="358" text-anchor="middle" font-size="8" font-weight="600" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">Consensus Bins</text>
+  <!-- Resolve -->
+  <rect class="box-novel" x="820" y="300" width="150" height="88" rx="12"/>
+  <text class="font h-novel" x="895" y="326" text-anchor="middle">amber resolve</text>
+  <text class="font meta-novel" x="895" y="346" text-anchor="middle">co-binning affinity</text>
+  <text class="font meta-novel" x="895" y="362" text-anchor="middle">consensus Leiden</text>
+  <text class="font meta" x="895" y="380" text-anchor="middle" font-weight="700" fill="#92400E">Consensus bins</text>
 
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- LEGEND -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<rect x="20" y="394" width="14" height="14" rx="2" fill="url(#amber)" stroke="#D97706" stroke-width="1"/>
-<text x="42" y="405" font-size="8" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Novel aDNA-aware components</text>
+  <!-- Prominent parallel -> resolve arrow -->
+  <line class="line-strong" x1="800" y1="340" x2="814" y2="340" marker-end="url(#arrow-amber)"/>
 
-<rect x="240" y="394" width="14" height="14" rx="2" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="262" y="405" font-size="8" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Standard components</text>
+  <!-- Legend -->
+  <rect class="box-novel" x="40" y="398" width="14" height="14" rx="4"/>
+  <text class="font meta-soft" x="62" y="409">Novel aDNA-aware components</text>
 
-<rect x="440" y="394" width="14" height="14" rx="2" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1" stroke-dasharray="4,2"/>
-<text x="462" y="405" font-size="8" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Parallel execution</text>
+  <rect class="box-std" x="290" y="398" width="14" height="14" rx="4"/>
+  <text class="font meta-soft" x="312" y="409">Standard components</text>
 
+  <rect x="500" y="398" width="14" height="14" rx="4" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.2" stroke-dasharray="5,3"/>
+  <text class="font meta-soft" x="522" y="409">Parallel execution</text>
 </svg>
