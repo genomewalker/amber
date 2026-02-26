@@ -2,7 +2,7 @@
 
 ## Damage model
 
-Post-mortem deamination hydrolytically removes the amine group from cytosine, converting it to uracil (sequenced as thymine). This reaction preferentially affects single-stranded overhangs at fragment termini, producing a characteristic gradient of C→T substitutions at 5′ ends and (in double-stranded libraries) complementary G→A substitutions at 3′ ends [Briggs et al. 2007]. The rate follows exponential decay from the terminus:
+Post-mortem deamination hydrolytically removes the amine group from cytosine, converting it to uracil (sequenced as thymine). The reaction preferentially affects single-stranded overhangs at fragment termini, giving a characteristic gradient of C→T substitutions at 5′ ends and (in double-stranded libraries) complementary G→A substitutions at 3′ ends [Briggs et al. 2007]. The rate follows exponential decay from the terminus:
 
 $$\delta(p) = d \cdot e^{-\lambda p}$$
 
@@ -90,23 +90,23 @@ where excl(*i*) = {*k* : M(*i*) ∩ M(*k*) ≠ ∅} (any shared marker → exclu
 
 ### Damage-aware negative weighting
 
-Standard contrastive learning treats all negatives equally. For ancient DNA, this is suboptimal: a negative pair where one contig is ancient and one is modern from the same environment should not be strongly repelled. AMBER downweights such negatives in the denominator by *w_ij* ∈ [*w*_min, 1]:
+Standard contrastive learning treats all negatives equally. For ancient DNA this is wrong: a contig pair where one member is ancient and the other is modern from the same environment should not be strongly repelled. AMBER downweights such negatives by *w_ij* ∈ [*w*_min, 1]:
 
 $$w_{ij} = 1 - \lambda_{\text{att}} \cdot c_i c_j \cdot \left(1 - f_{\text{compat}}(i, j)\right)$$
 
-**Confidence:** *c_i = n_{eff,i} / (n_{eff,i} + n_0)* where *n_eff* is the Kish effective read depth and *n_0* = 60 is the half-saturation constant. Contigs with few reads get low confidence → weights close to 1 (standard negatives).
+*Confidence* — *c_i = n_{eff,i} / (n_{eff,i} + n_0)* where *n_eff* is the Kish effective read depth and *n_0* = 60 is the half-saturation constant. Contigs with few reads get low confidence and weights close to 1 (effectively standard negatives).
 
-**Compatibility:** *f*_compat combines two signals:
-1. *f_raw* = exp(−|δ_i − δ_j| / 0.2) — similar terminal damage rates → compatible
+*Compatibility* — *f*_compat combines two signals:
+1. *f_raw* = exp(−|δ_i − δ_j| / 0.2): similar terminal damage rates → compatible
 2. *f_panc* = exp(−0.5 · z²) where z = |p_anc,i − p_anc,j| / √(var_i + var_j + τ²)
 
 $$f_{\text{compat}} = \frac{f_{\text{raw}} + f_{\text{panc}}}{2}$$
 
-When *w_ij* < 1, the negative is downweighted in the SCG-SupCon denominator, reducing the gradient pushing *i* and *j* apart. This prevents the encoder from latching onto damage state as a discriminative feature — which would incorrectly separate ancient and modern strains of the same genome.
+When *w_ij* < 1, the gradient pushing *i* and *j* apart is reduced. The encoder cannot use damage state as a discriminative feature, so ancient and modern strains of the same genome stay together.
 
 ### Three encoder restarts
 
-With `--encoder-restarts 3`, three independent encoders are trained with different random seeds. The consensus kNN graph averages their edge weights before Leiden clustering, reducing sensitivity to any single unlucky initialisation.
+With `--encoder-restarts 3`, three independent encoders are trained with different random seeds. The consensus kNN graph averages their edge weights before Leiden clustering. Any single unlucky initialisation has less influence on the final partition.
 
 ---
 
@@ -118,7 +118,7 @@ Chaos Game Representation (CGR) plots 4-mer frequencies in a unit square. AMBER 
 - **Occupancy:** Fraction of non-zero cells — correlates with genomic diversity
 - **Lacunarity:** Gap structure in the CGR image — sensitive to repetitive sequences and GC content
 
-The slopes of these metrics across resolutions (16→32→64) encode how composition scales with k-mer length, providing a scale-invariant fingerprint.
+The slopes of these metrics across resolutions (16→32→64) capture how composition scales with k-mer length, giving a scale-invariant fingerprint of genomic composition.
 
 ---
 
@@ -128,7 +128,7 @@ After encoding, AMBER builds a **kNN graph** using HNSW (Hierarchical Navigable 
 
 $$w_{ij} = \exp\!\left(-\frac{d_{ij}}{bw}\right)$$
 
-where *d_ij* is the cosine distance and *bw* = 0.2 is the bandwidth. SCG-sharing contigs receive an additional penalty: *w'_ij = w_ij · exp(−3 · n_shared_markers)*, preventing single-copy marker genes from bridging different genomes.
+where *d_ij* is the cosine distance and *bw* = 0.2 is the bandwidth. SCG-sharing contigs receive an additional penalty: *w'_ij = w_ij · exp(−3 · n_shared_markers)*. This stops single-copy marker genes from bridging contigs that belong to different genomes.
 
 Leiden clustering [Traag et al. 2019] is run with **resolution sweep** over [0.5, 5.0] and 25 random seeds per resolution. The partition maximising the SCG quality score:
 
@@ -169,7 +169,7 @@ With `--encoder-restarts N`, AMBER trains *N* independent encoders with differen
 
 $$w^{\text{cons}}_{ij} = \frac{1}{N} \sum_{r=1}^N w^{(r)}_{ij}$$
 
-This reduces the effect of any single unlucky encoder initialisation on the final clustering.
+Any single unlucky initialisation has less influence on the final partition.
 
 ---
 
@@ -187,7 +187,7 @@ The per-pair affinity is:
 
 $$p_{\text{cobin}}(i,j) = \frac{E_{ij}}{\min(R_i,\, R_j)}$$
 
-The denominator *min(R_i, R_j)* rather than the total number of runs *R* is critical: if one contig is too short to bin in some runs, dividing by *R* would suppress its affinity with its true bin-mates. The per-pair denominator normalises by the number of runs in which the pair *could* have co-occurred.
+The denominator *min(R_i, R_j)* rather than *R* matters: if a short contig is unbinned in some runs, dividing by *R* would suppress its affinity with its true bin-mates. Using min normalises by the runs in which the pair could actually have co-occurred.
 
 ### Consensus clustering
 
@@ -210,7 +210,7 @@ AMBER models the mapped BAM as a mixture of two read populations:
 
 $$p_a(r) = \frac{\pi_a \cdot P_{\text{damage}}(r \mid a) \cdot P_{\text{length}}(l_r \mid a)}{\pi_a \cdot P(r \mid a) + \pi_m \cdot P(r \mid m)}$$
 
-The damage likelihood marginalises over all terminal C/G positions using the current parameter estimates. The length likelihood is evaluated under LogNormal distributions fitted per iteration.
+The damage likelihood marginalises over all terminal C/G positions using the current parameter estimates. The length likelihood uses LogNormal distributions fitted per iteration.
 
 **M-step:** Update mixture fraction π_a and distribution parameters (d, λ, μ_a, σ_a, μ_m, σ_m) from weighted counts.
 
@@ -236,7 +236,7 @@ $$\text{completeness}(B) = \frac{|\{m : \text{count}_B(m) \geq 1\}|}{107}$$
 
 $$\text{contamination}(B) = \frac{\sum_m \max(0,\, \text{count}_B(m) - 1)}{\sum_m \text{count}_B(m)}$$
 
-where the denominator counts total marker observations and the numerator counts the excess copies (duplicates) above 1. This mirrors the CheckM formula and gives comparable results on standard benchmark datasets.
+where the denominator counts total marker observations and the numerator counts excess copies above 1. This follows the CheckM formula and gives comparable results on standard benchmark datasets.
 
 Quality thresholds used internally:
 
