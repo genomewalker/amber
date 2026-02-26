@@ -34,7 +34,7 @@ For each contig (minimum 2,500 bp), AMBER extracts a **157-dimensional feature v
 
 | Features | Dims | Description |
 |----------|------|-------------|
-| Encoder | 128 | Self-supervised InfoNCE (COMEBin-style) |
+| Encoder | 128 | SCG-supervised damage-aware InfoNCE (positive pairs = SCG co-members) |
 | Damage profile | 10 | C→T rates at 5′ pos 1–5; G→A rates at 3′ pos 1–5 |
 | Decay parameters | 2 | λ₅, λ₃ (exponential damage decay constants) |
 | Fragment length | 2 | Mean and std dev of aligned read lengths |
@@ -54,13 +54,17 @@ Contigs confirmed by HMM profile search to carry the same single-copy marker bel
 
 Six augmented views per contig are generated (3 coverage-subsampling levels × 2 feature-noise intensities) and all pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised output).
 
-AMBER further extends the loss with **damage-aware negative weighting**: negatives with incompatible damage signatures are downweighted in the denominator by *w* ∈ [*w*_min, 1]:
+The combined loss is:
 
-$$w_{ij} = 1 - \lambda_{\text{att}} \cdot c_i c_j \cdot (1 - f_{\text{compat}}(i, j))$$
+$$\mathcal{L} = -\frac{1}{|B|} \sum_{i} \frac{1}{|P(i)|} \sum_{j \in P(i)} \log \frac{\exp(\text{sim}(z_i, z_j)/\tau)}{\sum_{k \notin \text{excl}(i)} w_{ik} \cdot \exp(\text{sim}(z_i, z_k)/\tau)}$$
 
-where *c_i = n_{eff,i} / (n_{eff,i} + n_0)* is confidence from effective read depth, and *f*_compat is a symmetric damage compatibility score based on terminal C→T rates and p_ancient. This prevents the encoder from learning to use damage state as a separating feature, while still forming meaningful embeddings for composition and coverage signals.
+where excl(*i*) = {*k* : M(*i*) ∩ M(*k*) ≠ ∅} masks out any contig sharing a marker with *i*, and *w_ik* is the **damage-aware negative weight**:
 
-Three independent encoder restarts with different random seeds produce consensus kNN graph edge weights.
+$$w_{ik} = 1 - \lambda_{\text{att}} \cdot c_i c_k \cdot (1 - f_{\text{compat}}(i, k))$$
+
+*c_i = n_{eff,i} / (n_{eff,i} + n_0)* is confidence from effective read depth; *f*_compat is a symmetric damage compatibility score (terminal C→T rates + p_ancient agreement). Negatives with incompatible damage signatures (*w* < 1) are downweighted, preventing the encoder from using damage state as a discriminative feature.
+
+Three independent encoder restarts (different random seeds) produce three kNN graphs; their edge weights are averaged into a consensus graph before Leiden.
 
 ### 3. Quality-guided Leiden clustering
 
@@ -74,9 +78,13 @@ After encoding, AMBER builds a **kNN graph** (HNSW approximate nearest neighbour
 
 Resolution is swept over [0.5, 5.0] with 25 random seeds; the configuration maximising a composite SCG quality score (strict-HQ > pre-HQ > MQ > completeness) is retained.
 
-### 4. Partition consensus and resolve
+### 4. Partition consensus and `amber resolve`
 
-Multiple independent AMBER runs (with different encoder seeds) can be aggregated by `amber resolve`. It builds a **co-binning affinity graph**: each pair of contigs that appears in the same bin in any run receives an edge of weight proportional to the fraction of runs in which they co-bin. Leiden is re-run on this affinity graph to produce a consensus binning that is more stable than any individual run.
+Multiple independent AMBER runs (different encoder and Leiden seeds) are aggregated by `amber resolve` into a consensus binning. For each contig pair (*i*, *j*), a **co-binning affinity** is computed:
+
+$$p_{\text{cobin}}(i,j) = \frac{|\{r : b_r(i) = b_r(j)\}|}{\min(R_i,\, R_j)}$$
+
+where *R_i* is the number of runs in which contig *i* received any bin assignment. Leiden is re-run on this affinity graph with the same SCG-guided quality sweep, producing a consensus more stable than any individual run. With 3 runs, the reliable 10-bin core is recovered; with ≥ 5 runs, borderline bins accumulate sufficient evidence to enter the consensus.
 
 ---
 

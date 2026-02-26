@@ -175,14 +175,27 @@ This reduces the effect of any single unlucky encoder initialisation on the fina
 
 ## `amber resolve` — co-binning consensus
 
-Given *R* independent AMBER runs (each producing a `run.abin` archive):
+Given *R* independent AMBER runs (each producing a `run.abin` archive), `amber resolve` builds a **co-binning affinity graph** and re-clusters it.
 
-1. For each pair of contigs (*i*, *j*), count in how many runs they appear in the same bin: *E_ij*
-2. The fraction of runs in which they could co-occur: *D_ij = min(R_i, R_j)* where *R_i* is the number of runs in which contig *i* was assigned to any bin
-3. Co-binning affinity: *p_cobin(i,j) = E_ij / D_ij*
-4. Run Leiden on the affinity graph with an SCG-guided resolution sweep
+### Co-binning affinity
 
-The per-pair denominator ensures that contigs absent from some runs (too short, ambiguous) do not artificially suppress their affinity with their true bin-mates.
+For each ordered pair of contigs (*i*, *j*), let:
+- *E_ij* = number of runs in which *i* and *j* are assigned to the **same bin**
+- *R_i* = number of runs in which contig *i* received **any** bin assignment
+
+The per-pair affinity is:
+
+$$p_{\text{cobin}}(i,j) = \frac{E_{ij}}{\min(R_i,\, R_j)}$$
+
+The denominator *min(R_i, R_j)* rather than the total number of runs *R* is critical: if one contig is too short to bin in some runs, dividing by *R* would suppress its affinity with its true bin-mates. The per-pair denominator normalises by the number of runs in which the pair *could* have co-occurred.
+
+### Consensus clustering
+
+An affinity graph is built with edge weight *p_cobin(i,j)* for all pairs with *E_ij* > 0. Leiden is then run on this graph with an SCG-guided resolution sweep (same three-phase quality protocol as `amber bin`), and the partition maximising the SCG quality score is returned.
+
+### Why resolve improves reproducibility
+
+Each individual run is subject to stochastic variation in encoder training and Leiden initialisation. Borderline bins (those appearing in some but not all runs) will only cross the *p_cobin* threshold if they are internally consistent across enough runs. With 3 runs the reliable 10-bin core is recovered; with ≥ 5 runs, borderline bins accumulate enough co-binning evidence to appear in the consensus.
 
 ---
 
