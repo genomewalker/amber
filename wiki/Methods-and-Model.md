@@ -62,17 +62,15 @@ Four terminal mismatch rates: T→C at 5′, other mismatches at 5′, C→T at 
 
 ## SCG-supervised damage-aware InfoNCE
 
-### Positive pair definition
+### Positive pairs and SCG hard negatives
 
-AMBER extends COMEBin's self-supervised InfoNCE with two changes: (1) positive pairs are defined by **SCG co-membership** instead of random augmentation pairs, providing genome-aware supervision directly from the HMM scan; (2) negatives are **downweighted by damage compatibility** *w_ij*, preventing the encoder from using damage state as a discriminative feature.
+AMBER extends COMEBin's self-supervised InfoNCE with two modifications. Positive pairs are the **6 augmented views of the same contig** (3 coverage subsampling levels × 2 feature-noise intensities), identical to COMEBin. The two extensions concern the *denominator*:
 
-For each contig *i* in the batch, the positive set is:
+**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are present exactly once per genome by definition. Two contigs sharing any SCG are therefore from *different* genomes — high-confidence true negatives. AMBER amplifies these pairs in the denominator by a factor α (default 2.0), providing stronger repulsion for contigs that embeddings might otherwise conflate:
 
-$$P(i) = \underbrace{\{v_1^{(i)}, \ldots, v_6^{(i)}\}}_{\text{6 augmented views}} \cup \underbrace{\{j : \text{SCG}(j) = \text{SCG}(i) \neq \emptyset\}}_{\text{SCG co-members}}$$
+$$w_{ij}^{\text{SCG}} = \begin{cases} \alpha & \text{if } M(i) \cap M(j) \neq \emptyset \\ 1.0 & \text{otherwise} \end{cases}$$
 
-The SCG co-members are contigs identified by HMM profile search (HMMER, `bacar_marker.hmm`, 107 single-copy bacterial markers) as carrying the same single-copy marker gene. Since each marker should appear exactly once per genome, contigs sharing a marker belong to the same genome with high confidence — they are reliable positives without needing any assembly graph information.
-
-Contigs sharing *any* marker with *i* are **excluded from the InfoNCE denominator** entirely (masked out). This avoids treating same-genome contigs that happen to share a different marker as false negatives.
+SCG membership is determined by HMM profile search with HMMER3 against `checkm_markers_only.hmm` (206 CheckM universal bacterial and archaeal marker profiles).
 
 ### Six augmented views
 
@@ -80,13 +78,13 @@ Six views per contig are constructed:
 - 3 coverage subsampling levels (33%, 66%, 100% of reads)
 - 2 feature noise intensities (low and medium Gaussian noise on TNF and coverage)
 
-All 6 views pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised) and all appear in the positive set for each other.
+All 6 views pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised).
 
-### SCG-SupCon loss
+### InfoNCE loss with combined weights
 
-$$\mathcal{L}_{\text{SCG-SupCon}} = -\frac{1}{|B|} \sum_{i} \frac{1}{|P(i)|} \sum_{j \in P(i)} \log \frac{\exp(\text{sim}(z_i, z_j)/\tau)}{\sum_{k \notin \text{excl}(i)} w_{ik} \cdot \exp(\text{sim}(z_i, z_k)/\tau)}$$
+$$\mathcal{L} = -\frac{1}{BV} \sum_{i} \log \frac{\exp(\text{sim}(z_i, z_{i^+})/\tau)}{\sum_{k \neq i} w_{ik} \cdot \exp(\text{sim}(z_i, z_k)/\tau)}$$
 
-where excl(*i*) = {*k* : M(*i*) ∩ M(*k*) ≠ ∅} (any shared marker → excluded from denominator), and τ = 0.1 is the temperature.
+where τ = 0.1 and *w_ik* = max(*w_ik*^SCG, *w_ik*^damage) — SCG hard negatives always win over damage down-weighting.
 
 ### Damage-aware negative weighting
 
@@ -136,7 +134,7 @@ $$Q = 10^8 \cdot n_{\text{strict-HQ}} + 10^5 \cdot n_{\text{pre-HQ}} + 10^3 \cdo
 
 is selected, where strict-HQ = completeness ≥ 90% and contamination < 5%, pre-HQ ≥ 72%/5%, MQ ≥ 50%/10%.
 
-**Completeness and contamination are estimated entirely in C++ from SCG counts** — no external CheckM2 call is made during clustering. See [[#internal-quality-estimation]] below.
+**Completeness and contamination are estimated entirely in C++ from SCG counts** — no external CheckM2 call is made during clustering. See [Internal quality estimation](#internal-quality-estimation) below.
 
 ---
 
@@ -218,11 +216,11 @@ Convergence is declared when Δπ_a < 0.01 between iterations (typically 5–15 
 
 **Consensus calling:** Reads with p_a > 0.8 contribute to the ancient consensus with weight p_a; reads with p_a < 0.2 contribute to the modern consensus. Positions with < *min_depth* weighted coverage are masked with N. A per-position uncertainty file records the posterior variance of the soft assignment.
 
-**Damage correction of the ancient consensus (default: on):** After calling the ancient consensus, AMBER corrects assembly-baked damage before writing `ancient_consensus.fa`. See [[#assembly-damage-artifact]] below. Disable with `--no-polish`.
+**Damage correction of the ancient consensus (default: on):** After calling the ancient consensus, AMBER corrects assembly-baked damage before writing `ancient_consensus.fa`. See [Assembly damage artifact](#assembly-damage-artifact) below. Disable with `--no-polish`.
 
 ---
 
-## Assembly damage artifact {#assembly-damage-artifact}
+## Assembly damage artifact
 
 ### What happens during ancient assembly
 
@@ -315,9 +313,9 @@ Outputs: `polished.fa`, `damage_model.tsv`, `polish_stats.tsv`.
 
 ---
 
-## Internal quality estimation (C++ SCG engine) {#internal-quality-estimation}
+## Internal quality estimation
 
-AMBER estimates bin completeness and contamination on-the-fly in C++ using a **107-marker single-copy gene set** (`bacar_marker.hmm`, the same bacterial marker set used by COMEBin). No external tools (CheckM, CheckM2, BUSCO) are called during binning.
+AMBER estimates bin completeness and contamination on-the-fly in C++ using the **206-marker CheckM universal single-copy gene set** (`checkm_markers_only.hmm`). No external tools (CheckM, CheckM2, BUSCO) are called during binning.
 
 ### Marker detection
 
@@ -327,7 +325,7 @@ HMM profiles are scanned against contig ORF translations using an embedded HMMER
 
 For each bin *B*, AMBER aggregates marker counts across all member contigs into a `ClusterMarkerProfile`:
 
-$$\text{completeness}(B) = \frac{|\{m : \text{count}_B(m) \geq 1\}|}{107}$$
+$$\text{completeness}(B) = \frac{|\{m : \text{count}_B(m) \geq 1\}|}{206}$$
 
 $$\text{contamination}(B) = \frac{\sum_m \max(0,\, \text{count}_B(m) - 1)}{\sum_m \text{count}_B(m)}$$
 

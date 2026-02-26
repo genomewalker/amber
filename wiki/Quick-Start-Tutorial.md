@@ -4,7 +4,7 @@ This tutorial walks through binning a metagenomic assembly with AMBER, from BAM 
 
 ## Prerequisites
 
-- AMBER built with LibTorch (CPU or GPU) — see [[README|Home#installation]]
+- AMBER built with LibTorch (CPU or GPU) — see the [README installation section](https://github.com/genomewalker/amber#enabling-amber-bin----cpu-no-gpu-required)
 - [CheckM2](https://github.com/chklovski/CheckM2) for bin validation
 - A sorted, indexed BAM file of reads mapped to assembled contigs
 
@@ -31,7 +31,7 @@ samtools flagstat mapped.sorted.bam
 amber bin \
     --contigs assembly/final.contigs.fa \
     --bam mapped.sorted.bam \
-    --hmm auxiliary/bacar_marker.hmm \
+
     --encoder-seed 42 \
     --random-seed 1006 \
     --resolution 5.0 \
@@ -62,7 +62,7 @@ for seed in 42 7 123; do
     amber bin \
         --contigs assembly/final.contigs.fa \
         --bam mapped.sorted.bam \
-        --hmm auxiliary/bacar_marker.hmm \
+    
         --encoder-seed $seed \
         --random-seed 1006 \
         --resolution 5.0 --bandwidth 0.2 --partgraph-ratio 50 \
@@ -152,9 +152,9 @@ amber deconvolve \
 
 ### 0 HQ bins
 - Check `amber_summary.tsv` for estimated completeness — are there MQ bins?
-- Verify the HMM file is the correct marker set (`bacar_marker.hmm`)
+- Verify that `hmmsearch` is in PATH (HMMER3 required for marker detection)
 - Check that contigs are ≥ 2,500 bp and the assembly is adequate depth
 
 ### `amber bin requires LibTorch support`
 - Rebuild with `-DAMBER_USE_TORCH=ON -DCMAKE_PREFIX_PATH=$CONDA_PREFIX`
-- See [[Home#installation]]
+- See the [README](https://github.com/genomewalker/amber#enabling-amber-bin----cpu-no-gpu-required)

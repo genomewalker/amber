@@ -52,7 +52,7 @@ amber bin [options]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--hmm FILE` | — | HMM marker file (bacar_marker.hmm) |
+| `--hmm FILE` | auto | HMM marker file (default: `checkm_markers_only.hmm`, auto-detected) |
 | `--damage-positions N` | 15 | Terminal positions for damage estimation |
 | `--damage-infonce` | on | Enable damage-aware InfoNCE weighting |
 | `--min-length N` | 2500 | Minimum contig length (bp) |
@@ -168,7 +168,7 @@ amber damage --bam FILE --bins DIR --output FILE [options]
 
 ## amber polish
 
-Correct post-mortem damage in an assembled ancient FASTA. Fits a Bayesian damage model from the BAM and reverts T→C at 5′ terminal positions and A→G at 3′ terminal positions where the per-position credible interval confirms genuine damage rather than sequencing error. See [[Methods-and-Model#assembly-damage-artifact]] for background.
+Correct post-mortem damage in an assembled ancient FASTA. Fits a Bayesian damage model from the BAM and reverts T→C at 5′ terminal positions and A→G at 3′ terminal positions where the per-position credible interval confirms genuine damage rather than sequencing error. See [Assembly damage artifact](Methods-and-Model#assembly-damage-artifact) for background.
 
 ```
 amber polish --contigs FILE --bam FILE --library-type ds|ss --output DIR [options]

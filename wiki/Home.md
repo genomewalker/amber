@@ -46,7 +46,7 @@ Post-mortem deamination converts cytosines to uracil (read as T) at fragment ter
 cmake -DCMAKE_BUILD_TYPE=Release .. && cmake --build . --parallel
 
 # Bin (GPU/CPU)
-amber bin --contigs contigs.fa --bam alignments.bam --hmm auxiliary/bacar_marker.hmm \
+amber bin --contigs contigs.fa --bam alignments.bam \
           --output bins/ --threads 16
 
 # Aggregate runs
