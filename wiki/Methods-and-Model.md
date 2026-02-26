@@ -267,19 +267,32 @@ AMBER's 20-dimensional aDNA feature vector includes both sides of the suppressio
 
 The encoder can learn to combine both: `ct_rate_5p + mm_5p_tc` approximates the total terminal mismatch rate, recovering the full damage signal regardless of whether it was baked in or not. Neither dimension alone is sufficient at high ancient fractions.
 
+### The assembled sequence is wrong — not just the damage statistics
+
+Assembly-baked damage is a sequence-level error. When the assembler calls T instead of C at a terminal position, that T is written into the FASTA file as the actual nucleotide. The genome sequence is incorrect at those positions. This matters for every downstream analysis:
+
+- **Phylogenomics / SNP trees** — baked-in T's appear as derived mutations, creating false branches
+- **Gene prediction / protein annotation** — coding sequences contain wrong codons near contig termini
+- **Variant calling** — reads with true C are flagged as variants against the baked-in T reference
+- **Re-mapping** — ancient reads mapping to the same region appear undamaged because they match the T
+
+Running `amber deconvolve` (or `amber polish` for pre-existing assemblies) is therefore needed not only to characterise damage, but to obtain a genomically correct reference sequence.
+
 ### How AMBER addresses this
 
-**`amber deconvolve` (default behaviour):** `deconvolve` addresses the artifact in two complementary ways:
+**`amber deconvolve` (default behaviour):** `deconvolve` corrects baked-in damage in three passes:
 
-1. **EM read classification** — reads are soft-assigned to ancient/modern populations using per-read p_ancient scores. The ancient consensus is built from EM-weighted pileups, so each base call is driven by reads likely to be ancient. This means positions with predominantly ancient reads (high f) are called from the true ancient signal rather than the mixed majority vote, partially avoiding the baking problem at the source.
+1. **Neutral consensus from interior positions** — before any classification, a reference is built from reads at positions far from read termini (outside the damage zone). Interior positions are damage-free regardless of whether reads are ancient or modern, so this neutral consensus is unbiased even in pure-ancient samples. All subsequent classification compares reads against this unbiased reference rather than the damaged assembled sequence.
 
-2. **Damage polishing** — after building the ancient consensus, AMBER runs a Bayesian damage-correction pass before writing `ancient_consensus.fa`. At each position covered by ancient reads, it fits a positional damage model and corrects T→C at 5′ and A→G at 3′ where the per-position credible interval lower bound exceeds 2× the estimated sequencing error rate. The result is a damage-*free* ancient consensus: baked-in T's are reverted to C, so downstream variant calling, phylogenomics, or re-mapping gives correct base calls.
+2. **EM read classification and damage-aware consensus calling** — reads are soft-assigned to ancient/modern populations. The ancient consensus is built using the damage model at terminal positions (T from an ancient read at a 5′ C position is interpreted as C with probability proportional to the damage rate). The modern consensus falls back to the neutral consensus where modern read depth is insufficient.
 
-In the S17 incubation experiment (bin_4, ~40% ancient, 1.9 Mbp), deconvolve made 4,080 corrections (2,002 C→T + 2,078 G→A), restoring baked-in positions that would otherwise suppress the observed damage signal.
+3. **Damage harmonization** — the final pass compares ancient consensus vs neutral (modern) consensus at every position. Where ancient called T/A and neutral called C/G — the exact pattern expected from baked-in damage — the C/G base is adopted. This single step accounts for the bulk of corrections (4,080 out of 4,080 in the S17 experiment) because it directly identifies positions where the terminal damage pattern is inconsistent with what interior reads show.
 
-The correction counts are reported in `deconvolution_stats.tsv` as `ancient_ct_corr` and `ancient_ga_corr`. Use `--no-polish` to skip this step if you want the raw (uncorrected) ancient consensus.
+**No modern reads:** `amber deconvolve` works correctly even when the BAM contains only ancient reads. The neutral consensus (pass 1) is built from interior positions of ancient reads, which are damage-free and show the true base. All reads are classified as ancient (p_ancient ≈ 1.0, correct), and the damage correction proceeds normally. Modern output is suppressed when the estimated modern fraction is below 5%. The corrected `ancient_consensus.fa` is produced in all cases.
 
-**`amber polish` (standalone):** For pre-existing assemblies that were not produced by `amber deconvolve`, AMBER provides a standalone polisher that takes any FASTA + BAM:
+In the S17 incubation experiment (bin_4, ~40% ancient, 1.9 Mbp), `amber deconvolve` made 4,080 corrections (2,002 C→T + 2,078 G→A). The correction counts appear in `deconvolution_stats.tsv` as `ancient_ct_corr` and `ancient_ga_corr`. Use `--no-polish` to skip correction and write the raw ancient consensus.
+
+**`amber polish` (standalone):** A lighter-weight standalone polisher for pre-existing assemblies. It applies only the Bayesian Bayes-factor correction pass (no neutral consensus, no damage harmonization). On the same S17 bin_4 dataset, `amber polish` made 111 corrections vs 4,080 for `amber deconvolve` — roughly 37× fewer. Use `amber deconvolve` in preference when possible; `amber polish` is useful only when the original BAM is not available.
 
 ```bash
 amber polish \
@@ -290,20 +303,15 @@ amber polish \
     --threads 16
 ```
 
-Outputs:
-- `polished/polished.fa` — damage-corrected assembly
-- `polished/damage_model.tsv` — Bayesian damage model with amplitude, λ, baseline, and per-position credible intervals
-- `polished/polish_stats.tsv` — per-contig correction counts
-
-The correction rule: at positions 1–*N* from each read's 5′ end (default *N* = 15), correct if the 95% credible interval lower bound exceeds the baseline sequencing error rate. Positions with fewer than 3× coverage are skipped. The model is estimated from the BAM and is not assumed from any prior.
+Outputs: `polished.fa`, `damage_model.tsv`, `polish_stats.tsv`.
 
 ### Practical guidance
 
 | Situation | Recommended approach |
 |-----------|----------------------|
-| Using `amber deconvolve` to separate ancient/modern | Default (`--no-polish` not set): `ancient_consensus.fa` is already corrected |
-| Existing ancient assembly, need polished reference for phylogenomics | `amber polish --contigs assembly.fa --bam reads.bam --output polished/` |
-| Existing assembly, want to verify damage without correcting | `amber damage --bam reads.bam --bins bins/ --output damage.tsv` |
+| Any ancient assembly (with or without modern reads) | `amber deconvolve` — produces corrected `ancient_consensus.fa`; modern output suppressed if < 5% modern fraction |
+| BAM not available, pre-existing assembly | `amber polish` — limited (37× fewer corrections), but better than nothing |
+| Want to verify damage profile without correcting | `amber damage --bam reads.bam --bins bins/ --output damage.tsv` |
 
 ---
 
