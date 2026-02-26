@@ -182,7 +182,7 @@ bool SeedGenerator::run_fraggenescan(const std::string& contigs_path,
 bool SeedGenerator::run_hmmsearch(const std::string& faa_path,
                                    const std::string& output_path) {
     std::ostringstream cmd;
-    // Try --cut_tc first (works with marker.hmm), fall back to -E 1e-5 (for bacar_marker.hmm)
+    // Try --cut_tc first (works with CheckM HMMs that have TC thresholds defined)
     cmd << hmmsearch_path_
         << " --domtblout " << output_path
         << " --cut_tc"
@@ -207,8 +207,7 @@ bool SeedGenerator::run_hmmsearch(const std::string& faa_path,
 
     if (!has_hits) {
         // Retry without --cut_tc, using relaxed E-value threshold
-        // COMEBin's bacar_marker.hmm doesn't have TC thresholds, so we use E-value 1.0
-        // which is typical for profile HMM searches (then filter by coverage)
+        // Fallback for HMM files without TC thresholds; use E-value 1.0 and filter by coverage
         std::cerr << "[seeds] No hits with --cut_tc, retrying with -E 1...\n";
         std::ostringstream cmd2;
         cmd2 << hmmsearch_path_

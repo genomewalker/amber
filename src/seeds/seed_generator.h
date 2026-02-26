@@ -21,7 +21,7 @@ struct HMMHit {
 
 class SeedGenerator {
 public:
-    SeedGenerator(int threads = 4, const std::string& hmm_path = "auxiliary/bacar_marker.hmm",
+    SeedGenerator(int threads = 4, const std::string& hmm_path = "auxiliary/checkm_markers_only.hmm",
                   int min_length = 1001,
                   const std::string& hmmsearch_path = "hmmsearch",
                   const std::string& fraggenescan_path = "FragGeneScan");

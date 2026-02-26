@@ -21,7 +21,7 @@ CLICommand make_seeds_command() {
         {"--contigs", "FILE", "Input contigs FASTA file", "", true},
         {"--output", "FILE", "Output seed contig list file", "", true},
         {"--threads", "N", "Number of threads", "4"},
-        {"--hmm", "FILE", "HMM profile file for markers", "auxiliary/bacar_marker.hmm"},
+        {"--hmm", "FILE", "HMM profile file for markers", "auxiliary/checkm_markers_only.hmm"},
         {"--min-length", "N", "Minimum contig length for seeds", "1001"},
         {"--hmmsearch", "PATH", "Path to hmmsearch binary", "hmmsearch"},
         {"--fraggenescan", "PATH", "Path to FragGeneScan binary", "FragGeneScan"},
@@ -60,7 +60,7 @@ int cmd_seeds(int argc, char** argv) {
     std::string contigs = cmd.get_option(argc, argv, "--contigs");
     std::string output = cmd.get_option(argc, argv, "--output");
     int threads = std::stoi(cmd.get_option(argc, argv, "--threads", "4"));
-    std::string hmm = cmd.get_option(argc, argv, "--hmm", "auxiliary/bacar_marker.hmm");
+    std::string hmm = cmd.get_option(argc, argv, "--hmm", "auxiliary/checkm_markers_only.hmm");
     int min_length = std::stoi(cmd.get_option(argc, argv, "--min-length", "1001"));
     std::string hmmsearch = cmd.get_option(argc, argv, "--hmmsearch", "hmmsearch");
     std::string fraggenescan = cmd.get_option(argc, argv, "--fraggenescan", "FragGeneScan");

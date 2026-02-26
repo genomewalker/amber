@@ -40,7 +40,7 @@ export CUDACXX=/usr/local/cuda/bin/nvcc
 ./build/amber_gpu bin2 \
     --contigs $CONTIGS \
     --bam $BAM \
-    --hmm auxiliary/bacar_marker.hmm \
+    --hmm auxiliary/checkm_markers_only.hmm \
     --encoder-seed 42 \
     --random-seed 1006 \
     --resolution 5.0 \

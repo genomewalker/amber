@@ -45,7 +45,7 @@ int cmd_bin(int argc, char** argv) {
                       << "  --n-layer N            Number of encoder hidden layers (default: 3)\n"
                       << "  --dropout FLOAT        Encoder dropout rate (default: 0.2)\n\n"
                       << "Seed Generation:\n"
-                      << "  --hmm FILE             HMM file for seed generation (default: auxiliary/bacar_marker.hmm)\n"
+                      << "  --hmm FILE             HMM file for seed generation (default: auxiliary/checkm_markers_only.hmm)\n"
                       << "  --hmmsearch PATH       Path to hmmsearch binary (default: hmmsearch)\n"
                       << "  --fraggenescan PATH    Path to FragGeneScan binary (default: FragGeneScan)\n\n"
                       << "Other:\n"
