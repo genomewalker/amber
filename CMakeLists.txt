@@ -213,9 +213,7 @@ set(AMBER_CORE_SOURCES
     src/cli/cmd_seeds.cpp
     src/cli/cmd_resolve.cpp
     src/cli/cmd_damage.cpp
-    src/cli/cmd_polish.cpp
     src/seeds/seed_generator.cpp
-    src/polish.cpp
     src/chimera.cpp
     src/algorithms/fractal_features.cpp
     src/algorithms/kmer_features.cpp
@@ -227,6 +225,7 @@ set(AMBER_CORE_SOURCES
     src/algorithms/chimera_detector.cpp
     src/algorithms/ref_reader.cpp
     src/algorithms/parallel_coverage.cpp
+    src/deconvolve.cpp
     src/binner/binner.cpp
     src/bin2/clustering/hnsw_knn_index.cpp
     src/bin2/clustering/edge_weighter.cpp

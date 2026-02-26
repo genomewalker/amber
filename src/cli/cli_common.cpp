@@ -171,44 +171,6 @@ bool CLICommand::validate_required(int argc, char** argv) const {
 
 // Command definitions
 
-CLICommand make_polish_command() {
-    CLICommand cmd;
-    cmd.name = "polish";
-    cmd.description = "Correct ancient DNA damage in assembled contigs using Bayesian inference.";
-
-    cmd.options = {
-        {"--contigs", "FILE", "Input contigs FASTA file", "", true},
-        {"--bam", "FILE", "BAM file (reads mapped to contigs)", "", true},
-        {"--anvio", "", "Rename contigs for anvi'o compatibility"},
-        {"--damage-positions", "N", "Positions from read ends to correct", "15"},
-        {"--library-type", "TYPE", "Library prep type: ds (double-stranded) or ss (single-stranded)"},
-        {"--min-baseq", "N", "Minimum base quality", "20"},
-        {"--min-length", "N", "Minimum contig length to process", "0"},
-        {"--min-mapq", "N", "Minimum mapping quality", "30"},
-        {"--output", "DIR", "Output directory", "current directory"},
-        {"--prefix", "PREFIX", "Contig name prefix for --anvio", "c"},
-        {"--threads", "N", "Number of threads", "1"},
-        {"-v, --verbose", "", "Enable verbose output"},
-        {"-h, --help", "", "Show this help message"},
-    };
-
-    cmd.outputs = {
-        {"polished.fa", "Damage-corrected sequences"},
-        {"polish_stats.tsv", "Per-contig correction statistics"},
-        {"damage_profile.tsv", "Per-position damage rates"},
-        {"damage_model.tsv", "Bayesian damage model parameters"},
-        {"rename_report.tsv", "Contig name mapping", "(with --anvio)"},
-    };
-
-    cmd.note = "For damage-based deconvolution (damaged vs undamaged), use 'amber deconvolve'.";
-
-    cmd.examples = {
-        "amber polish --contigs assembly.fa --bam reads.bam --library-type ss",
-        "amber polish --contigs assembly.fa --bam reads.bam --output polished/ --anvio",
-    };
-
-    return cmd;
-}
 
 CLICommand make_deconvolve_command() {
     CLICommand cmd;
@@ -303,11 +265,9 @@ CLICommand make_chimera_command() {
         {"cleaned.fa", "Contigs with chimeras handled per --chimera-action"},
     };
 
-    cmd.note = "Use 'amber polish --anvio' before chimera detection for anvi'o-compatible names.";
-
     cmd.examples = {
-        "amber chimera --contigs polished.fa --bam reads.bam --output results/",
-        "amber chimera --contigs polished.fa --bam reads.bam --chimera-action remove",
+        "amber chimera --contigs bins/bin_0.fa --bam reads.bam --output results/",
+        "amber chimera --contigs bins/bin_0.fa --bam reads.bam --chimera-action remove",
     };
 
     return cmd;
@@ -368,12 +328,6 @@ CLICommand make_bin_command() {
         {"--seed", "N", "Random seed for reproducibility", "42"},
         {"--anvio", "", "Rename contigs for anvi'o (format: c_000000000001)"},
         {"--prefix", "PREFIX", "Contig name prefix for --anvio", "c"},
-        {"--polish", "", "Per-bin polishing: correct damage using bin-level models"},
-        {"--polish-bam", "FILE", "BAM file for polishing (default: same as --bam)"},
-        {"--polish-min-lr", "N", "Min log-likelihood ratio for damage correction", "3.0"},
-        {"--polish-positions", "N", "Positions from read ends to correct", "15"},
-        {"--polish-min-mapq", "N", "Min mapping quality for polish reads", "30"},
-        {"--polish-min-baseq", "N", "Min base quality for polish reads", "20"},
         {"--ancient-p-threshold", "P", "Min p_ancient for ANCIENT classification", "0.8"},
         {"--modern-p-threshold", "P", "Max p_ancient for MODERN classification", "0.5"},
         {"--ancient-amp-threshold", "A", "Min amplitude for ANCIENT classification", "0.01"},
@@ -391,25 +345,22 @@ CLICommand make_bin_command() {
     };
 
     cmd.outputs = {
-        {"bin_*.fa", "Bin FASTAs (polished if --polish, renamed if --anvio)"},
+        {"bin_*.fa", "Bin FASTAs (renamed if --anvio)"},
         {"bin_stats.tsv", "Per-bin quality metrics and temporal analysis"},
         {"contig_assignments.tsv", "Per-contig bin assignments with all features"},
         {"damage_profile.tsv", "Per-position damage rates (C->T, G->A)"},
         {"damage_model.tsv", "Global Bayesian damage model parameters"},
         {"binner_trace.log", "Detailed trace log for debugging"},
-        {"polish_per_bin_stats.tsv", "Per-contig polishing statistics", "(with --polish)"},
         {"rename_report.tsv", "Original to anvi'o name mapping", "(with --anvio)"},
         {"smiley_*.tsv", "Per-bin damage smiley plot data", "(with --export-smiley)"},
     };
 
     cmd.note = "The --anvio flag renames contigs to anvi'o format (c_000000000001, c_000000000002, ...)\n"
-               "  using underscore + 12 zero-padded digits. Original names are in rename_report.tsv.\n"
-               "  With --polish, damage is corrected using bin-level models (more accurate\n"
-               "  than per-contig) while preserving original TNF/CGR features for binning.";
+               "  using underscore + 12 zero-padded digits. Original names are in rename_report.tsv.";
 
     cmd.examples = {
         "amber bin --contigs assembly.fa --bam reads.bam --output bins/ --threads 16",
-        "amber bin --contigs assembly.fa --bam reads.bam --output bins/ --anvio --polish",
+        "amber bin --contigs assembly.fa --bam reads.bam --output bins/ --anvio",
     };
 
     return cmd;

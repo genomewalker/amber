@@ -61,7 +61,6 @@ struct CLICommand {
 };
 
 // Command definitions
-CLICommand make_polish_command();
 CLICommand make_deconvolve_command();
 CLICommand make_chimera_command();
 CLICommand make_embed_command();

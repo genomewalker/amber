@@ -23,7 +23,6 @@
 #include "../algorithms/sequence_utils.h"
 #include "../util/logger.h"
 #include "../algorithms/iqs_stats.h"
-#include "../algorithms/polish_engine.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -967,17 +966,6 @@ public:
     bool export_smiley_data = false;    // Export data for smiley plots
     bool anvio_mode = false;            // Rename contigs for anvi'o compatibility
     std::string anvio_prefix = "c";     // Prefix for anvi'o contig names
-
-    // Per-bin polishing options
-    bool polish_output = false;         // Enable per-bin polishing
-    std::string polish_bam_path;        // BAM file for polishing (if different from binning BAM)
-    double polish_min_log_lr = 3.0;     // Min log likelihood ratio for correction (legacy)
-    int polish_damage_positions = 15;   // Number of positions to correct
-    int polish_min_mapq = 30;           // Minimum mapping quality
-    int polish_min_baseq = 20;          // Minimum base quality
-    bool polish_use_bayesian = true;    // Use Bayesian genotype caller (default ON)
-    double polish_min_posterior = 0.99; // Required confidence for correction
-    double polish_max_second_posterior = 0.05;  // Max probability for second-best
 
     // Temporal chimera detection thresholds
     double temporal_minority_ratio = 0.1;   // Max minority/majority ratio for temporal_outliers
@@ -6451,40 +6439,9 @@ public:
             }
         }
 
-        // Per-bin polishing setup
-        std::string polish_bam = polish_bam_path.empty() ? bam_path : polish_bam_path;
-        samFile *sf = nullptr;
-        bam_hdr_t *hdr = nullptr;
-        hts_idx_t *idx = nullptr;
-
-        if (polish_output && damage_computed_) {
-            log_.info("Per-bin polishing enabled using bin-level damage models");
-            sf = sam_open(polish_bam.c_str(), "r");
-            if (sf) {
-                hdr = sam_hdr_read(sf);
-                idx = sam_index_load(sf, polish_bam.c_str());
-            }
-            if (!sf || !hdr || !idx) {
-                log_.warn("Cannot open BAM for polishing, falling back to unpolished output");
-                if (idx) hts_idx_destroy(idx);
-                if (hdr) bam_hdr_destroy(hdr);
-                if (sf) sam_close(sf);
-                sf = nullptr;
-            }
-        }
-
-        // Polish statistics file
-        std::ofstream polish_stats;
-        if (polish_output && sf) {
-            polish_stats.open(output_dir + "/polish_per_bin_stats.tsv");
-            polish_stats << "bin\tcontig\tct_corrections\tga_corrections\ttotal_edits\n";
-        }
-
         int bin_num = 0;
         size_t total_binned = 0;
         size_t total_bp_binned = 0;
-        size_t total_ct_corrections = 0;
-        size_t total_ga_corrections = 0;
 
         // Build mapping from internal bin_id to exported bin number
         std::unordered_map<int, int> internal_to_export_id;
@@ -6500,59 +6457,15 @@ public:
             // Map internal bin_id (which equals bin_idx for contigs in this bin) to export number
             internal_to_export_id[bin_idx] = bin_num;
 
-            // Compute bin-level damage model by pooling reads
-            DamageModelResult bin_damage;
-            bool can_polish = false;
-
-            if (polish_output && sf && damage_computed_) {
-                // Pool damage statistics from all contigs in bin
-                std::vector<uint64_t> bin_n_5p(20, 0), bin_k_5p(20, 0);
-                std::vector<uint64_t> bin_n_3p(20, 0), bin_k_3p(20, 0);
-
-                for (auto* c : bin.members) {
-                    auto it = damage_analysis_.profile.per_contig.find(c->name);
-                    if (it != damage_analysis_.profile.per_contig.end()) {
-                        for (const auto& e : it->second) {
-                            if (e.pos > 0 && e.pos <= 20) {
-                                bin_n_5p[e.pos-1] += e.countC + e.total;
-                                bin_k_5p[e.pos-1] += (uint64_t)(e.c_to_t * e.total);
-                                bin_n_3p[e.pos-1] += e.countG + e.total;
-                                bin_k_3p[e.pos-1] += (uint64_t)(e.g_to_a * e.total);
-                            }
-                        }
-                    }
-                }
-
-                if (bin_n_5p[0] > 0) {
-                    bin_damage = fit_damage_model(bin_n_5p, bin_k_5p, bin_n_3p, bin_k_3p, 0.5);
-                    can_polish = bin_damage.is_significant && bin_damage.curve_5p.amplitude > 0.01;
-                }
-            }
-
             std::string filename = output_dir + "/bin_" + std::to_string(bin_num) + ".fa";
             std::ofstream out(filename);
 
             for (auto* c : bin.members) {
                 std::string output_name = anvio_mode ? name_map[c->name] : c->name;
-                std::string sequence = c->sequence;
-                size_t ct_corr = 0, ga_corr = 0;
-
-                // Polish this contig using bin-level damage model
-                if (can_polish) {
-                    polish_contig_with_bin_model(
-                        sequence, c->name, sf, hdr, idx, bin_damage,
-                        ct_corr, ga_corr);
-                    total_ct_corrections += ct_corr;
-                    total_ga_corrections += ga_corr;
-                    if (polish_stats.is_open()) {
-                        polish_stats << "bin_" << bin_num << "\t" << output_name << "\t"
-                                     << ct_corr << "\t" << ga_corr << "\t" << (ct_corr + ga_corr) << "\n";
-                    }
-                }
 
                 out << ">" << output_name << "\n";
-                for (size_t i = 0; i < sequence.length(); i += 80) {
-                    out << sequence.substr(i, 80) << "\n";
+                for (size_t i = 0; i < c->sequence.length(); i += 80) {
+                    out << c->sequence.substr(i, 80) << "\n";
                 }
             }
 
@@ -6583,24 +6496,12 @@ public:
             }
         }
 
-        // Cleanup BAM handles
-        if (idx) hts_idx_destroy(idx);
-        if (hdr) bam_hdr_destroy(hdr);
-        if (sf) sam_close(sf);
-
         log_.subsection("Summary");
         log_.metric("total_bins", bin_num);
         log_.metric("total_contigs_binned", (int)total_binned);
         log_.metric("total_bp_binned", (int)total_bp_binned);
         log_.metric("unbinned_contigs", (int)unbinned_count);
         log_.metric("unbinned_bp", (int)unbinned_bp);
-
-        if (polish_output && total_ct_corrections + total_ga_corrections > 0) {
-            log_.metric("polish_ct_corrections", (int)total_ct_corrections);
-            log_.metric("polish_ga_corrections", (int)total_ga_corrections);
-            std::cerr << "\n  Per-bin polishing: " << total_ct_corrections << " C→T and "
-                      << total_ga_corrections << " G→A corrections\n";
-        }
 
         std::cerr << "\n  Wrote " << bin_num << " bins (" << total_binned << " contigs, "
                   << total_bp_binned / 1000000.0 << " Mbp)";
@@ -6630,29 +6531,6 @@ public:
         if (export_smiley_data && damage_computed_) {
             write_smiley_per_bin(output_dir, internal_to_export_id);
         }
-    }
-
-    // Polish a single contig using bin-level damage model (delegates to shared engine)
-    void polish_contig_with_bin_model(
-        std::string& sequence,
-        const std::string& contig_name,
-        samFile* sf, bam_hdr_t* hdr, hts_idx_t* idx,
-        const DamageModelResult& bin_damage,
-        size_t& ct_corrections, size_t& ga_corrections) {
-
-        PolishEngineConfig engine_config;
-        engine_config.min_log_lr = polish_min_log_lr;
-        engine_config.damage_positions = polish_damage_positions;
-        engine_config.min_mapq = polish_min_mapq;
-        engine_config.min_baseq = polish_min_baseq;
-        engine_config.use_bayesian_caller = polish_use_bayesian;
-        engine_config.min_posterior = polish_min_posterior;
-        engine_config.max_second_posterior = polish_max_second_posterior;
-
-        PolishResult result = polish_contig(sequence, contig_name, sf, hdr, idx,
-                                            bin_damage, engine_config);
-        ct_corrections = result.ct_corrections;
-        ga_corrections = result.ga_corrections;
     }
 
     void write_contig_assignments(const std::string& output_dir,
@@ -7238,24 +7116,6 @@ int run_binner(int argc, char** argv) {
             binner.anvio_mode = true;
         } else if (arg == "--prefix" && i + 1 < argc) {
             binner.anvio_prefix = argv[++i];
-        } else if (arg == "--polish" || arg == "--polish-output") {
-            binner.polish_output = true;
-        } else if (arg == "--polish-bam" && i + 1 < argc) {
-            binner.polish_bam_path = argv[++i];
-        } else if (arg == "--polish-min-lr" && i + 1 < argc) {
-            binner.polish_min_log_lr = std::stod(argv[++i]);
-        } else if (arg == "--polish-positions" && i + 1 < argc) {
-            binner.polish_damage_positions = std::stoi(argv[++i]);
-        } else if (arg == "--polish-min-mapq" && i + 1 < argc) {
-            binner.polish_min_mapq = std::stoi(argv[++i]);
-        } else if (arg == "--polish-min-baseq" && i + 1 < argc) {
-            binner.polish_min_baseq = std::stoi(argv[++i]);
-        } else if (arg == "--polish-min-posterior" && i + 1 < argc) {
-            binner.polish_min_posterior = std::stod(argv[++i]);
-        } else if (arg == "--polish-max-second-posterior" && i + 1 < argc) {
-            binner.polish_max_second_posterior = std::stod(argv[++i]);
-        } else if (arg == "--no-bayesian-polish") {
-            binner.polish_use_bayesian = false;
         } else if (arg == "--temporal-minority-ratio" && i + 1 < argc) {
             binner.temporal_minority_ratio = std::stod(argv[++i]);
         } else if (arg == "--temporal-damage-std" && i + 1 < argc) {
