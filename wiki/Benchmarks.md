@@ -13,10 +13,10 @@ All tools ran on the same assembly and BAM. AMBER result is the `amber resolve` 
 | Tool | HQ bins | MQ bins | Reps | Notes |
 |------|---------|---------|------|-------|
 | SemiBin2 [3] | 5.7 (range 5–6) | 17 | 3 | Self-supervised contrastive, no aDNA features |
-| COMEBin [4] | 7.5 (range 6–9) | 16–17 | 8 | Standard self-supervised InfoNCE, no aDNA features |
+| COMEBin [4] | 8.3 (range 8–9) | 16–17 | 3 | Standard self-supervised InfoNCE, no aDNA features |
 | **AMBER (this work)** | **11** | **20** | 3 → resolve | Damage-aware InfoNCE + quality-guided Leiden + co-binning consensus |
 
-AMBER recovers 2–6 additional HQ bins compared with competing methods. SemiBin2 is limited to 5–6 HQ and is stable across runs; COMEBin varies between 6 and 9 HQ across 8 runs due to Leiden stochasticity. AMBER is fully stable (11/11/11).
+AMBER recovers 2–6 additional HQ bins compared with competing methods. SemiBin2 is limited to 5–6 HQ and is stable across runs; COMEBin varies between 8 and 9 HQ across 3 runs. AMBER is fully stable (11/11/11).
 
 ---
 
@@ -57,7 +57,7 @@ Best of 3 SemiBin2 self-supervised runs. All 6 HQ bins shown; SemiBin2 produces 
 
 ## COMEBin — per-bin quality (best replicate, top 3 HQ)
 
-Best of 8 COMEBin runs. Top 3 HQ bins shown; COMEBin recovers up to 9 HQ and 16–17 MQ bins per run.
+Best of 3 COMEBin runs. Top 3 HQ bins shown; COMEBin recovers up to 9 HQ and 16–17 MQ bins per run.
 
 | Bin | Completeness | Contamination | Size (Mbp) | Tier |
 |-----|-------------|---------------|------------|------|
@@ -77,7 +77,7 @@ Best of 8 COMEBin runs. Top 3 HQ bins shown; COMEBin recovers up to 9 HQ and 16�
 
 **Contamination control:** AMBER's median contamination across 11 HQ bins is 2.09%; COMEBin best rep median is 1.94%; SemiBin2 best rep median is 1.36% — all comparable. Two COMEBin bins had > 50% contamination (excluded above); AMBER's worst HQ bin is bin_28 at 4.45%.
 
-**Reproducibility:** AMBER produces exactly 11 HQ bins in every replicate run. SemiBin2 is stable (5–6 HQ) but recovers fewer genomes. COMEBin varies between 6 and 9 HQ across 8 independent runs on identical data, due to Leiden stochasticity without a resolution sweep.
+**Reproducibility:** AMBER produces exactly 11 HQ bins in every replicate run. SemiBin2 is stable (5–6 HQ) but recovers fewer genomes. COMEBin varies between 8 and 9 HQ across 3 runs.
 
 ---
 
