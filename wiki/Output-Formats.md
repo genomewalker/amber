@@ -33,27 +33,37 @@ Tab-separated summary of all bins.
 | `damage_class` | `ancient` / `modern` / `mixed` |
 
 ### `bins/damage_per_bin.tsv`
-Per-bin damage profile. Same columns as `amber damage` output — see [[Command Reference]].
+Per-bin damage profile. Same columns as the `amber damage` output table below.
 
 ### `run.abin`
-Binary archive used by `amber resolve`. Contains:
-- All contig names and their bin assignments
-- Per-contig embeddings (157-dim float32)
-- Per-contig SCG marker sets
-- Per-contig damage profiles
-- Run configuration (seeds, resolution, bandwidth)
 
-**Format** (chunk-based):
+Binary archive produced by `amber bin` and consumed by `amber resolve`. It carries everything needed to reconstruct or aggregate a binning run without re-running the encoder.
 
-| Chunk | Contents |
-|-------|----------|
-| `NAME` | Contig name strings |
-| `LNGT` | Contig lengths (uint32) |
-| `EMBD` | Embeddings (float32, 157 dims/contig) |
-| `FEAT` | Feature vectors |
-| `DAMG` | Damage profiles |
-| `BINL` | Bin label assignments |
-| `SCGM` | SCG marker bitsets |
+**File layout:**
+
+```
+magic[8]       "AMBR\x01\x00\x00\n"
+n_contigs[4]   uint32 — total contigs in this run
+chunks...      [tag:4][size:4][data:size] repeated
+END\0[4]       sentinel chunk (size = 0)
+```
+
+All multi-byte integers are **little-endian**. Unknown chunk tags are skipped by the reader, so the format is forward-compatible.
+
+**Chunks:**
+
+| Tag | Data layout | Contents |
+|-----|-------------|----------|
+| `NAME` | `offsets[n×uint32]` + `data_len[uint32]` + packed null-terminated strings | Contig name strings. Resolve using `packed_data + offsets[i]` |
+| `LNGT` | `int32[n]` | Contig lengths in bp |
+| `EMBD` | `dim[uint16]` + `float32[n×dim]` | L2-normalised encoder embeddings (128 dims) |
+| `FEAT` | `dim[uint16]` + `float32[n×dim]` | Full 157-dim feature vector (128 encoder + 20 aDNA + 9 CGR) used for kNN |
+| `DAMG` | `dim[uint16]` + `float32[n×dim]` | Raw damage profile (20 aDNA dims: C→T positions, G→A positions, λ, fragment length, coverage) |
+| `BINL` | `int32[n]` | Bin label per contig; −1 = unbinned |
+| `SCGM` | `total_markers[uint32]` + `n_hits[uint32]` + `hits[n_hits × (contig_idx:uint32 + marker_id:uint16)]` | Sparse SCG marker assignments. Each hit record maps one contig to one marker ID. `total_markers` is the size of the marker vocabulary (e.g. 107) |
+| `END\0` | — | Sentinel; signals end of file |
+
+**Why a custom binary format?** A single `.abin` file captures the full run state in one read-compatible object. `amber resolve` memory-maps or streams N files in parallel, builds the co-binning affinity matrix from `BINL` and `SCGM`, and uses `EMBD`/`FEAT` only if re-clustering is requested. JSON or TSV would require separate files for embeddings, markers, and labels, making resolve fragile to partial runs.
 
 ---
 
@@ -115,7 +125,20 @@ BAM file containing all reads with p_ancient ≤ `--modern-bam-threshold`. Both 
 ## `amber damage` output
 
 ### `damage_per_bin.tsv`
-See [[Command Reference]] for column descriptions.
+
+| Column | Description |
+|--------|-------------|
+| `bin` | Bin name |
+| `n_contigs` | Number of contigs |
+| `n_reads` | Total mapped reads |
+| `ct_5p_1` … `ct_5p_5` | C→T rates at 5′ positions 1–5 |
+| `ga_3p_1` … `ga_3p_5` | G→A rates at 3′ positions 1–5 |
+| `lambda_5p` | Fitted exponential decay constant at 5′ |
+| `lambda_3p` | Fitted exponential decay constant at 3′ |
+| `p_ancient` | Fraction of reads classified as ancient |
+| `frag_len_mean` | Mean fragment length (bp) |
+| `frag_len_std` | Std dev of fragment length (bp) |
+| `damage_class` | `ancient` / `modern` / `mixed` |
 
 ---
 
