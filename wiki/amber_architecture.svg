@@ -1,118 +1,149 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" width="1000" height="340">
 <defs>
-  <style>* { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; }</style>
-  <marker id="arr" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="6" markerHeight="6" orient="auto">
-    <path d="M0,0 L8,3 L0,6 Z" fill="#64748B"/>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+    * { font-family: 'Inter', -apple-system, 'Helvetica Neue', Arial, sans-serif; }
+  </style>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+    <path d="M0,0 L10,5 L0,10 Z" fill="#475569"/>
   </marker>
-  <marker id="arr-amber" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="6" markerHeight="6" orient="auto">
-    <path d="M0,0 L8,3 L0,6 Z" fill="#B45309"/>
-  </marker>
+  <linearGradient id="amberGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#FEF3C7"/>
+    <stop offset="100%" style="stop-color:#FDE68A"/>
+  </linearGradient>
 </defs>
 
-<rect width="1200" height="420" fill="#FAFAF8"/>
+<!-- Background -->
+<rect width="1000" height="340" fill="#FFFFFF"/>
 
-<!-- Title -->
-<text x="600" y="28" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A" letter-spacing="2">AMBER</text>
-<text x="600" y="46" text-anchor="middle" font-size="10" fill="#64748B">Ancient Metagenomic Binning with aDNA-aware Encoder and Refinement</text>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 1: INPUTS (x=20-180) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<!-- ══ ROW 1: INPUTS ══ -->
-<rect x="20" y="70" width="140" height="70" rx="4" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
-<text x="90" y="98" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Contigs</text>
-<text x="90" y="114" text-anchor="middle" font-size="9" fill="#64748B">FASTA</text>
-<text x="90" y="128" text-anchor="middle" font-size="8" fill="#94A3B8">TNF · length</text>
+<text x="100" y="28" text-anchor="middle" font-size="9" font-weight="600" fill="#64748B" letter-spacing="1.5">INPUTS</text>
 
-<rect x="180" y="70" width="140" height="70" rx="4" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
-<text x="250" y="98" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Alignments</text>
-<text x="250" y="114" text-anchor="middle" font-size="9" fill="#64748B">BAM</text>
-<text x="250" y="128" text-anchor="middle" font-size="8" fill="#94A3B8">coverage · damage</text>
+<rect x="20" y="42" width="160" height="48" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="100" y="64" text-anchor="middle" font-size="10" font-weight="600" fill="#1E293B">Contigs</text>
+<text x="100" y="80" text-anchor="middle" font-size="8" fill="#64748B">FASTA · TNF · length</text>
 
-<rect x="340" y="70" width="140" height="70" rx="4" fill="#FFFBEF" stroke="#C27B0A" stroke-width="1.5"/>
-<text x="410" y="98" text-anchor="middle" font-size="11" font-weight="600" fill="#78350F">SCG Markers</text>
-<text x="410" y="114" text-anchor="middle" font-size="9" fill="#92400E">HMM profiles</text>
-<text x="410" y="128" text-anchor="middle" font-size="8" fill="#B45309">206 markers</text>
+<rect x="20" y="100" width="160" height="48" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="100" y="122" text-anchor="middle" font-size="10" font-weight="600" fill="#1E293B">Alignments</text>
+<text x="100" y="138" text-anchor="middle" font-size="8" fill="#64748B">BAM · coverage · damage</text>
 
-<!-- Arrows from inputs -->
-<line x1="90" y1="140" x2="90" y2="170" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
-<line x1="250" y1="140" x2="250" y2="170" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
-<line x1="410" y1="140" x2="410" y2="170" stroke="#B45309" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-amber)"/>
+<rect x="20" y="158" width="160" height="48" rx="3" fill="url(#amberGrad)" stroke="#F59E0B" stroke-width="1"/>
+<text x="100" y="180" text-anchor="middle" font-size="10" font-weight="600" fill="#92400E">SCG Markers</text>
+<text x="100" y="196" text-anchor="middle" font-size="8" fill="#B45309">HMM · 206 profiles</text>
 
-<!-- ══ ROW 2: FEATURES ══ -->
-<rect x="20" y="175" width="300" height="55" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
-<text x="170" y="198" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Feature Extraction</text>
-<text x="170" y="214" text-anchor="middle" font-size="9" fill="#64748B">138d encoder input (TNF + coverage) · 29d bypass (aDNA + CGR)</text>
+<!-- Arrow from inputs -->
+<line x1="180" y1="124" x2="208" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-<rect x="340" y="175" width="140" height="55" rx="4" fill="#FFFBEF" stroke="#FCD34D" stroke-width="1"/>
-<text x="410" y="198" text-anchor="middle" font-size="10" font-weight="600" fill="#78350F">SCG Labels</text>
-<text x="410" y="214" text-anchor="middle" font-size="9" fill="#92400E">positive pairs · seeds</text>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 2: FEATURE EXTRACTION (x=220-380) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<!-- Arrow to encoder -->
-<line x1="170" y1="230" x2="170" y2="260" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
-<path d="M410,230 L410,245 Q410,255 400,255 L180,255 Q170,255 170,260" fill="none" stroke="#B45309" stroke-width="1.5" stroke-dasharray="4,3"/>
+<text x="300" y="28" text-anchor="middle" font-size="9" font-weight="600" fill="#64748B" letter-spacing="1.5">FEATURES</text>
 
-<!-- ══ ROW 3: ENCODER ══ -->
-<rect x="20" y="265" width="460" height="60" rx="4" fill="#FEF3C7" stroke="#C27B0A" stroke-width="1.5"/>
-<text x="250" y="290" text-anchor="middle" font-size="11" font-weight="700" fill="#78350F">SCG-supervised InfoNCE Encoder</text>
-<text x="250" y="308" text-anchor="middle" font-size="9" fill="#92400E">MLP 138→512→256→128 · 6 augmented views · 3 encoder seeds</text>
+<rect x="220" y="42" width="160" height="72" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="300" y="62" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B">Encoder Input</text>
+<text x="300" y="78" text-anchor="middle" font-size="8" fill="#64748B">TNF (136d) + coverage (2d)</text>
+<text x="300" y="94" text-anchor="middle" font-size="11" font-weight="700" fill="#334155">138 dim</text>
 
-<!-- Arrow to concat -->
-<line x1="250" y1="325" x2="250" y2="345" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="220" y="124" width="160" height="82" rx="3" fill="url(#amberGrad)" stroke="#F59E0B" stroke-width="1"/>
+<text x="300" y="144" text-anchor="middle" font-size="9" font-weight="600" fill="#92400E">aDNA Features</text>
+<text x="300" y="160" text-anchor="middle" font-size="8" fill="#B45309">damage (10d) · decay (2d)</text>
+<text x="300" y="174" text-anchor="middle" font-size="8" fill="#B45309">fragment (2d) · CGR (9d)</text>
+<text x="300" y="192" text-anchor="middle" font-size="11" font-weight="700" fill="#92400E">29 dim</text>
 
-<!-- ══ ROW 4: CONCAT BAR ══ -->
-<rect x="20" y="350" width="460" height="32" rx="4" fill="#1E293B"/>
-<text x="250" y="371" text-anchor="middle" font-size="10" font-weight="600" fill="#FFFFFF">157-dim feature space  (128 encoder + 20 aDNA + 9 CGR)</text>
+<!-- Arrow from features -->
+<line x1="380" y1="124" x2="408" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-<!-- Arrow to graph -->
-<line x1="480" y1="366" x2="510" y2="366" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 3: ENCODER (x=420-580) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<!-- ══ COLUMN 2: GRAPH + LEIDEN ══ -->
-<rect x="520" y="70" width="220" height="95" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
-<text x="630" y="95" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">k-NN Graph</text>
-<text x="630" y="115" text-anchor="middle" font-size="9" fill="#64748B">HNSW · k=10 · cosine</text>
-<text x="630" y="133" text-anchor="middle" font-size="9" fill="#92400E">SCG-guided edge weights</text>
-<text x="630" y="151" text-anchor="middle" font-size="8" fill="#B45309">complement bonus · shared penalty</text>
+<text x="500" y="28" text-anchor="middle" font-size="9" font-weight="600" fill="#64748B" letter-spacing="1.5">ENCODER</text>
 
-<line x1="630" y1="165" x2="630" y2="185" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="420" y="42" width="160" height="164" rx="3" fill="url(#amberGrad)" stroke="#F59E0B" stroke-width="1.5"/>
+<text x="500" y="64" text-anchor="middle" font-size="9" font-weight="700" fill="#92400E">SCG-supervised</text>
+<text x="500" y="78" text-anchor="middle" font-size="9" font-weight="700" fill="#92400E">InfoNCE</text>
 
-<rect x="520" y="190" width="220" height="115" rx="4" fill="#FFFBEF" stroke="#C27B0A" stroke-width="1.5"/>
-<text x="630" y="213" text-anchor="middle" font-size="11" font-weight="700" fill="#78350F">Quality Leiden</text>
-<text x="630" y="233" text-anchor="middle" font-size="9" fill="#334155">Phase 1: CPM clustering</text>
-<text x="630" y="249" text-anchor="middle" font-size="9" fill="#334155">Phase 2: Contamination split</text>
-<text x="630" y="265" text-anchor="middle" font-size="9" fill="#334155">Phase 3: SCG rescue</text>
-<text x="630" y="285" text-anchor="middle" font-size="8" fill="#64748B">75 parallel runs (3 enc × 25 Leiden seeds)</text>
+<rect x="432" y="92" width="136" height="24" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="500" y="108" text-anchor="middle" font-size="8" fill="#334155">MLP 138→512→256→128</text>
 
-<line x1="630" y1="305" x2="630" y2="335" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="432" y="124" width="136" height="24" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="500" y="140" text-anchor="middle" font-size="8" fill="#334155">6 augmented views</text>
 
-<rect x="520" y="340" width="220" height="55" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
-<text x="630" y="363" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">amber resolve</text>
-<text x="630" y="381" text-anchor="middle" font-size="9" fill="#64748B">co-binning consensus · N runs</text>
+<rect x="432" y="156" width="136" height="24" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="500" y="172" text-anchor="middle" font-size="8" fill="#334155">3 encoder restarts</text>
 
-<!-- Arrow to output -->
-<line x1="740" y1="366" x2="770" y2="366" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="500" y="198" text-anchor="middle" font-size="11" font-weight="700" fill="#92400E">128 dim</text>
 
-<!-- ══ COLUMN 3: OUTPUT ══ -->
-<rect x="780" y="70" width="400" height="325" rx="4" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
-<text x="980" y="100" text-anchor="middle" font-size="13" font-weight="700" fill="#334155">Output</text>
+<!-- Concat bar -->
+<rect x="420" y="220" width="160" height="28" rx="3" fill="#1E293B"/>
+<text x="500" y="238" text-anchor="middle" font-size="9" font-weight="600" fill="#FFFFFF">157 dim</text>
+<text x="500" y="250" text-anchor="middle" font-size="7" fill="#94A3B8">128 + 29 concat</text>
 
-<rect x="800" y="120" width="360" height="50" rx="3" fill="#DCFCE7" stroke="#86EFAC" stroke-width="1"/>
-<text x="980" y="143" text-anchor="middle" font-size="11" font-weight="600" fill="#166534">HQ Bins</text>
-<text x="980" y="160" text-anchor="middle" font-size="9" fill="#22C55E">≥90% completeness · &lt;5% contamination</text>
+<!-- Arrow from encoder -->
+<line x1="580" y1="124" x2="608" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-<rect x="800" y="180" width="360" height="40" rx="3" fill="#FEF9C3" stroke="#FDE047" stroke-width="1"/>
-<text x="980" y="200" text-anchor="middle" font-size="10" font-weight="600" fill="#854D0E">MQ Bins</text>
-<text x="980" y="214" text-anchor="middle" font-size="9" fill="#CA8A04">≥50% completeness · &lt;10% contamination</text>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 4: CLUSTERING (x=620-780) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<rect x="800" y="235" width="175" height="70" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
-<text x="887" y="260" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Per-bin stats</text>
-<text x="887" y="278" text-anchor="middle" font-size="8" fill="#64748B">SCG profile</text>
-<text x="887" y="290" text-anchor="middle" font-size="8" fill="#64748B">completeness · contamination</text>
+<text x="700" y="28" text-anchor="middle" font-size="9" font-weight="600" fill="#64748B" letter-spacing="1.5">CLUSTERING</text>
 
-<rect x="985" y="235" width="175" height="70" rx="3" fill="#FFFBEF" stroke="#FCD34D" stroke-width="1"/>
-<text x="1072" y="260" text-anchor="middle" font-size="10" font-weight="600" fill="#78350F">Damage profile</text>
-<text x="1072" y="278" text-anchor="middle" font-size="8" fill="#92400E">C→T (5′) · G→A (3′)</text>
-<text x="1072" y="290" text-anchor="middle" font-size="8" fill="#92400E">decay λ · fragment stats</text>
+<rect x="620" y="42" width="160" height="52" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="700" y="64" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B">k-NN Graph</text>
+<text x="700" y="80" text-anchor="middle" font-size="8" fill="#64748B">HNSW · k=10 · cosine</text>
 
-<rect x="800" y="320" width="360" height="55" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
-<text x="980" y="343" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">amber deconvolve</text>
-<text x="980" y="360" text-anchor="middle" font-size="9" fill="#64748B">EM separation of ancient/modern populations</text>
+<rect x="620" y="104" width="160" height="102" rx="3" fill="url(#amberGrad)" stroke="#F59E0B" stroke-width="1.5"/>
+<text x="700" y="124" text-anchor="middle" font-size="9" font-weight="700" fill="#92400E">Quality Leiden</text>
+
+<text x="700" y="144" text-anchor="middle" font-size="8" fill="#334155">Phase 1: SCG-guided CPM</text>
+<text x="700" y="160" text-anchor="middle" font-size="8" fill="#334155">Phase 2: Contamination split</text>
+<text x="700" y="176" text-anchor="middle" font-size="8" fill="#334155">Phase 3: SCG rescue</text>
+<text x="700" y="196" text-anchor="middle" font-size="7" fill="#64748B">75 runs (3 enc × 25 seeds)</text>
+
+<rect x="620" y="216" width="160" height="40" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="700" y="236" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B">amber resolve</text>
+<text x="700" y="250" text-anchor="middle" font-size="8" fill="#64748B">co-binning consensus</text>
+
+<!-- Arrow from clustering -->
+<line x1="780" y1="124" x2="808" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 5: OUTPUT (x=820-980) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<text x="900" y="28" text-anchor="middle" font-size="9" font-weight="600" fill="#64748B" letter-spacing="1.5">OUTPUT</text>
+
+<rect x="820" y="42" width="160" height="56" rx="3" fill="#DCFCE7" stroke="#22C55E" stroke-width="1.5"/>
+<text x="900" y="66" text-anchor="middle" font-size="11" font-weight="700" fill="#166534">HQ Bins</text>
+<text x="900" y="84" text-anchor="middle" font-size="8" fill="#22C55E">≥90% comp · &lt;5% cont</text>
+
+<rect x="820" y="108" width="160" height="48" rx="3" fill="#FEF9C3" stroke="#EAB308" stroke-width="1"/>
+<text x="900" y="130" text-anchor="middle" font-size="10" font-weight="600" fill="#854D0E">MQ Bins</text>
+<text x="900" y="146" text-anchor="middle" font-size="8" fill="#CA8A04">≥50% comp · &lt;10% cont</text>
+
+<rect x="820" y="166" width="160" height="44" rx="3" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="900" y="186" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B">Per-bin QC</text>
+<text x="900" y="202" text-anchor="middle" font-size="8" fill="#64748B">SCG · completeness · cont</text>
+
+<rect x="820" y="220" width="160" height="44" rx="3" fill="url(#amberGrad)" stroke="#F59E0B" stroke-width="1"/>
+<text x="900" y="240" text-anchor="middle" font-size="9" font-weight="600" fill="#92400E">Damage Profile</text>
+<text x="900" y="256" text-anchor="middle" font-size="8" fill="#B45309">C→T · G→A · decay λ</text>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- BOTTOM: LEGEND -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<rect x="20" y="285" width="16" height="16" rx="2" fill="url(#amberGrad)" stroke="#F59E0B" stroke-width="1"/>
+<text x="44" y="297" font-size="8" fill="#64748B">aDNA-aware components (novel)</text>
+
+<rect x="220" y="285" width="16" height="16" rx="2" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="244" y="297" font-size="8" fill="#64748B">Standard components</text>
+
+<text x="500" y="328" text-anchor="middle" font-size="10" font-weight="600" fill="#1E293B">AMBER</text>
+<text x="500" y="340" text-anchor="middle" font-size="8" fill="#64748B">Ancient Metagenomic Binning with aDNA-aware Encoder and Refinement</text>
 
 </svg>
