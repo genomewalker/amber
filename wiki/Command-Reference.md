@@ -166,6 +166,52 @@ amber damage --bam FILE --bins DIR --output FILE [options]
 
 ---
 
+## amber polish
+
+Correct post-mortem damage in an assembled ancient FASTA. Fits a Bayesian damage model from the BAM and reverts T→C at 5′ terminal positions and A→G at 3′ terminal positions where the per-position credible interval confirms genuine damage rather than sequencing error. See [[Methods-and-Model#assembly-damage-artifact]] for background.
+
+```
+amber polish --contigs FILE --bam FILE --library-type ds|ss --output DIR [options]
+```
+
+### Required
+
+| Flag | Description |
+|------|-------------|
+| `--contigs FILE` | Input FASTA to polish |
+| `--bam FILE` | BAM file (reads mapped to contigs, must be indexed) |
+| `--library-type STR` | `ds` (double-stranded) or `ss` (single-stranded) |
+| `--output DIR` | Output directory |
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--damage-positions N` | 15 | Terminal positions to examine for correction |
+| `--min-mapq N` | 30 | Minimum mapping quality |
+| `--min-baseq N` | 20 | Minimum base quality |
+| `--min-length N` | 0 | Skip contigs shorter than N bp |
+| `--threads N` | 1 | CPU threads |
+| `--verbose` | off | Verbose logging |
+| `--no-bayesian` | off | Use legacy log-LR mode instead of Bayesian caller |
+| `--min-posterior F` | 0.7 | Minimum posterior probability for a correction call |
+| `--max-second-posterior F` | 0.2 | Maximum posterior of the second-best base (ensures unambiguous calls) |
+| `--write-calls` | off | Write per-position base call details |
+| `--anvio` | off | Rename contigs for Anvi'o compatibility |
+| `--prefix STR` | — | Contig name prefix (with `--anvio`) |
+
+### Outputs
+
+| File | Description |
+|------|-------------|
+| `polished.fa` | Damage-corrected FASTA |
+| `damage_model.tsv` | Bayesian model: amplitude, λ, baseline, per-position rates with 95% credible intervals |
+| `damage_profile.tsv` | Per-contig per-position raw C→T and G→A rates |
+| `polish_stats.tsv` | Per-contig correction counts (C→T and G→A) |
+| `polish_trace.log` | Full run log |
+
+---
+
 ## amber seeds
 
 Generate SCG marker seeds for kNN-guided binning initialisation.

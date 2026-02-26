@@ -218,6 +218,58 @@ Convergence is declared when Δπ_a < 0.01 between iterations (typically 5–15 
 
 **Consensus calling:** Reads with p_a > 0.8 contribute to the ancient consensus with weight p_a; reads with p_a < 0.2 contribute to the modern consensus. Positions with < *min_depth* weighted coverage are masked with N. A per-position uncertainty file records the posterior variance of the soft assignment.
 
+**Damage correction of the ancient consensus (default: on):** After calling the ancient consensus, AMBER corrects assembly-baked damage before writing `ancient_consensus.fa`. See [[#assembly-damage-artifact]] below. Disable with `--no-polish`.
+
+---
+
+## Assembly damage artifact {#assembly-damage-artifact}
+
+### What happens during ancient assembly
+
+When ancient reads are assembled by a standard assembler (MEGAHIT, metaSPAdes), the assembler builds each contig by majority vote across all reads covering each position. At positions near where many reads begin or end — particularly near contig termini — a large fraction of contributing reads show C→T substitutions at their 5′ ends from post-mortem deamination. If damage at a position is severe enough (>50% of reads show T), the assembler calls T instead of C and incorporates the damaged base into the consensus. This is *assembly-baked damage*: the assembled sequence has T at positions where the true genome has C.
+
+### How it distorts downstream damage estimation
+
+When reads are mapped back to an assembly containing baked-in T's and damage rates are computed:
+
+- At baked-in-T positions: ancient reads (with T from damage) **match** the reference → their C→T mismatch is not counted. Modern reads (with true C) show a **T→C** mismatch — the anti-damage direction.
+- The denominator of the C→T rate (reference-C positions) is **reduced**, because some C positions are now T in the reference.
+- At positions where the assembler correctly called C, the damage signal is normal.
+
+The net effect: apparent C→T damage rates are **suppressed** at the most heavily damaged positions (where the assembler baked in T), while T→C mismatches from undamaged reads appear at those same positions. Tools computing aggregate damage may report distorted profiles. The *true* damage in the sample is higher than what the assembled-reference analysis shows at those positions.
+
+### How AMBER addresses this
+
+**`amber deconvolve` (default behaviour):** After building the ancient consensus from EM-weighted reads, AMBER runs a Bayesian damage-correction pass before writing `ancient_consensus.fa`. At each position covered by ancient reads, it fits a positional damage model and corrects T→C at 5′ and A→G at 3′ where the per-position credible interval lower bound exceeds 2× the estimated sequencing error rate. The result is a damage-*free* ancient consensus: baked-in T's are reverted to C, so downstream variant calling, phylogenomics, or re-mapping gives correct base calls.
+
+The correction counts are reported in `deconvolution_stats.tsv` as `ancient_ct_corr` and `ancient_ga_corr`. Use `--no-polish` to skip this step if you want the raw (uncorrected) ancient consensus.
+
+**`amber polish` (standalone):** For pre-existing assemblies that were not produced by `amber deconvolve`, AMBER provides a standalone polisher that takes any FASTA + BAM:
+
+```bash
+amber polish \
+    --contigs assembly.fa \
+    --bam mapped.bam \
+    --library-type ds \
+    --output polished/ \
+    --threads 16
+```
+
+Outputs:
+- `polished/polished.fa` — damage-corrected assembly
+- `polished/damage_model.tsv` — Bayesian damage model with amplitude, λ, baseline, and per-position credible intervals
+- `polished/polish_stats.tsv` — per-contig correction counts
+
+The correction rule: at positions 1–*N* from each read's 5′ end (default *N* = 15), correct if the 95% credible interval lower bound exceeds the baseline sequencing error rate. Positions with fewer than 3× coverage are skipped. The model is estimated from the BAM and is not assumed from any prior.
+
+### Practical guidance
+
+| Situation | Recommended approach |
+|-----------|----------------------|
+| Using `amber deconvolve` to separate ancient/modern | Default (`--no-polish` not set): `ancient_consensus.fa` is already corrected |
+| Existing ancient assembly, need polished reference for phylogenomics | `amber polish --contigs assembly.fa --bam reads.bam --output polished/` |
+| Existing assembly, want to verify damage without correcting | `amber damage --bam reads.bam --bins bins/ --output damage.tsv` |
+
 ---
 
 ## Internal quality estimation (C++ SCG engine) {#internal-quality-estimation}
