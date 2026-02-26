@@ -238,9 +238,44 @@ When reads are mapped back to an assembly containing baked-in T's and damage rat
 
 The net effect: apparent C→T damage rates are **suppressed** at the most heavily damaged positions (where the assembler baked in T), while T→C mismatches from undamaged reads appear at those same positions. Tools computing aggregate damage may report distorted profiles. The *true* damage in the sample is higher than what the assembled-reference analysis shows at those positions.
 
+### How much suppression to expect
+
+The severity scales with the fraction of ancient reads contributing to the assembly. At a terminal position with true C→T damage rate δ and ancient read fraction f:
+
+- The assembler calls **T** (baking in damage) when f · δ > 0.5
+- When baked in, the observed residual C→T rate at that position drops to **zero**
+- Undamaged reads at that position create **T→C mismatches** at rate (1 − δ)
+
+The table below illustrates the effect at 5′ position 1 (typically the most damaged position):
+
+| Ancient fraction | True C→T at pos 1 | Observed C→T (residual) | T→C proxy (baked-in) | Notes |
+|-----------------|-------------------|------------------------|----------------------|-------|
+| 10% | 3% | 3% | ~0% | Assembler calls C; no suppression |
+| 40% | 10% | 10% | ~0% | Still below baking threshold |
+| 60% | 20% | 20% | ~0% | Marginal: 60% × 20% = 12%, below 50% |
+| 80% | 30% | **~0%** | ~14% | 80% × 30% = 24% — baked in at this position |
+| 95% | 40% | **~0%** | ~57% | Severe suppression; T→C dominates |
+
+For the KapK dataset (~40% ancient reads, δ ≈ 3–5% at position 1), suppression is negligible — the assembler correctly calls C at most positions and the residual damage signal is reliable. The effect becomes significant in permafrost or high-enrichment ancient samples where f > 70%.
+
+### Residual signal in the AMBER encoder features
+
+AMBER's 20-dimensional aDNA feature vector includes both sides of the suppression:
+
+- **`ct_rate_5p[0..4]`** — C→T mismatch rate at positions 1–5 (residual damage: reads show T where contig shows C). This is the direct ancient signal but is suppressed when damage is baked in.
+- **`mm_5p_tc`** — T→C mismatch rate at 5′ end (reads show C where contig shows T). This is the complementary baked-in proxy: high when the assembler has incorporated C→T damage into the reference.
+
+The encoder can learn to combine both: `ct_rate_5p + mm_5p_tc` approximates the total terminal mismatch rate, recovering the full damage signal regardless of whether it was baked in or not. Neither dimension alone is sufficient at high ancient fractions.
+
 ### How AMBER addresses this
 
-**`amber deconvolve` (default behaviour):** After building the ancient consensus from EM-weighted reads, AMBER runs a Bayesian damage-correction pass before writing `ancient_consensus.fa`. At each position covered by ancient reads, it fits a positional damage model and corrects T→C at 5′ and A→G at 3′ where the per-position credible interval lower bound exceeds 2× the estimated sequencing error rate. The result is a damage-*free* ancient consensus: baked-in T's are reverted to C, so downstream variant calling, phylogenomics, or re-mapping gives correct base calls.
+**`amber deconvolve` (default behaviour):** `deconvolve` addresses the artifact in two complementary ways:
+
+1. **EM read classification** — reads are soft-assigned to ancient/modern populations using per-read p_ancient scores. The ancient consensus is built from EM-weighted pileups, so each base call is driven by reads likely to be ancient. This means positions with predominantly ancient reads (high f) are called from the true ancient signal rather than the mixed majority vote, partially avoiding the baking problem at the source.
+
+2. **Damage polishing** — after building the ancient consensus, AMBER runs a Bayesian damage-correction pass before writing `ancient_consensus.fa`. At each position covered by ancient reads, it fits a positional damage model and corrects T→C at 5′ and A→G at 3′ where the per-position credible interval lower bound exceeds 2× the estimated sequencing error rate. The result is a damage-*free* ancient consensus: baked-in T's are reverted to C, so downstream variant calling, phylogenomics, or re-mapping gives correct base calls.
+
+In the S17 incubation experiment (bin_4, ~40% ancient, 1.9 Mbp), deconvolve made 4,080 corrections (2,002 C→T + 2,078 G→A), restoring baked-in positions that would otherwise suppress the observed damage signal.
 
 The correction counts are reported in `deconvolution_stats.tsv` as `ancient_ct_corr` and `ancient_ga_corr`. Use `--no-polish` to skip this step if you want the raw (uncorrected) ancient consensus.
 
