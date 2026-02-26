@@ -64,7 +64,7 @@ Terminal mismatch rates for: T→C at 5′ (reverse-complement of G→A damage o
 
 ### Positive pair definition
 
-AMBER's central novelty in the encoder is replacing COMEBin's self-supervised positive pairs (random substrings of the same contig) with **SCG-supervised positive pairs** defined by single-copy marker gene co-membership.
+AMBER extends COMEBin's self-supervised InfoNCE with two changes: (1) positive pairs are defined by **SCG co-membership** instead of random augmentation pairs, providing genome-aware supervision directly from the HMM scan; (2) negatives are **downweighted by damage compatibility** *w_ij*, preventing the encoder from using damage state as a discriminative feature.
 
 For each contig *i* in the batch, the positive set is:
 

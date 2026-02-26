@@ -50,7 +50,9 @@ AMBER trains a contig encoder with a **supervised InfoNCE** loss where positive 
 
 $$P(i) = \{\text{augmented views of } i\} \cup \{j : \text{SCG}(j) = \text{SCG}(i) \neq \emptyset\}$$
 
-Contigs confirmed by HMM profile search to carry the same single-copy marker belong to the same genome by definition; they are pulled together as positives. Contigs sharing *any* SCG with *i* are excluded from the denominator entirely (they are neither positive nor negative — they are masked out). This replaces COMEBin's self-supervised approach with a genome-aware supervision signal available for free from the HMM scan.
+Contigs confirmed by HMM profile search to carry the same single-copy marker belong to the same genome by definition; they are pulled together as positives. Contigs sharing *any* SCG with *i* are excluded from the denominator entirely (they are neither positive nor negative — they are masked out).
+
+AMBER extends COMEBin's self-supervised InfoNCE with two changes: (1) positive pairs are defined by **SCG co-membership** instead of random augmentation pairs, providing genome-aware supervision directly from the HMM scan at no extra cost; (2) negatives are **downweighted by damage compatibility** *w_ij*, preventing the encoder from using damage state as a discriminative feature and thereby keeping ancient and modern strains of the same genome together.
 
 Six augmented views per contig are generated (3 coverage-subsampling levels × 2 feature-noise intensities) and all pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised output).
 
@@ -292,7 +294,17 @@ A high-quality (HQ) bin has ≥90% completeness and <5% contamination [MIMAG sta
 
 ## Citation
 
-> Fernandez-Guerra A et al. (2025) Ancient metagenomics reveals microbial community dynamics in Holocene lake sediments. *bioRxiv* doi: [10.1101/2023.06.10.544454](https://doi.org/10.1101/2023.06.10.544454)
+> Fernandez-Guerra A, Wörmer L, Borrel G et al. (2025) Two-million-year-old microbial communities from the Kap København Formation in North Greenland. *bioRxiv* doi: [10.1101/2023.06.10.544454](https://doi.org/10.1101/2023.06.10.544454)
+
+```bibtex
+@article{fernandezguerra2025,
+  title={Two-million-year-old microbial communities from the {Kap K{\o}benhavn} Formation in North Greenland},
+  author={Fernandez-Guerra, Antonio and W{\"o}rmer, Lars and Borrel, Guillaume and Delmont, Tom O and Elberling, Bo and Elvert, Marcus and Eren, A Murat and Gribaldo, Simonetta and Henriksen, Rasmus Amund and Hinrichs, Kai-Uwe and Jochheim, Annika and Korneliussen, Thorfinn S and Krupovic, Mart and Larsen, Nicolaj K and Perez-Laso, Rafael and Pedersen, Mikkel Winther and Pedersen, Vivi K and Ruter, Anthony H and Sand, Karina K and Sikora, Martin and Steinegger, Martin and Veseli, Iva and Wang, Yucheng and Zhao, Lei and {\v{Z}}ure, Marina and Kj{\ae}r, Kurt H and Willerslev, Eske},
+  journal={bioRxiv},
+  year={2025},
+  doi={10.1101/2023.06.10.544454}
+}
+```
 
 ---
 
