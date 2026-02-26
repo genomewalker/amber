@@ -80,12 +80,12 @@ The **damage coverage ratio** cov_ancient / (cov_ancient + cov_modern) is a clea
 
 Terminal substitution rates beyond the primary C→T and G→A signals:
 
-**Dim 17:** T→C rate at 5′ (reverse-complement of G→A damage on the complementary strand; present in single-stranded library preps)
+**Dim 17:** T→C rate at 5′
 **Dim 18:** All other mismatch types at 5′
-**Dim 19:** C→T rate at 3′ (reverse-complement; complements the G→A at 3′)
+**Dim 19:** C→T rate at 3′
 **Dim 20:** All other mismatch types at 3′
 
-These four dimensions distinguish single-stranded from double-stranded library preparation protocols and complement the primary C→T / G→A damage signal.
+These four dimensions provide broader coverage of terminal substitution patterns beyond the primary C→T and G→A damage signal.
 
 ---
 

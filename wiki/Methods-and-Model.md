@@ -56,7 +56,7 @@ Mean and standard deviation of aligned read lengths for reads mapped to the cont
 Log-normalised coverage from **confident-ancient reads** (p_ancient > 0.6) and **confident-modern reads** (p_ancient < 0.4): `log1p(cov_ancient)/5` and `log1p(cov_modern)/5`. A truly ancient genome has high cov_ancient and low cov_modern; a modern genome the reverse. The ratio cov_ancient/(cov_ancient + cov_modern) is a useful summary but the two raw values are what enters the feature vector.
 
 ### Mismatch spectrum (4 dims)
-Four terminal mismatch rates: T→C at 5′, other mismatches at 5′, C→T at 3′, other mismatches at 3′. These complement the primary C→T / G→A damage signal and help distinguish single-stranded from double-stranded library preparations.
+Four terminal mismatch rates: T→C at 5′, other mismatches at 5′, C→T at 3′, other mismatches at 3′. These complement the primary C→T / G→A damage signal with broader coverage of substitution patterns at fragment termini.
 
 ---
 
