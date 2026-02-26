@@ -60,21 +60,41 @@ Terminal mismatch rates for: T→C at 5′ (reverse-complement of G→A damage o
 
 ---
 
-## Damage-aware InfoNCE
+## SCG-supervised damage-aware InfoNCE
 
-AMBER trains a contig encoder with **InfoNCE** [Oord et al. 2018] using substring augmentation: two random substrings of the same contig are the positive pair; all other contigs in the batch are negatives. The standard InfoNCE loss is:
+### Positive pair definition
 
-$$\mathcal{L} = -\frac{1}{|B|} \sum_{i \in B} \log \frac{\exp(\text{sim}(z_i, z_i^+)/\tau)}{\sum_{j \neq i} \exp(\text{sim}(z_i, z_j)/\tau)}$$
+AMBER's central novelty in the encoder is replacing COMEBin's self-supervised positive pairs (random substrings of the same contig) with **SCG-supervised positive pairs** defined by single-copy marker gene co-membership.
 
-Standard InfoNCE treats all negatives equally. For ancient DNA binning this is suboptimal: a negative pair consisting of one ancient and one modern contig from the same genome should *not* be strongly repelled. AMBER extends the loss with **damage-aware negative weighting**:
+For each contig *i* in the batch, the positive set is:
 
-$$\mathcal{L}_{\text{AMBER}} = -\frac{1}{|B|} \sum_{i} \log \frac{\exp(\text{sim}(z_i, z_i^+)/\tau)}{\sum_{j \neq i} w_{ij} \cdot \exp(\text{sim}(z_i, z_j)/\tau)}$$
+$$P(i) = \underbrace{\{v_1^{(i)}, \ldots, v_6^{(i)}\}}_{\text{6 augmented views}} \cup \underbrace{\{j : \text{SCG}(j) = \text{SCG}(i) \neq \emptyset\}}_{\text{SCG co-members}}$$
 
-where the attenuation weight *w_ij* ∈ [*w*_min, 1] is:
+The SCG co-members are contigs identified by HMM profile search (HMMER, `bacar_marker.hmm`, 107 single-copy bacterial markers) as carrying the same single-copy marker gene. Since each marker should appear exactly once per genome, contigs sharing a marker belong to the same genome with high confidence — they are reliable positives without needing any assembly graph information.
+
+Contigs sharing *any* marker with *i* are **excluded from the InfoNCE denominator** entirely (masked out). This avoids treating same-genome contigs that happen to share a different marker as false negatives.
+
+### Six augmented views
+
+Six views per contig are constructed:
+- 3 coverage subsampling levels (33%, 66%, 100% of reads)
+- 2 feature noise intensities (low and medium Gaussian noise on TNF and coverage)
+
+All 6 views pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised) and all appear in the positive set for each other.
+
+### SCG-SupCon loss
+
+$$\mathcal{L}_{\text{SCG-SupCon}} = -\frac{1}{|B|} \sum_{i} \frac{1}{|P(i)|} \sum_{j \in P(i)} \log \frac{\exp(\text{sim}(z_i, z_j)/\tau)}{\sum_{k \notin \text{excl}(i)} w_{ik} \cdot \exp(\text{sim}(z_i, z_k)/\tau)}$$
+
+where excl(*i*) = {*k* : M(*i*) ∩ M(*k*) ≠ ∅} (any shared marker → excluded from denominator), and τ = 0.1 is the temperature.
+
+### Damage-aware negative weighting
+
+Standard contrastive learning treats all negatives equally. For ancient DNA, this is suboptimal: a negative pair where one contig is ancient and one is modern from the same environment should not be strongly repelled. AMBER downweights such negatives in the denominator by *w_ij* ∈ [*w*_min, 1]:
 
 $$w_{ij} = 1 - \lambda_{\text{att}} \cdot c_i c_j \cdot \left(1 - f_{\text{compat}}(i, j)\right)$$
 
-**Confidence:** *c_i = n_{eff,i} / (n_{eff,i} + n_0)* where *n_eff* is the Kish effective read depth and *n_0* = 60 is the half-saturation constant. Contigs with few reads get low confidence → weights close to 1 (no attenuation, treat as regular negatives).
+**Confidence:** *c_i = n_{eff,i} / (n_{eff,i} + n_0)* where *n_eff* is the Kish effective read depth and *n_0* = 60 is the half-saturation constant. Contigs with few reads get low confidence → weights close to 1 (standard negatives).
 
 **Compatibility:** *f*_compat combines two signals:
 1. *f_raw* = exp(−|δ_i − δ_j| / 0.2) — similar terminal damage rates → compatible
@@ -82,7 +102,11 @@ $$w_{ij} = 1 - \lambda_{\text{att}} \cdot c_i c_j \cdot \left(1 - f_{\text{compa
 
 $$f_{\text{compat}} = \frac{f_{\text{raw}} + f_{\text{panc}}}{2}$$
 
-When *w_ij* < 1, the negative is downweighted in the InfoNCE denominator, reducing the gradient pushing *i* and *j* apart. This lets the encoder learn genomic composition and coverage signals without being distorted by damage-state differences between co-occurring ancient and modern strains.
+When *w_ij* < 1, the negative is downweighted in the SCG-SupCon denominator, reducing the gradient pushing *i* and *j* apart. This prevents the encoder from latching onto damage state as a discriminative feature — which would incorrectly separate ancient and modern strains of the same genome.
+
+### Three encoder restarts
+
+With `--encoder-restarts 3`, three independent encoders are trained with different random seeds. The consensus kNN graph averages their edge weights before Leiden clustering, reducing sensitivity to any single unlucky initialisation.
 
 ---
 
@@ -110,7 +134,9 @@ Leiden clustering [Traag et al. 2019] is run with **resolution sweep** over [0.5
 
 $$Q = 10^8 \cdot n_{\text{strict-HQ}} + 10^5 \cdot n_{\text{pre-HQ}} + 10^3 \cdot n_{\text{MQ}} + \text{mean completeness}$$
 
-is selected, where strict-HQ = completeness ≥ 90% and contamination < 5%, pre-HQ ≥ 72%/5%, MQ ≥ 50%/10% (estimated from SCG counts internally, not CheckM2).
+is selected, where strict-HQ = completeness ≥ 90% and contamination < 5%, pre-HQ ≥ 72%/5%, MQ ≥ 50%/10%.
+
+**Completeness and contamination are estimated entirely in C++ from SCG counts** — no external CheckM2 call is made during clustering. See [[#internal-quality-estimation]] below.
 
 ---
 
@@ -178,6 +204,40 @@ The damage likelihood marginalises over all terminal C/G positions using the cur
 Convergence is declared when Δπ_a < 0.01 between iterations (typically 5–15 iterations).
 
 **Consensus calling:** Reads with p_a > 0.8 contribute to the ancient consensus with weight p_a; reads with p_a < 0.2 contribute to the modern consensus. Positions with < *min_depth* weighted coverage are masked with N. A per-position uncertainty file records the posterior variance of the soft assignment.
+
+---
+
+## Internal quality estimation (C++ SCG engine) {#internal-quality-estimation}
+
+AMBER estimates bin completeness and contamination on-the-fly in C++ using a **107-marker single-copy gene set** (`bacar_marker.hmm`, the same bacterial marker set used by COMEBin). No external tools (CheckM, CheckM2, BUSCO) are called during binning.
+
+### Marker detection
+
+HMM profiles are scanned against contig ORF translations using an embedded HMMER-compatible search. Each contig receives a list of detected marker IDs. AMBER builds a `MarkerIndex` (contig → marker set) and a reverse index (marker → contig list) for O(1) lookups during Leiden phases.
+
+### Per-bin quality estimation
+
+For each bin *B*, AMBER aggregates marker counts across all member contigs into a `ClusterMarkerProfile`:
+
+$$\text{completeness}(B) = \frac{|\{m : \text{count}_B(m) \geq 1\}|}{107}$$
+
+$$\text{contamination}(B) = \frac{\sum_m \max(0,\, \text{count}_B(m) - 1)}{\sum_m \text{count}_B(m)}$$
+
+where the denominator counts total marker observations and the numerator counts the excess copies (duplicates) above 1. This mirrors the CheckM formula and gives comparable results on standard benchmark datasets.
+
+Quality thresholds used internally:
+
+| Tier | Completeness | Contamination |
+|------|-------------|---------------|
+| Strict-HQ | ≥ 90% | < 5% |
+| Pre-HQ | ≥ 72% | < 5% |
+| MQ | ≥ 50% | < 10% |
+
+These estimates guide all three Leiden phases (edge penalties, contamination splitting, near-HQ rescue) and the resolution sweep quality score. **CheckM2 is only used post-hoc for external validation**, not during the binning algorithm itself.
+
+### Duplication excess
+
+*dup_excess* = contamination × total_markers — the total number of excess marker copies in the bin. A bin with *dup_excess* > 0 is a candidate for Phase 2 splitting.
 
 ---
 

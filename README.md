@@ -25,7 +25,7 @@ AMBER addresses all three by learning damage-aware embeddings and providing an E
 ## How AMBER works
 
 <p align="center">
-<img src="amber_architecture.png" width="700" alt="AMBER pipeline overview">
+<img src="amber_architecture.svg" width="900" alt="AMBER pipeline architecture">
 </p>
 
 ### 1. Feature extraction
@@ -44,17 +44,23 @@ For each contig (minimum 2,500 bp), AMBER extracts a **157-dimensional feature v
 
 See [[aDNA Features]] for the full mathematical derivation of each dimension.
 
-### 2. Damage-aware contrastive learning
+### 2. SCG-supervised damage-aware contrastive learning
 
-AMBER trains a contig encoder using **InfoNCE** [Oord et al. 2018] with substring augmentation (COMEBin-style). Two random substrings of the same contig form a positive pair; all other contigs in the batch are negatives. The standard InfoNCE loss is:
+AMBER trains a contig encoder with a **supervised InfoNCE** loss where positive pairs are defined by **single-copy marker gene (SCG) co-membership**, not merely by substring augmentation. For each contig *i*, the positive set is:
 
-$$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{|B|} \sum_{i} \log \frac{\exp(\text{sim}(z_i, z_i^+)/\tau)}{\sum_{j \neq i} \exp(\text{sim}(z_i, z_j)/\tau)}$$
+$$P(i) = \{\text{augmented views of } i\} \cup \{j : \text{SCG}(j) = \text{SCG}(i) \neq \emptyset\}$$
 
-AMBER extends this with **damage-aware negative weighting**: negatives from contigs with incompatible damage signatures (one ancient, one modern) are downweighted in the denominator by a factor *w* ∈ [*w*_min, 1]:
+Contigs confirmed by HMM profile search to carry the same single-copy marker belong to the same genome by definition; they are pulled together as positives. Contigs sharing *any* SCG with *i* are excluded from the denominator entirely (they are neither positive nor negative — they are masked out). This replaces COMEBin's self-supervised approach with a genome-aware supervision signal available for free from the HMM scan.
+
+Six augmented views per contig are generated (3 coverage-subsampling levels × 2 feature-noise intensities) and all pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised output).
+
+AMBER further extends the loss with **damage-aware negative weighting**: negatives with incompatible damage signatures are downweighted in the denominator by *w* ∈ [*w*_min, 1]:
 
 $$w_{ij} = 1 - \lambda_{\text{att}} \cdot c_i c_j \cdot (1 - f_{\text{compat}}(i, j))$$
 
-where c_i = n_{eff,i} / (n_{eff,i} + n_0) is confidence from effective read depth, and *f*_compat is a symmetric damage compatibility score based on terminal C→T rates and p_ancient. This prevents the encoder from learning to use damage state as a separating feature (which would merge co-occurring modern+ancient contigs), while still forming a meaningful embedding for composition and coverage signals.
+where *c_i = n_{eff,i} / (n_{eff,i} + n_0)* is confidence from effective read depth, and *f*_compat is a symmetric damage compatibility score based on terminal C→T rates and p_ancient. This prevents the encoder from learning to use damage state as a separating feature, while still forming meaningful embeddings for composition and coverage signals.
+
+Three independent encoder restarts with different random seeds produce consensus kNN graph edge weights.
 
 ### 3. Quality-guided Leiden clustering
 
