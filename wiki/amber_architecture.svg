@@ -1,139 +1,285 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="1000" height="420" role="img" aria-label="AMBER architecture overview">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500" viewBox="0 0 1000 500" role="img" aria-label="AMBER pipeline: vertical spine with floating islands">
   <defs>
-    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#64748B"/>
-    </marker>
-    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#E8A838"/>
-    </marker>
+    <radialGradient id="bgGrad" cx="35%" cy="15%" r="90%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="65%" stop-color="#FBFBFA"/>
+      <stop offset="100%" stop-color="#F7F8F7"/>
+    </radialGradient>
 
-    <style><![CDATA[
-      .font { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
-      .title { font-size:16px; font-weight:700; fill:#0F172A; letter-spacing:3px; }
-      .subtitle { font-size:9px; font-weight:500; fill:#64748B; }
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#2B2B2B" flood-opacity="0.10"/>
+    </filter>
 
-      .kicker { font-size:8px; font-weight:700; fill:#94A3B8; letter-spacing:1.4px; }
+    <pattern id="paperGrain" width="18" height="18" patternUnits="userSpaceOnUse">
+      <circle cx="3" cy="5" r="0.7" fill="#2B2B2B" opacity="0.04"/>
+      <circle cx="14" cy="11" r="0.7" fill="#2B2B2B" opacity="0.035"/>
+      <circle cx="9" cy="16" r="0.6" fill="#2B2B2B" opacity="0.03"/>
+    </pattern>
 
-      .h { font-size:10px; font-weight:650; fill:#0F172A; }
-      .h-novel { font-size:10px; font-weight:700; fill:#92400E; }
-      .meta { font-size:8px; font-weight:500; fill:#475569; }
-      .meta-soft { font-size:8px; font-weight:500; fill:#64748B; }
-      .meta-novel { font-size:8px; font-weight:600; fill:#92400E; }
-      .monoish { letter-spacing:0.3px; }
-
-      .box-std { fill:#F8FAFC; stroke:#CBD5E1; stroke-width:1.1; }
-      .box-run { fill:#FFFFFF; stroke:#CBD5E1; stroke-width:1.1; }
-      .box-novel { fill:#FFF4D6; stroke:#E8A838; stroke-width:1.6; }
-      .box-parallel { fill:#F1F5F9; stroke:#94A3B8; stroke-width:1.2; stroke-dasharray:5,3; }
-
-      .line { fill:none; stroke:#64748B; stroke-width:1.7; stroke-linecap:round; }
-      .line-strong { fill:none; stroke:#E8A838; stroke-width:2.4; stroke-linecap:round; }
-    ]]></style>
+    <style>
+      :root{
+        --bg:#FBFBFA;
+        --ink:#2B2B2B;
+        --hair:#B9C0C7;
+        --hair2:#CDD3D9;
+        --fill:#EEF1F4;
+        --fill2:#F3F5F7;
+        --accent:#E46A5D;
+      }
+      svg{
+        shape-rendering:geometricPrecision;
+        text-rendering:geometricPrecision;
+      }
+      .bg{ fill:url(#bgGrad); }
+      .grain{ fill:url(#paperGrain); }
+      .spine{ stroke:var(--hair); stroke-width:1; stroke-linecap:round; }
+      .conn{ stroke:var(--hair); stroke-width:1; stroke-linecap:round; fill:none; }
+      .conn-faint{ stroke:var(--hair2); stroke-width:1; stroke-linecap:round; fill:none; opacity:0.85; }
+      .conn-accent{ stroke:var(--accent); stroke-width:1; stroke-linecap:round; fill:none; opacity:0.55; }
+      .node{ fill:var(--fill2); stroke:var(--hair); stroke-width:1; }
+      .island{ fill:var(--fill); stroke:#E3E7EB; stroke-width:1; filter:url(#softShadow); }
+      .pill{ fill:#FFFFFF; stroke:#E3E7EB; stroke-width:1; }
+      .tag{ fill:#FFFFFF; stroke:#E3E7EB; stroke-width:1; }
+      .tag-accent{ fill:#FFFFFF; stroke:var(--accent); stroke-width:1; }
+      .title{
+        font-family:"IBM Plex Sans","Source Sans 3",Helvetica,Arial,sans-serif;
+        font-size:16px; font-weight:600; fill:var(--ink);
+        letter-spacing:0.2px;
+      }
+      .subtitle{
+        font-family:"IBM Plex Sans","Source Sans 3",Helvetica,Arial,sans-serif;
+        font-size:11px; font-weight:500; fill:var(--ink);
+        opacity:0.72;
+      }
+      .label{
+        font-family:"IBM Plex Sans","Source Sans 3",Helvetica,Arial,sans-serif;
+        font-size:12px; font-weight:500; fill:var(--ink);
+        opacity:0.90;
+      }
+      .mono{
+        font-family:"IBM Plex Mono","SFMono-Regular",Menlo,Consolas,monospace;
+        font-size:11px; font-weight:500; fill:var(--ink);
+        opacity:0.78;
+      }
+      .accentText{ fill:var(--accent); font-weight:600; opacity:0.95; }
+      .dot{ fill:var(--hair); opacity:0.8; }
+      .dot-accent{ fill:var(--accent); opacity:0.9; }
+    </style>
   </defs>
 
-  <rect x="0" y="0" width="1000" height="420" fill="#FFFFFF"/>
+  <!-- Background -->
+  <rect class="bg" x="0" y="0" width="1000" height="500"/>
+  <rect class="grain" x="0" y="0" width="1000" height="500" opacity="0.9"/>
 
-  <!-- Title -->
-  <text class="font title" x="500" y="28" text-anchor="middle">AMBER</text>
-  <text class="font subtitle" x="500" y="44" text-anchor="middle">Ancient Metagenomic BinnER</text>
+  <!-- Spine -->
+  <line class="spine" x1="500" y1="105" x2="500" y2="452"/>
 
-  <!-- Column headers -->
-  <text class="font kicker" x="120" y="76" text-anchor="middle">INPUTS</text>
-  <text class="font kicker" x="335" y="76" text-anchor="middle">FEATURES</text>
-  <text class="font kicker" x="575" y="76" text-anchor="middle">ENCODER</text>
+  <!-- Spine nodes (subtle) -->
+  <circle class="node" cx="500" cy="120" r="5"/>
+  <circle class="node" cx="500" cy="180" r="5"/>
+  <circle class="node" cx="500" cy="255" r="5"/>
+  <circle class="node" cx="500" cy="320" r="5"/>
+  <circle class="node" cx="500" cy="395" r="5"/>
+  <circle class="node" cx="500" cy="445" r="5"/>
 
-  <!-- Inputs -->
-  <rect class="box-std" x="40" y="88" width="160" height="46" rx="10"/>
-  <text class="font h" x="120" y="108" text-anchor="middle">Contigs</text>
-  <text class="font meta-soft" x="120" y="124" text-anchor="middle">FASTA</text>
+  <!-- Inputs (floating, minimal) -->
+  <g transform="translate(0,0)">
+    <!-- Contigs -->
+    <g transform="translate(305,70)">
+      <rect class="pill" x="-70" y="-18" rx="18" ry="18" width="140" height="36"/>
+      <!-- icon: stacked lines -->
+      <g transform="translate(-48,0)">
+        <line x1="0" y1="-6" x2="22" y2="-6" stroke="#2B2B2B" stroke-width="1" opacity="0.55" stroke-linecap="round"/>
+        <line x1="0" y1="0" x2="22" y2="0" stroke="#2B2B2B" stroke-width="1" opacity="0.55" stroke-linecap="round"/>
+        <line x1="0" y1="6" x2="22" y2="6" stroke="#2B2B2B" stroke-width="1" opacity="0.55" stroke-linecap="round"/>
+        <circle cx="26" cy="-6" r="1.6" class="dot"/>
+        <circle cx="26" cy="0" r="1.6" class="dot"/>
+        <circle cx="26" cy="6" r="1.6" class="dot"/>
+      </g>
+      <text class="label" x="6" y="4">Contigs</text>
+    </g>
 
-  <rect class="box-std" x="40" y="144" width="160" height="46" rx="10"/>
-  <text class="font h" x="120" y="164" text-anchor="middle">Alignments</text>
-  <text class="font meta-soft" x="120" y="180" text-anchor="middle">BAM</text>
+    <!-- BAM -->
+    <g transform="translate(500,70)">
+      <rect class="pill" x="-58" y="-18" rx="18" ry="18" width="116" height="36"/>
+      <!-- icon: cylinder -->
+      <g transform="translate(-36,0)" opacity="0.62">
+        <ellipse cx="10" cy="-6" rx="9" ry="4" fill="#2B2B2B" opacity="0.20"/>
+        <rect x="1" y="-6" width="18" height="14" fill="#2B2B2B" opacity="0.14"/>
+        <ellipse cx="10" cy="8" rx="9" ry="4" fill="#2B2B2B" opacity="0.18"/>
+        <ellipse cx="10" cy="-6" rx="9" ry="4" fill="none" stroke="#2B2B2B" stroke-width="1" opacity="0.55"/>
+        <line x1="1" y1="-6" x2="1" y2="8" stroke="#2B2B2B" stroke-width="1" opacity="0.45"/>
+        <line x1="19" y1="-6" x2="19" y2="8" stroke="#2B2B2B" stroke-width="1" opacity="0.45"/>
+        <ellipse cx="10" cy="8" rx="9" ry="4" fill="none" stroke="#2B2B2B" stroke-width="1" opacity="0.45"/>
+      </g>
+      <text class="label" x="0" y="4">BAM</text>
+    </g>
 
-  <rect class="box-novel" x="40" y="200" width="160" height="46" rx="10"/>
-  <text class="font h-novel" x="120" y="220" text-anchor="middle">SCG markers</text>
-  <text class="font meta-novel" x="120" y="236" text-anchor="middle">206 HMM</text>
+    <!-- SCG markers -->
+    <g transform="translate(695,70)">
+      <rect class="pill" x="-76" y="-18" rx="18" ry="18" width="152" height="36"/>
+      <!-- icon: marker + helix hint -->
+      <g transform="translate(-54,0)" opacity="0.62">
+        <path d="M6,-10 C14,-10 14,10 6,10 C-2,10 -2,-10 6,-10Z" fill="#2B2B2B" opacity="0.12"/>
+        <path d="M6,-10 C14,-10 14,10 6,10" fill="none" stroke="#2B2B2B" stroke-width="1" opacity="0.55"/>
+        <path d="M6,-10 C-2,-10 -2,10 6,10" fill="none" stroke="#2B2B2B" stroke-width="1" opacity="0.35"/>
+        <line x1="14" y1="-6" x2="22" y2="-6" stroke="#2B2B2B" stroke-width="1" opacity="0.45" stroke-linecap="round"/>
+        <line x1="14" y1="0" x2="22" y2="0" stroke="#2B2B2B" stroke-width="1" opacity="0.45" stroke-linecap="round"/>
+        <line x1="14" y1="6" x2="22" y2="6" stroke="#2B2B2B" stroke-width="1" opacity="0.45" stroke-linecap="round"/>
+      </g>
+      <text class="label" x="4" y="4">SCG</text>
+    </g>
 
-  <!-- Features -->
-  <rect class="box-std" x="240" y="88" width="190" height="58" rx="10"/>
-  <text class="font h" x="335" y="110" text-anchor="middle">Encoder input</text>
-  <text class="font meta-soft" x="335" y="128" text-anchor="middle">TNF (136d) + coverage (2d)</text>
-  <text class="font meta" x="335" y="142" text-anchor="middle"><tspan class="monoish" font-weight="700">138d</tspan></text>
+    <!-- Input connectors to spine -->
+    <path class="conn" d="M305,88 C305,112 420,112 500,120"/>
+    <path class="conn" d="M500,88 C500,104 500,108 500,120"/>
+    <path class="conn" d="M695,88 C695,112 580,112 500,120"/>
+  </g>
 
-  <rect class="box-novel" x="240" y="156" width="190" height="66" rx="10"/>
-  <text class="font h-novel" x="335" y="178" text-anchor="middle">aDNA damage (20d)</text>
-  <text class="font meta-novel" x="335" y="196" text-anchor="middle">InfoNCE weights + concat</text>
-  <text class="font meta" x="335" y="214" text-anchor="middle"><tspan class="monoish" font-weight="700" fill="#92400E">20d</tspan></text>
+  <!-- Features island -->
+  <g transform="translate(500,180)">
+    <rect class="island" x="-220" y="-36" rx="22" ry="22" width="440" height="72"/>
+    <text class="title" x="-190" y="-6">Feature extraction</text>
 
-  <rect class="box-std" x="240" y="232" width="190" height="46" rx="10"/>
-  <text class="font h" x="335" y="252" text-anchor="middle">CGR (9d)</text>
-  <text class="font meta-soft" x="335" y="268" text-anchor="middle">concat only (bypass)</text>
+    <!-- tags -->
+    <g transform="translate(-190,18)">
+      <rect class="tag" x="0" y="-14" rx="14" ry="14" width="92" height="28"/>
+      <text class="mono" x="14" y="5">138d</text>
+      <text class="label" x="46" y="5" opacity="0.70">encoder</text>
+    </g>
 
-  <!-- Encoder -->
-  <rect class="box-novel" x="450" y="88" width="250" height="190" rx="12"/>
-  <text class="font h-novel" x="575" y="112" text-anchor="middle">Damage-aware SCG-supervised InfoNCE</text>
+    <g transform="translate(-85,18)">
+      <rect class="tag-accent" x="0" y="-14" rx="14" ry="14" width="98" height="28"/>
+      <text class="mono accentText" x="14" y="5">20d</text>
+      <text class="label accentText" x="46" y="5" opacity="0.92">aDNA</text>
+    </g>
 
-  <rect class="box-run" x="468" y="126" width="214" height="34" rx="9"/>
-  <text class="font meta" x="575" y="148" text-anchor="middle">MLP: 138 - 512 - 256 - 128</text>
+    <g transform="translate(25,18)">
+      <rect class="tag" x="0" y="-14" rx="14" ry="14" width="86" height="28"/>
+      <text class="mono" x="14" y="5">9d</text>
+      <text class="label" x="38" y="5" opacity="0.70">CGR</text>
+    </g>
 
-  <rect class="box-run" x="468" y="166" width="214" height="34" rx="9"/>
-  <text class="font meta" x="575" y="188" text-anchor="middle">6 augmented views</text>
+    <text class="subtitle" x="125" y="22">CGR bypass</text>
+  </g>
 
-  <rect class="box-run" x="468" y="206" width="214" height="34" rx="9"/>
-  <text class="font meta" x="575" y="228" text-anchor="middle">Pair weights from aDNA damage</text>
+  <!-- Connector: inputs -> features -->
+  <path class="conn" d="M500,120 C500,142 500,156 500,180"/>
 
-  <text class="font meta-soft" x="575" y="256" text-anchor="middle">Embedding: 128d + 20d aDNA + 9d CGR</text>
-  <text class="font h-novel" x="575" y="272" text-anchor="middle">157d</text>
+  <!-- Encoder island -->
+  <g transform="translate(500,255)">
+    <rect class="island" x="-200" y="-38" rx="22" ry="22" width="400" height="76"/>
+    <text class="title" x="-170" y="-10">Encoder</text>
+    <text class="subtitle" x="-170" y="8">Damage-aware SCG-supervised</text>
+    <text class="label" x="-170" y="28">InfoNCE</text>
+    <text class="label" x="-112" y="28" opacity="0.55">·</text>
+    <text class="label" x="-98" y="28">MLP</text>
+    <text class="label" x="-58" y="28" opacity="0.55">·</text>
+    <text class="label" x="-44" y="28">6 views</text>
+    <text class="label" x="16" y="28" opacity="0.55">→</text>
+    <text class="label" x="40" y="28" opacity="0.78">128d</text>
 
-  <!-- Flow arrows (top row) -->
-  <line class="line" x1="200" y1="167" x2="232" y2="167" marker-end="url(#arrow-slate)"/>
-  <line class="line" x1="430" y1="183" x2="444" y2="183" marker-end="url(#arrow-slate)"/>
+    <!-- tiny "weight" target marker inside encoder -->
+    <circle cx="-122" cy="26" r="2.4" class="dot-accent" opacity="0.65"/>
+    <circle cx="-122" cy="26" r="6" fill="none" stroke="#E46A5D" stroke-width="1" opacity="0.18"/>
+  </g>
 
-  <!-- Parallel search block -->
-  <rect class="box-parallel" x="380" y="292" width="420" height="96" rx="12"/>
-  <text class="font meta" x="590" y="314" text-anchor="middle">
-    <tspan font-weight="700" fill="#334155">Parallel search:</tspan>
-    <tspan fill="#475569"> 3 encoder restarts x 25 Leiden seeds = </tspan>
-    <tspan font-weight="800" fill="#92400E">75 runs</tspan>
-  </text>
+  <!-- Connector: features -> encoder (main) -->
+  <path class="conn" d="M500,180 C500,208 500,226 500,255"/>
 
-  <!-- Runs -->
-  <rect class="box-run" x="396" y="328" width="120" height="48" rx="10"/>
-  <text class="font meta" x="456" y="346" text-anchor="middle" font-weight="650" fill="#334155">Run A</text>
-  <text class="font meta-soft" x="456" y="362" text-anchor="middle">k-NN graph + Leiden</text>
-  <text class="font meta-soft" x="456" y="376" text-anchor="middle">(quality, 3 phases)</text>
+  <!-- aDNA subtle feed into InfoNCE weights (accent, subtle) -->
+  <!-- from aDNA tag vicinity (x ~ 415,y~198) to encoder target (x~378,y~281) -->
+  <path class="conn-accent" d="M415,198 C410,220 396,246 378,281"/>
 
-  <rect class="box-run" x="530" y="328" width="120" height="48" rx="10"/>
-  <text class="font meta" x="590" y="346" text-anchor="middle" font-weight="650" fill="#334155">Run B</text>
-  <text class="font meta-soft" x="590" y="362" text-anchor="middle">k-NN graph + Leiden</text>
-  <text class="font meta-soft" x="590" y="376" text-anchor="middle">(quality, 3 phases)</text>
+  <!-- CGR bypass to concat (thin, pale) -->
+  <path class="conn-faint" d="M548,198 C635,215 665,262 630,305 C608,332 560,336 520,332"/>
 
-  <rect class="box-run" x="664" y="328" width="120" height="48" rx="10"/>
-  <text class="font meta" x="724" y="346" text-anchor="middle" font-weight="650" fill="#334155">Run C</text>
-  <text class="font meta-soft" x="724" y="362" text-anchor="middle">k-NN graph + Leiden</text>
-  <text class="font meta-soft" x="724" y="376" text-anchor="middle">(quality, 3 phases)</text>
+  <!-- Concat island -->
+  <g transform="translate(500,320)">
+    <rect class="island" x="-165" y="-30" rx="22" ry="22" width="330" height="60"/>
+    <text class="title" x="-135" y="-4">Concat</text>
+    <text class="title" x="-70" y="-4" opacity="0.78">157d</text>
 
-  <!-- Arrow from encoder down to parallel -->
-  <line class="line" x1="575" y1="278" x2="575" y2="288" marker-end="url(#arrow-slate)"/>
+    <text class="mono" x="-135" y="18">128</text>
+    <text class="mono" x="-96" y="18" opacity="0.55">+</text>
 
-  <!-- Resolve -->
-  <rect class="box-novel" x="820" y="300" width="150" height="88" rx="12"/>
-  <text class="font h-novel" x="895" y="326" text-anchor="middle">amber resolve</text>
-  <text class="font meta-novel" x="895" y="346" text-anchor="middle">co-binning affinity</text>
-  <text class="font meta-novel" x="895" y="362" text-anchor="middle">consensus Leiden</text>
-  <text class="font meta" x="895" y="380" text-anchor="middle" font-weight="700" fill="#92400E">Consensus bins</text>
+    <text class="mono accentText" x="-78" y="18">20</text>
+    <circle cx="-60" cy="14" r="3.2" class="dot-accent"/>
+    <text class="mono" x="-48" y="18" opacity="0.55">+</text>
 
-  <!-- Prominent parallel -> resolve arrow -->
-  <line class="line-strong" x1="800" y1="340" x2="814" y2="340" marker-end="url(#arrow-amber)"/>
+    <text class="mono" x="-30" y="18">9</text>
+  </g>
 
-  <!-- Legend -->
-  <rect class="box-novel" x="40" y="398" width="14" height="14" rx="4"/>
-  <text class="font meta-soft" x="62" y="409">Novel aDNA-aware components</text>
+  <!-- Connector: encoder -> concat -->
+  <path class="conn" d="M500,255 C500,284 500,296 500,320"/>
 
-  <rect class="box-std" x="290" y="398" width="14" height="14" rx="4"/>
-  <text class="font meta-soft" x="312" y="409">Standard components</text>
+  <!-- Ensemble island (dot matrix 3x25) -->
+  <g transform="translate(500,395)">
+    <rect class="island" x="-240" y="-38" rx="22" ry="22" width="480" height="76"/>
 
-  <rect x="500" y="398" width="14" height="14" rx="4" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.2" stroke-dasharray="5,3"/>
-  <text class="font meta-soft" x="522" y="409">Parallel execution</text>
+    <!-- dot matrix: 3 x 25 = 75 -->
+    <g transform="translate(-206,-16)">
+      <!-- grid spacing -->
+      <!-- rows at y=0,10,20; cols step=7 -->
+      <!-- 25 cols -->
+      <g>
+        <!-- Row 1 -->
+        <circle class="dot" cx="0" cy="0" r="1.6"/><circle class="dot" cx="7" cy="0" r="1.6"/><circle class="dot" cx="14" cy="0" r="1.6"/><circle class="dot" cx="21" cy="0" r="1.6"/><circle class="dot" cx="28" cy="0" r="1.6"/><circle class="dot" cx="35" cy="0" r="1.6"/><circle class="dot" cx="42" cy="0" r="1.6"/><circle class="dot" cx="49" cy="0" r="1.6"/><circle class="dot" cx="56" cy="0" r="1.6"/><circle class="dot" cx="63" cy="0" r="1.6"/><circle class="dot" cx="70" cy="0" r="1.6"/><circle class="dot" cx="77" cy="0" r="1.6"/><circle class="dot" cx="84" cy="0" r="1.6"/><circle class="dot" cx="91" cy="0" r="1.6"/><circle class="dot" cx="98" cy="0" r="1.6"/><circle class="dot" cx="105" cy="0" r="1.6"/><circle class="dot" cx="112" cy="0" r="1.6"/><circle class="dot" cx="119" cy="0" r="1.6"/><circle class="dot" cx="126" cy="0" r="1.6"/><circle class="dot" cx="133" cy="0" r="1.6"/><circle class="dot" cx="140" cy="0" r="1.6"/><circle class="dot" cx="147" cy="0" r="1.6"/><circle class="dot" cx="154" cy="0" r="1.6"/><circle class="dot" cx="161" cy="0" r="1.6"/><circle class="dot" cx="168" cy="0" r="1.6"/>
+        <!-- Row 2 -->
+        <circle class="dot" cx="0" cy="10" r="1.6"/><circle class="dot" cx="7" cy="10" r="1.6"/><circle class="dot" cx="14" cy="10" r="1.6"/><circle class="dot" cx="21" cy="10" r="1.6"/><circle class="dot" cx="28" cy="10" r="1.6"/><circle class="dot" cx="35" cy="10" r="1.6"/><circle class="dot" cx="42" cy="10" r="1.6"/><circle class="dot" cx="49" cy="10" r="1.6"/><circle class="dot" cx="56" cy="10" r="1.6"/><circle class="dot" cx="63" cy="10" r="1.6"/><circle class="dot" cx="70" cy="10" r="1.6"/><circle class="dot" cx="77" cy="10" r="1.6"/><circle class="dot" cx="84" cy="10" r="1.6"/><circle class="dot" cx="91" cy="10" r="1.6"/><circle class="dot" cx="98" cy="10" r="1.6"/><circle class="dot" cx="105" cy="10" r="1.6"/><circle class="dot" cx="112" cy="10" r="1.6"/><circle class="dot" cx="119" cy="10" r="1.6"/><circle class="dot" cx="126" cy="10" r="1.6"/><circle class="dot" cx="133" cy="10" r="1.6"/><circle class="dot" cx="140" cy="10" r="1.6"/><circle class="dot" cx="147" cy="10" r="1.6"/><circle class="dot" cx="154" cy="10" r="1.6"/><circle class="dot" cx="161" cy="10" r="1.6"/><circle class="dot" cx="168" cy="10" r="1.6"/>
+        <!-- Row 3 -->
+        <circle class="dot" cx="0" cy="20" r="1.6"/><circle class="dot" cx="7" cy="20" r="1.6"/><circle class="dot" cx="14" cy="20" r="1.6"/><circle class="dot" cx="21" cy="20" r="1.6"/><circle class="dot" cx="28" cy="20" r="1.6"/><circle class="dot" cx="35" cy="20" r="1.6"/><circle class="dot" cx="42" cy="20" r="1.6"/><circle class="dot" cx="49" cy="20" r="1.6"/><circle class="dot" cx="56" cy="20" r="1.6"/><circle class="dot" cx="63" cy="20" r="1.6"/><circle class="dot" cx="70" cy="20" r="1.6"/><circle class="dot" cx="77" cy="20" r="1.6"/><circle class="dot" cx="84" cy="20" r="1.6"/><circle class="dot" cx="91" cy="20" r="1.6"/><circle class="dot" cx="98" cy="20" r="1.6"/><circle class="dot" cx="105" cy="20" r="1.6"/><circle class="dot" cx="112" cy="20" r="1.6"/><circle class="dot" cx="119" cy="20" r="1.6"/><circle class="dot" cx="126" cy="20" r="1.6"/><circle class="dot" cx="133" cy="20" r="1.6"/><circle class="dot" cx="140" cy="20" r="1.6"/><circle class="dot" cx="147" cy="20" r="1.6"/><circle class="dot" cx="154" cy="20" r="1.6"/><circle class="dot" cx="161" cy="20" r="1.6"/><circle class="dot" cx="168" cy="20" r="1.6"/>
+      </g>
+      <text class="mono" x="186" y="14" opacity="0.70">×75</text>
+    </g>
+
+    <text class="title" x="-10" y="-6">Parallel runs</text>
+    <text class="label" x="-10" y="18">k-NN + Quality Leiden</text>
+    <text class="subtitle" x="-10" y="34">3 encoder seeds × 25 Leiden seeds</text>
+  </g>
+
+  <!-- Connector: concat -> ensemble -->
+  <path class="conn" d="M500,320 C500,350 500,362 500,395"/>
+
+  <!-- Resolve + Final bins -->
+  <g transform="translate(500,445)">
+    <rect class="island" x="-210" y="-28" rx="22" ry="22" width="420" height="56"/>
+    <text class="title" x="-180" y="6">Co-binning consensus</text>
+
+    <!-- Final bins icons -->
+    <g transform="translate(98,-6)">
+      <!-- bin icon template: small file/bin with tabs -->
+      <g transform="translate(0,0)">
+        <rect x="0" y="-10" width="22" height="26" rx="4" ry="4" fill="#FFFFFF" stroke="#E3E7EB" stroke-width="1"/>
+        <rect x="4" y="-6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.18"/>
+        <rect x="4" y="0" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.14"/>
+        <rect x="4" y="6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.12"/>
+      </g>
+      <g transform="translate(28,0)">
+        <rect x="0" y="-10" width="22" height="26" rx="4" ry="4" fill="#FFFFFF" stroke="#E3E7EB" stroke-width="1"/>
+        <rect x="4" y="-6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.18"/>
+        <rect x="4" y="0" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.14"/>
+        <rect x="4" y="6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.12"/>
+      </g>
+      <g transform="translate(56,0)">
+        <rect x="0" y="-10" width="22" height="26" rx="4" ry="4" fill="#FFFFFF" stroke="#E3E7EB" stroke-width="1"/>
+        <rect x="4" y="-6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.18"/>
+        <rect x="4" y="0" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.14"/>
+        <rect x="4" y="6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.12"/>
+      </g>
+      <g transform="translate(84,0)">
+        <rect x="0" y="-10" width="22" height="26" rx="4" ry="4" fill="#FFFFFF" stroke="#E3E7EB" stroke-width="1"/>
+        <rect x="4" y="-6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.18"/>
+        <rect x="4" y="0" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.14"/>
+        <rect x="4" y="6" width="14" height="3" rx="1.5" fill="#2B2B2B" opacity="0.12"/>
+      </g>
+      <text class="subtitle" x="0" y="30">final bins</text>
+    </g>
+  </g>
+
+  <!-- Connector: ensemble -> resolve -->
+  <path class="conn" d="M500,395 C500,420 500,430 500,445"/>
+
+  <!-- Tiny caption (optional, very subtle) -->
+  <text class="subtitle" x="32" y="486" opacity="0.45">AMBER: damage-aware representation + consensus co-binning</text>
 </svg>
