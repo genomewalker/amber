@@ -4,7 +4,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/genomewalker/amber)](https://github.com/genomewalker/amber/releases/latest)
 [![CI](https://github.com/genomewalker/amber/actions/workflows/ci.yml/badge.svg)](https://github.com/genomewalker/amber/actions/workflows/ci.yml)
 
-AMBER bins metagenomic contigs from **ancient DNA (aDNA)** samples. Unlike general-purpose binners that treat all coverage signal as equally informative, AMBER models post-mortem DNA damage and fragment length degradation explicitly, learning contig embeddings that are robust to the mixed ancient/modern DNA signal common in paleogenomic assemblies.
+AMBER bins metagenomic contigs from **ancient DNA (aDNA)** samples. Standard binners assume coverage and tetranucleotide frequency are clean signals — in aDNA they are not. AMBER models post-mortem damage and fragment length explicitly, so ancient and modern strains of the same genome end up in the same bin rather than scattered across several.
 
 ---
 
@@ -18,7 +18,7 @@ Standard binners (MetaBAT2, SemiBin2, COMEBin) rely on two signals: **tetranucle
 
 3. **Mixed ancient/modern populations.** Many paleogenomic assemblies contain reads from both ancient (damaged) DNA and modern (undamaged) DNA — from environmental contamination, recent organisms in the same sediment, or microbes that colonised the sample post-deposition. A binner unaware of this mixture conflates ancient and modern strains of the same species into a single bin, or splits a single ancient genome across multiple bins.
 
-AMBER addresses all three by learning damage-aware embeddings and providing an EM-based deconvolution subcommand that separates ancient from modern reads before or after binning.
+AMBER addresses all three: damage-aware embeddings keep composition distortion from separating reads of the same genome, and `amber deconvolve` separates ancient from modern reads via EM when needed.
 
 ---
 
@@ -64,7 +64,7 @@ where excl(*i*) = {*k* : M(*i*) ∩ M(*k*) ≠ ∅} masks out any contig sharing
 
 $$w_{ik} = 1 - \lambda_{\text{att}} \cdot c_i c_k \cdot (1 - f_{\text{compat}}(i, k))$$
 
-*c_i = n_{eff,i} / (n_{eff,i} + n_0)* is confidence from effective read depth; *f*_compat is a symmetric damage compatibility score (terminal C→T rates + p_ancient agreement). Negatives with incompatible damage signatures (*w* < 1) are downweighted, preventing the encoder from using damage state as a discriminative feature.
+*c_i = n_{eff,i} / (n_{eff,i} + n_0)* is read-depth confidence; *f*_compat is a symmetric damage compatibility score combining terminal C→T rates and p_ancient agreement.
 
 Three independent encoder restarts (different random seeds) produce three kNN graphs; their edge weights are averaged into a consensus graph before Leiden.
 
@@ -72,11 +72,11 @@ Three independent encoder restarts (different random seeds) produce three kNN gr
 
 After encoding, AMBER builds a **kNN graph** (HNSW approximate nearest neighbours) and clusters it with Leiden [Traag et al. 2019] using a three-phase quality refinement:
 
-- **Phase 1 — SCG-guided Leiden.** Edges between contigs sharing single-copy marker genes (SCGs) are penalised before clustering: *w′ = w · exp(−3 · n_shared_markers)*. This pre-separates contigs from different genomes that happen to have similar embeddings.
+- **Phase 1 — SCG-guided Leiden.** Edges between contigs sharing single-copy marker genes are penalised: *w′ = w · exp(−3 · n_shared_markers)*. Contigs from different genomes with similar embeddings are pushed apart before clustering runs.
 
 - **Phase 2 — Contamination splitting.** Bins with excess SCG duplication (*dup_excess* > 0) are re-clustered at 3× resolution on their subgraph and split if total duplication decreases.
 
-- **Phase 3 — Near-HQ rescue.** Bins at 75–90% estimated completeness recruit kNN neighbours that carry missing SCG markers, accepting a contig only if none of its markers are already in the target bin (no duplication risk).
+- **Phase 3 — Near-HQ rescue.** Bins at 75–90% estimated completeness pull in kNN neighbours carrying missing SCG markers. A neighbour is accepted only if none of its markers are already present (no duplication risk).
 
 Resolution is swept over [0.5, 5.0] with 25 random seeds; the configuration maximising a composite SCG quality score (strict-HQ > pre-HQ > MQ > completeness) is retained.
 
@@ -86,7 +86,7 @@ Multiple independent AMBER runs (different encoder and Leiden seeds) are aggrega
 
 $$p_{\text{cobin}}(i,j) = \frac{|\{r : b_r(i) = b_r(j)\}|}{\min(R_i,\, R_j)}$$
 
-where *R_i* is the number of runs in which contig *i* received any bin assignment. Leiden is re-run on this affinity graph with the same SCG-guided quality sweep, producing a consensus more stable than any individual run. With 3 runs, the reliable 10-bin core is recovered; with ≥ 5 runs, borderline bins accumulate sufficient evidence to enter the consensus.
+where *R_i* is the number of runs in which contig *i* received any bin assignment. Leiden is re-run on this affinity graph with the same SCG-guided quality sweep. With 3 runs, the reliable bin core is recovered; with ≥ 5 runs, borderline bins accumulate enough co-binning evidence to appear in the consensus.
 
 ---
 
