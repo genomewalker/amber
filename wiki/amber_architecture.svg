@@ -46,12 +46,12 @@
 
 <rect x="170" y="136" width="130" height="56" rx="3" fill="url(#amber)" stroke="#D97706" stroke-width="1"/>
 <text x="235" y="154" text-anchor="middle" font-size="9" font-weight="600" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">aDNA Damage (20d)</text>
-<text x="235" y="170" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">→ InfoNCE weights</text>
-<text x="235" y="184" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">→ concat to embedding</text>
+<text x="235" y="170" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">InfoNCE weights</text>
+<text x="235" y="184" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">+ concat to embedding</text>
 
 <rect x="170" y="200" width="130" height="40" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
 <text x="235" y="218" text-anchor="middle" font-size="9" font-weight="600" fill="#1E293B" font-family="Helvetica Neue, Arial, sans-serif">CGR (9d)</text>
-<text x="235" y="232" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">bypass → concat only</text>
+<text x="235" y="232" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">concat only (bypass)</text>
 
 <line x1="300" y1="145" x2="322" y2="145" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
 
@@ -66,7 +66,7 @@
 <text x="405" y="110" text-anchor="middle" font-size="9" font-weight="700" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">SCG-supervised InfoNCE</text>
 
 <rect x="342" y="120" width="126" height="18" rx="2" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
-<text x="405" y="133" text-anchor="middle" font-size="7" fill="#374151" font-family="Helvetica Neue, Arial, sans-serif">MLP: 138→512→256→128</text>
+<text x="405" y="133" text-anchor="middle" font-size="7" fill="#374151" font-family="Helvetica Neue, Arial, sans-serif">MLP: 138 - 512 - 256 - 128</text>
 
 <rect x="342" y="144" width="126" height="18" rx="2" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
 <text x="405" y="157" text-anchor="middle" font-size="7" fill="#374151" font-family="Helvetica Neue, Arial, sans-serif">6 augmented views</text>
@@ -81,28 +81,28 @@
 <!-- 3 PARALLEL RUNS BOX -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <rect x="330" y="256" width="480" height="122" rx="4" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1" stroke-dasharray="4,2"/>
-<text x="570" y="274" text-anchor="middle" font-size="9" font-weight="700" fill="#475569" font-family="Helvetica Neue, Arial, sans-serif">3 ENCODER RESTARTS × 25 LEIDEN SEEDS  =  75 PARALLEL RUNS</text>
+<text x="570" y="274" text-anchor="middle" font-size="9" font-weight="700" fill="#475569" font-family="Helvetica Neue, Arial, sans-serif">3 ENCODER RESTARTS x 25 LEIDEN SEEDS  =  75 PARALLEL RUNS</text>
 
 <!-- Run 1 -->
 <rect x="345" y="288" width="145" height="76" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
 <text x="417" y="306" text-anchor="middle" font-size="8" font-weight="600" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">Run 1</text>
 <text x="417" y="322" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">k-NN graph</text>
 <text x="417" y="336" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Quality Leiden (3 phases)</text>
-<text x="417" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">→ bins + .abin</text>
+<text x="417" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">bins + .abin</text>
 
 <!-- Run 2 -->
 <rect x="500" y="288" width="145" height="76" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
 <text x="572" y="306" text-anchor="middle" font-size="8" font-weight="600" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">Run 2</text>
 <text x="572" y="322" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">k-NN graph</text>
 <text x="572" y="336" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Quality Leiden (3 phases)</text>
-<text x="572" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">→ bins + .abin</text>
+<text x="572" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">bins + .abin</text>
 
 <!-- Run 3 -->
 <rect x="655" y="288" width="145" height="76" rx="3" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
 <text x="727" y="306" text-anchor="middle" font-size="8" font-weight="600" fill="#334155" font-family="Helvetica Neue, Arial, sans-serif">Run 3</text>
 <text x="727" y="322" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">k-NN graph</text>
 <text x="727" y="336" text-anchor="middle" font-size="7" fill="#64748B" font-family="Helvetica Neue, Arial, sans-serif">Quality Leiden (3 phases)</text>
-<text x="727" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">→ bins + .abin</text>
+<text x="727" y="356" text-anchor="middle" font-size="7" fill="#94A3B8" font-family="Helvetica Neue, Arial, sans-serif">bins + .abin</text>
 
 <!-- Arrow from encoder to parallel box -->
 <line x1="405" y1="240" x2="405" y2="254" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
@@ -116,7 +116,7 @@
 <text x="910" y="310" text-anchor="middle" font-size="10" font-weight="700" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">amber resolve</text>
 <text x="910" y="328" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">co-binning affinity</text>
 <text x="910" y="342" text-anchor="middle" font-size="7" fill="#78350F" font-family="Helvetica Neue, Arial, sans-serif">consensus Leiden</text>
-<text x="910" y="358" text-anchor="middle" font-size="8" font-weight="600" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">→ Consensus Bins</text>
+<text x="910" y="358" text-anchor="middle" font-size="8" font-weight="600" fill="#92400E" font-family="Helvetica Neue, Arial, sans-serif">Consensus Bins</text>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <!-- LEGEND -->
