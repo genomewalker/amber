@@ -65,7 +65,7 @@ $$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{BV} \sum_{i=1}^{BV} \log \frac{\exp(\
 
 where *z_i* is the L2-normalised embedding of view *i*, *i*⁺ indexes the sibling views of the same contig, and τ is the temperature (default 0.1).
 
-**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are by definition present exactly once per genome. Two contigs sharing any SCG are therefore definitionally from *different* genomes, making them high-confidence true negatives. AMBER amplifies these pairs in the InfoNCE denominator by a factor `scg_boost` (default 2.0), providing stronger repulsion signal for contigs that compositional embeddings might otherwise conflate [3]:
+**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are typically present exactly once per genome. Two contigs both containing the same SCG are therefore likely from *different* genomes — high-confidence (though not guaranteed) negative pairs. AMBER amplifies these pairs in the InfoNCE denominator by a factor `scg_boost` (default 2.0), providing stronger repulsion signal for contigs that compositional embeddings might otherwise conflate [3]:
 
 $$w_{ij}^{\text{SCG}} = \begin{cases} \alpha_{\text{boost}} & \text{if } M(i) \cap M(j) \neq \emptyset \\ 1.0 & \text{otherwise} \end{cases}$$
 
