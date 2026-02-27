@@ -75,11 +75,11 @@ Best of 5 COMEBin runs (rep5). All 9 HQ bins shown; COMEBin recovers 6–9 HQ an
 
 ## Comparison highlights
 
-**Top-quality bins (≥ 97% completeness, < 5% contamination):** All three methods recover 5 such bins. Genome sizes are consistent (~0.8–3.7 Mbp), suggesting a shared core of high-completeness genomes that any reasonable binner recovers. The differences emerge below 97% completeness.
+**Top-quality bins (≥ 97% completeness, < 5% contamination):** AMBER and COMEBin recover 5 such bins; SemiBin2 recovers 6. Genome sizes are consistent (~0.8–3.7 Mbp), suggesting a shared core of high-completeness genomes that any reasonable binner recovers. The differences emerge below 97% completeness.
 
 **Bins unique to AMBER:** bin_8 (90.6% / 2.29%, 2.76 Mbp) and bin_47 (90.1% / 2.62%, 3.58 Mbp) cross the HQ threshold in AMBER but are not recovered as HQ by either COMEBin or SemiBin2. These are likely genomes where aDNA damage features provide signal to separate them from neighbouring bins.
 
-**Contamination control:** AMBER's median contamination across 11 HQ bins is 2.09%; COMEBin best rep median is 1.94%; SemiBin2 best rep median is 1.36% — all comparable. Two COMEBin bins had > 50% contamination (excluded above); AMBER's worst HQ bin is bin_28 at 4.45%.
+**Contamination control:** AMBER's median contamination across 11 HQ bins is 1.90%; COMEBin best rep median is 1.67%; SemiBin2 best rep median is 1.35% — all comparable. AMBER's worst HQ bin is bin_28 at 4.45%.
 
 **Reproducibility:** AMBER produces exactly 11 HQ bins in every replicate run. SemiBin2 is stable (5–6 HQ) but recovers fewer genomes. COMEBin varies between 6 and 9 HQ across 5 runs.
 
