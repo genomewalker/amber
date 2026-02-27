@@ -208,6 +208,22 @@ Convergence is declared when Δπ_a < 0.01 between iterations (typically 5–15 
 
 ---
 
+## Assembly-baked damage
+
+When ancient reads are assembled, the assembler calls each position by majority vote. At positions where many reads begin or end, a large fraction show C→T damage at their 5′ termini. If damage exceeds 50% of reads, the assembler calls T instead of C — incorporating the damaged base into the reference. This is **assembly-baked damage**.
+
+**Consequences:**
+- Ancient reads now *match* the baked-in T → their C→T mismatch goes uncounted
+- Modern reads show T→C mismatches (the reverse direction)
+- Apparent damage rates are **suppressed** at heavily damaged positions
+- The assembled sequence is **wrong** — T where the true genome has C
+
+**When it matters:** Baking occurs when (ancient_fraction × damage_rate) > 0.5. At 40% ancient reads with 10% damage, baking is negligible. At 80% ancient with 30% damage, most terminal positions are baked in.
+
+**How AMBER handles it:** The mismatch spectrum features include both C→T (residual damage) and T→C (baked-in proxy). The encoder learns to combine them: `ct_rate + tc_rate ≈ total terminal mismatch`, recovering the full damage signal regardless of baking. The `amber deconvolve` command corrects baked-in damage when writing the ancient consensus.
+
+---
+
 ## Internal quality estimation
 
 AMBER estimates bin completeness and contamination on-the-fly using the **206-marker CheckM universal single-copy gene set** (`checkm_markers_only.hmm`). No external tools are called during binning.
