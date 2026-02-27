@@ -25,7 +25,7 @@ AMBER addresses all three: damage-aware embeddings prevent composition distortio
 ## How AMBER works
 
 <p align="center">
-<img src="amber_architecture.svg" width="900" alt="AMBER pipeline architecture">
+<img src="amber_architecture.png" width="900" alt="AMBER pipeline architecture">
 </p>
 
 ### 1. Feature extraction
@@ -40,7 +40,7 @@ For each contig (minimum 2,500 bp), AMBER extracts a **157-dimensional feature v
 | Decay parameters | 2 | λ₅, λ₃ — exponential damage decay constants fitted per contig |
 | Fragment length | 2 | Mean and standard deviation of aligned read lengths |
 | Damage coverage | 2 | Log-normalised read depth from ancient-classified (p > 0.6) and modern-classified (p < 0.4) reads |
-| Mismatch spectrum | 4 | T→C at 5′, other mismatches at 5′, C→T at 3′, other mismatches at 3′ |
+| Mismatch spectrum | 4 | T→C at 5′, C→T at 3′, other mismatches at 5′, other mismatches at 3′ |
 | CGR features | 9 | 6 cross-scale slopes (ΔH, ΔO, ΔL at 16→32 and 32→64 grid resolution) + absolute H₃₂, O₃₂, L₃₂ |
 
 **aDNA damage features (20 dimensions).** The damage profile follows an exponential decay model, with terminal substitution rate at position *p* from the read end modelled as [7]:

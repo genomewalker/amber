@@ -30,7 +30,7 @@ Post-mortem deamination converts cytosines to uracil (read as T) at fragment ter
 
 ## Architecture
 
-![AMBER Architecture](amber_architecture.svg)
+![AMBER Architecture](amber_architecture.png)
 
 ---
 

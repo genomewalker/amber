@@ -81,8 +81,8 @@ The **damage coverage ratio** cov_ancient / (cov_ancient + cov_modern) is a clea
 Terminal substitution rates beyond the primary C→T and G→A signals:
 
 **Dim 17:** T→C rate at 5′
-**Dim 18:** All other mismatch types at 5′
-**Dim 19:** C→T rate at 3′
+**Dim 18:** C→T rate at 3′
+**Dim 19:** All other mismatch types at 5′
 **Dim 20:** All other mismatch types at 3′
 
 These four dimensions provide broader coverage of terminal substitution patterns beyond the primary C→T and G→A damage signal.
@@ -135,6 +135,6 @@ All 157 dimensions are standardised (zero mean, unit variance) across contigs be
 | 139–140 | 2 | Decay parameters (λ₅, λ₃) |
 | 141–142 | 2 | Fragment length (mean, std) |
 | 143–144 | 2 | Damage-stratified coverage (ancient, modern) |
-| 145–148 | 4 | Mismatch spectrum (T→C at 5′, other at 5′, C→T at 3′, other at 3′) |
+| 145–148 | 4 | Mismatch spectrum (T→C at 5′, C→T at 3′, other at 5′, other at 3′) |
 | 149–157 | 9 | CGR: 6 scale-transition slopes (ΔH, ΔO, ΔL at 16→32 and 32→64) + H₃₂, O₃₂, L₃₂ |
 | **Total** | **157** | |
