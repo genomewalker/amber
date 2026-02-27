@@ -55,7 +55,7 @@ amber bin [options]
 | `--hmm FILE` | auto | HMM marker file (default: `checkm_markers_only.hmm`, auto-detected) |
 | `--damage-positions N` | 15 | Terminal positions for damage estimation |
 | `--damage-infonce` | on | Enable damage-aware InfoNCE weighting |
-| `--min-length N` | 2500 | Minimum contig length (bp) |
+| `--min-length N` | 1001 | Minimum contig length (bp) |
 
 ### Output
 

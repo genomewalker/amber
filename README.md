@@ -30,7 +30,7 @@ AMBER addresses all three: damage-aware embeddings prevent composition distortio
 
 ### 1. Feature extraction
 
-For each contig (minimum 2,500 bp), AMBER extracts a **157-dimensional feature vector** combining encoder output, aDNA-specific damage features, and multi-scale chaos game representation (CGR) features:
+For each contig (minimum 1,001 bp by default), AMBER extracts a **157-dimensional feature vector** combining encoder output, aDNA-specific damage features, and multi-scale chaos game representation (CGR) features:
 
 | Feature block | Dims | Description |
 |---------------|------|-------------|
@@ -257,7 +257,7 @@ For subcommand help: `amber <command> --help`
 | `--leiden-restarts` | 25 | Leiden random seed restarts per resolution |
 | `--epochs` | 100 | Training epochs |
 | `--threads` | 1 | CPU threads |
-| `--min-length` | 2500 | Minimum contig length (bp) |
+| `--min-length` | 1001 | Minimum contig length (bp) |
 | `--no-damage-infonce` | — | Disable damage-aware negative down-weighting |
 | `--no-scg-infonce` | — | Disable SCG hard negative mining |
 

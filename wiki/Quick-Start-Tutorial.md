@@ -21,7 +21,7 @@ samtools index mapped.sorted.bam
 samtools flagstat mapped.sorted.bam
 ```
 
-**Minimum contig length:** AMBER uses contigs ≥ 2,500 bp by default. Shorter contigs are excluded from binning but remain in the assembly.
+**Minimum contig length:** AMBER uses contigs ≥ 1,001 bp by default. Shorter contigs are excluded from binning but remain in the assembly.
 
 ---
 
@@ -153,7 +153,7 @@ amber deconvolve \
 ### 0 HQ bins
 - Check `amber_summary.tsv` for estimated completeness — are there MQ bins?
 - Verify that `hmmsearch` is in PATH (HMMER3 required for marker detection)
-- Check that contigs are ≥ 2,500 bp and the assembly is adequate depth
+- Check that contigs are ≥ 1,001 bp and the assembly is adequate depth
 
 ### `amber bin requires LibTorch support`
 - Rebuild with `-DAMBER_USE_TORCH=ON -DCMAKE_PREFIX_PATH=$CONDA_PREFIX`
