@@ -66,7 +66,7 @@ Four terminal mismatch rates: T→C at 5′, other mismatches at 5′, C→T at 
 
 AMBER extends COMEBin's self-supervised InfoNCE with two modifications. Positive pairs are the **6 augmented views of the same contig** (3 coverage subsampling levels × 2 feature-noise intensities), identical to COMEBin. The two extensions concern the *denominator*:
 
-**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are present exactly once per genome by definition. Two contigs sharing any SCG are therefore from *different* genomes — high-confidence true negatives. AMBER amplifies these pairs in the denominator by a factor α (default 2.0), providing stronger repulsion for contigs that embeddings might otherwise conflate:
+**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are typically present exactly once per genome. Two contigs both containing the same SCG are therefore likely from *different* genomes — high-confidence (though not guaranteed) negative pairs. AMBER amplifies these pairs in the denominator by a factor α (default 2.0), providing stronger repulsion for contigs that embeddings might otherwise conflate:
 
 $$w_{ij}^{\text{SCG}} = \begin{cases} \alpha & \text{if } M(i) \cap M(j) \neq \emptyset \\ 1.0 & \text{otherwise} \end{cases}$$
 
