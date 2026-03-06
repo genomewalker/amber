@@ -277,9 +277,9 @@ AMBER models each read as arising from one of two populations — **ancient** (h
 
 $$p_{\text{ancient}}(r) = \frac{\pi_a \cdot P(D_r \mid \text{ancient}) \cdot P(l_r \mid \text{ancient})}{\pi_a \cdot P(D_r \mid \text{ancient}) \cdot P(l_r \mid \text{ancient}) + \pi_m \cdot P(D_r \mid \text{modern}) \cdot P(l_r \mid \text{modern})}$$
 
-The damage likelihood P(D_r | ancient) is computed as the product over terminal C→T and G→A observations using the exponential damage model δ(p) = d · e^{−λp} [7]. Fragment length likelihoods use log-normal distributions fitted independently to the ancient and modern populations.
+The damage likelihood P(D_r | ancient) is computed as the product over terminal C→T and G→A observations using the exponential damage model δ(p) = d · e^{−λp} [7]. Fragment length likelihoods use Normal distributions (mode, σ) estimated once before the loop from the fragment length histogram.
 
-**M-step.** Update the mixture fraction π_a and all distribution parameters (d, λ, length mode, length σ) from the soft read assignments.
+**M-step.** Jointly update the mixture fraction π_a and damage parameters (d, λ). The weighted per-position C→T (5′) and G→A (3′) rates are recomputed as Σ_r p_a(r)·obs / Σ_r p_a(r)·n at each terminal position, and the exponential curve is re-fitted. This corrects the attenuation from initialising d on the mixed BAM. Convergence is declared when both Δπ_a < 0.01 and Δ(amplitude) < 0.005.
 
 The EM iterates until convergence or the maximum iteration limit. Outputs include two consensus FASTA sequences polished against the reference (ancient and modern), a per-position uncertainty file, and per-contig deconvolution statistics.
 

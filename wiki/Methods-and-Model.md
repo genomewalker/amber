@@ -189,18 +189,26 @@ With 3 runs the reliable bin core is recovered; with ≥ 5 runs, borderline bins
 
 AMBER models the mapped BAM as a mixture of two read populations:
 
-- **Ancient**: high terminal damage δ(p), short fragment length *l* ~ LogNormal(μ_a, σ_a)
-- **Modern**: low damage, longer *l* ~ LogNormal(μ_m, σ_m)
+- **Ancient**: high terminal damage δ(p), short fragment length *l* ~ Normal(μ_a, σ_a)
+- **Modern**: low damage, longer *l* ~ Normal(μ_m, σ_m)
+
+Fragment length parameters (μ_a, σ_a, μ_m, σ_m) are estimated once from the fragment length histogram before the loop. Damage parameters (d, λ) are initialised from the full BAM and then jointly updated with π in each M-step.
 
 **E-step:** For each read *r* compute soft assignment:
 
 $$p_a(r) = \frac{\pi_a \cdot P_{\text{damage}}(r \mid a) \cdot P_{\text{length}}(l_r \mid a)}{\pi_a \cdot P(r \mid a) + \pi_m \cdot P(r \mid m)}$$
 
-The damage likelihood marginalises over all terminal C/G positions using the current parameter estimates. The length likelihood uses LogNormal distributions fitted per iteration.
+The damage likelihood marginalises over all terminal C/G positions using the current (d, λ). The length likelihood uses Normal distributions (mode, std).
 
-**M-step:** Update mixture fraction π_a and distribution parameters (d, λ, μ_a, σ_a, μ_m, σ_m) from weighted counts.
+**M-step:** Jointly update the mixture fraction π_a and the damage parameters (d, λ):
 
-Convergence is declared when Δπ_a < 0.01 between iterations (typically 5–15 iterations).
+$$\pi_a^{\text{new}} = \frac{\sum_r w_r \cdot p_a(r)}{\sum_r w_r}, \quad w_r = 1 + 0.1 \times n_{\text{damage-zone}}(r)$$
+
+$$\hat{d}(p) = \frac{\sum_r p_a(r) \cdot \mathbf{1}[\text{C→T at pos }p]}{\sum_r p_a(r) \cdot \mathbf{1}[\text{C ref at pos }p]}$$
+
+The exponential model δ(p) = d·e^{−λp} is re-fitted to the weighted per-position rates $\hat{d}(p)$ after each E-step. This corrects the attenuation that arises from initialising d on the mixed (ancient + modern) BAM.
+
+Convergence is declared when both Δπ_a < 0.01 and Δ(amplitude) < 0.005 (max 10 iterations).
 
 **Consensus calling:** Reads with p_a > 0.8 contribute to the ancient consensus; reads with p_a < 0.2 contribute to the modern consensus. Positions with < *min_depth* weighted coverage are masked with N.
 

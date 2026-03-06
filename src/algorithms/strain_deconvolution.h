@@ -1062,16 +1062,59 @@ inline DeconvolutionResult deconvolve_contig(
     // Step 1b: Initial classification AGAINST NEUTRAL CONSENSUS
     classify_all_reads_vs_neutral(rc_config);
 
-    // Step 1c: EM iterations for adaptive prior (auto-converges)
+    // Weighted damage re-estimation from classified reads.
+    // Accumulates Σ p_ancient(r) * obs at each terminal position, re-fits
+    // the exponential decay model, and updates rc_config damage params.
+    // This corrects the pre-EM bias from estimating d/λ on the mixed BAM.
+    auto reestimate_damage = [&]() {
+        const int N_POS = 15;
+        const double SCALE = 10000.0;
+        std::vector<double> wk5(N_POS, 0.0), wn5(N_POS, 0.0);
+        std::vector<double> wk3(N_POS, 0.0), wn3(N_POS, 0.0);
+
+        for (const auto& rd : read_data) {
+            double w = rd.score.p_ancient;
+            if (w < 0.01) continue;
+            for (const auto& pos : rd.full_data.positions) {
+                int d5 = pos.dist_5p, d3 = pos.dist_3p;
+                if (d5 < N_POS && pos.ref_base == 'C') {
+                    wn5[d5] += w;
+                    if (pos.read_base == 'T') wk5[d5] += w;
+                }
+                if (d3 < N_POS && pos.ref_base == 'G') {
+                    wn3[d3] += w;
+                    if (pos.read_base == 'A') wk3[d3] += w;
+                }
+            }
+        }
+
+        std::vector<uint64_t> uk5(N_POS), un5(N_POS), uk3(N_POS), un3(N_POS);
+        for (int i = 0; i < N_POS; i++) {
+            un5[i] = static_cast<uint64_t>(wn5[i] * SCALE);
+            uk5[i] = static_cast<uint64_t>(wk5[i] * SCALE);
+            un3[i] = static_cast<uint64_t>(wn3[i] * SCALE);
+            uk3[i] = static_cast<uint64_t>(wk3[i] * SCALE);
+        }
+
+        DamageModelResult dm = fit_damage_model(un5, uk5, un3, uk3);
+        rc_config.amp_5p  = dm.curve_5p.amplitude;
+        rc_config.lam_5p  = dm.curve_5p.lambda;
+        rc_config.base_5p = dm.curve_5p.baseline;
+        rc_config.amp_3p  = dm.curve_3p.amplitude;
+        rc_config.lam_3p  = dm.curve_3p.lambda;
+        rc_config.base_3p = dm.curve_3p.baseline;
+    };
+
+    // Step 1c: Full EM — jointly updates π and damage params (d, λ) each iteration.
+    // Convergence declared when both Δπ < 0.01 and Δamplitude < 0.005.
     result.em_iterations_used = 1;
     result.final_prior = rc_config.prior_ancient;
 
     for (int em_iter = 1; em_iter < config.em_iterations; em_iter++) {
-        // Estimate bin-level ancient fraction from current classifications
+        // M-step: update mixture fraction π
         double sum_p = 0.0;
         double sum_weight = 0.0;
         for (const auto& rd : read_data) {
-            // Weight by damage zone coverage (more informative reads)
             double weight = 1.0 + 0.1 * rd.score.damage_zone_positions;
             sum_p += weight * rd.score.p_ancient;
             sum_weight += weight;
@@ -1079,19 +1122,22 @@ inline DeconvolutionResult deconvolve_contig(
         double new_prior = sum_p / std::max(1.0, sum_weight);
         new_prior = std::max(config.prior_min, std::min(config.prior_max, new_prior));
 
-        // Check convergence (prior changed by less than 1%)
-        double prior_change = std::abs(new_prior - rc_config.prior_ancient);
-        if (prior_change < 0.01) {
-            result.em_iterations_used = em_iter;
-            result.final_prior = rc_config.prior_ancient;
-            break;
-        }
+        // M-step: re-estimate damage params from weighted reads
+        double old_amp5 = rc_config.amp_5p, old_amp3 = rc_config.amp_3p;
+        reestimate_damage();
+        double amp_change = std::max(std::abs(rc_config.amp_5p - old_amp5),
+                                     std::abs(rc_config.amp_3p - old_amp3));
 
-        // Update prior and re-classify against neutral consensus
+        // Convergence: both π and damage amplitude have stabilised
+        double prior_change = std::abs(new_prior - rc_config.prior_ancient);
         rc_config.prior_ancient = new_prior;
         classify_all_reads_vs_neutral(rc_config);
         result.em_iterations_used = em_iter + 1;
         result.final_prior = new_prior;
+
+        if (prior_change < 0.01 && amp_change < 0.005) {
+            break;
+        }
     }
 
     if (!all_p_ancient.empty()) {
