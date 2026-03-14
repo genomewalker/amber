@@ -4,7 +4,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/genomewalker/amber)](https://github.com/genomewalker/amber/releases/latest)
 [![CI](https://github.com/genomewalker/amber/actions/workflows/ci.yml/badge.svg)](https://github.com/genomewalker/amber/actions/workflows/ci.yml)
 
-AMBER bins metagenomic contigs from **ancient DNA (aDNA)** samples. Standard binners assume coverage and tetranucleotide frequency are clean signals — in aDNA they are not. AMBER models post-mortem damage and fragment length explicitly, so ancient and modern strains of the same genome end up in the same bin rather than scattered across several.
+AMBER bins metagenomic contigs from **ancient DNA (aDNA)** samples. Standard binners assume coverage and tetranucleotide frequency are clean signals; in aDNA they are not. AMBER models post-mortem damage and fragment length explicitly, so ancient and modern strains of the same genome end up in the same bin rather than scattered across several.
 
 ---
 
@@ -16,7 +16,7 @@ Standard binners (MetaBAT2 [1], SemiBin2 [2], COMEBin [3]) rely on two signals: 
 
 2. **Fragment length bias in coverage.** Ancient reads are short (median ~40–80 bp) while modern reads are longer (~150–300 bp). Short reads map more ambiguously and cover terminal regions of contigs differently, producing systematically different coverage profiles for ancient and modern genomes even at equal abundance [5].
 
-3. **Mixed ancient/modern populations.** Paleogenomic assemblies often contain reads from both ancient (damaged) and modern (undamaged) DNA — from environmental contamination, recent colonising organisms, or in situ DNA turnover. A binner unaware of this mixture splits ancient and modern reads of the same taxon into separate bins, or merges them with wrong neighbours [6].
+3. **Mixed ancient/modern populations.** Paleogenomic assemblies often contain reads from both ancient (damaged) and modern (undamaged) DNA, from environmental contamination, recent colonising organisms, or in situ DNA turnover. A binner unaware of this mixture splits ancient and modern reads of the same taxon into separate bins, or merges them with wrong neighbours [6].
 
 AMBER addresses all three: damage-aware embeddings prevent composition distortion from separating contigs of the same genome, and `amber deconvolve` separates ancient from modern reads via Bayesian EM when needed.
 
@@ -37,7 +37,7 @@ For each contig (minimum 1,001 bp by default), AMBER extracts a **157-dimensiona
 | Encoder output | 128 | SCG-guided damage-aware InfoNCE contrastive encoder |
 | C→T damage profile | 5 | C→T substitution rates at 5′ positions 1–5 |
 | G→A damage profile | 5 | G→A substitution rates at 3′ positions 1–5 |
-| Decay parameters | 2 | λ₅, λ₃ — exponential damage decay constants fitted per contig |
+| Decay parameters | 2 | λ₅, λ₃: exponential damage decay constants fitted per contig |
 | Fragment length | 2 | Mean and standard deviation of aligned read lengths |
 | Damage coverage | 2 | Log-normalised read depth from ancient-classified (p > 0.6) and modern-classified (p < 0.4) reads |
 | Mismatch spectrum | 4 | T→C at 5′, C→T at 3′, other mismatches at 5′, other mismatches at 3′ |
@@ -49,7 +49,7 @@ $$\delta_p = d \cdot e^{-\lambda p}$$
 
 where *d* is the damage amplitude and λ is the per-position decay constant. AMBER fits λ₅ and λ₃ independently for the 5′ and 3′ ends using the observed C→T and G→A rates at positions 1–5. Fragment length mean and standard deviation are computed from the aligned insert size distribution [5].
 
-**CGR features (9 dimensions).** The chaos game representation [8] maps a nucleotide sequence onto the unit square by iterating toward one of four corner attractors (A, C, G, T). AMBER computes three metrics — Shannon entropy (H), occupancy (O, fraction of non-empty cells), and lacunarity (L, coefficient of variation of cell densities) — at grid resolutions 16×16, 32×32, and 64×64. The nine features are the three absolute values at 32×32 plus the six cross-scale slopes (Δmetric between adjacent resolutions), capturing sequence complexity across scales [9].
+**CGR features (9 dimensions).** The chaos game representation [8] maps a nucleotide sequence onto the unit square by iterating toward one of four corner attractors (A, C, G, T). AMBER computes three metrics (Shannon entropy H, occupancy O as fraction of non-empty cells, and lacunarity L as coefficient of variation of cell densities) at grid resolutions 16×16, 32×32, and 64×64. The nine features are the three absolute values at 32×32 plus the six cross-scale slopes (Δmetric between adjacent resolutions), capturing sequence complexity across scales [9].
 
 The encoder input is a 138-dimensional vector: 136 tetranucleotide frequencies (normalised, reverse-complement collapsed) + 2 coverage dimensions (log-normalised mean depth, coverage variance). The 20 aDNA and 9 CGR dimensions bypass the encoder and are concatenated directly to the 128-dimensional encoder output, forming the 157-dimensional clustering space.
 
@@ -57,7 +57,7 @@ The encoder input is a 138-dimensional vector: 136 tetranucleotide frequencies (
 
 AMBER trains a contig encoder using InfoNCE [10] (contrastive predictive coding), extended with two aDNA-specific modifications: SCG-guided hard negative mining and damage-aware negative down-weighting.
 
-**Base encoder.** The architecture follows COMEBin [3]: a four-layer MLP (138→512→256→128) with BatchNorm and ReLU activations, with L2-normalised output embeddings. Six augmented views are generated per contig at training time — three coverage subsampling levels × two feature-noise intensities — matching the COMEBin augmentation protocol.
+**Base encoder.** The architecture follows COMEBin [3]: a four-layer MLP (138→512→256→128) with BatchNorm and ReLU activations, with L2-normalised output embeddings. Six augmented views are generated per contig at training time (three coverage subsampling levels × two feature-noise intensities), matching the COMEBin augmentation protocol.
 
 **Standard InfoNCE loss** [10] for a batch of *B* contigs with *V* views each:
 
@@ -65,13 +65,13 @@ $$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{BV} \sum_{i=1}^{BV} \log \frac{\exp(\
 
 where *z_i* is the L2-normalised embedding of view *i*, *i*⁺ indexes the sibling views of the same contig, and τ is the temperature (default 0.1).
 
-**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are typically present exactly once per genome. Two contigs both containing the same SCG are therefore likely from *different* genomes — high-confidence (though not guaranteed) negative pairs. AMBER amplifies these pairs in the InfoNCE denominator by a factor `scg_boost` (default 2.0), providing stronger repulsion signal for contigs that compositional embeddings might otherwise conflate [3]:
+**Modification 1: SCG hard negatives.** Single-copy marker genes (SCGs) are typically present exactly once per genome. Two contigs both containing the same SCG are therefore likely from *different* genomes, making them high-confidence (though not guaranteed) negative pairs. AMBER amplifies these pairs in the InfoNCE denominator by a factor `scg_boost` (default 2.0), providing stronger repulsion signal for contigs that compositional embeddings might otherwise conflate [3]:
 
 $$w_{ij}^{\text{SCG}} = \begin{cases} \alpha_{\text{boost}} & \text{if } M(i) \cap M(j) \neq \emptyset \\ 1.0 & \text{otherwise} \end{cases}$$
 
 where *M(i)* is the set of CheckM marker genes detected on contig *i* [11] and α_boost = 2.0.
 
-**Modification 2 — Damage-aware negative down-weighting.** Ancient and modern strains of the same taxon carry identical genomic sequence but different damage states. Without correction, the encoder learns to separate them based on C→T and G→A patterns rather than genomic sequence — placing them in different bins. AMBER down-weights negatives that appear damage-incompatible, preventing damage state from becoming a discriminative feature:
+**Modification 2: Damage-aware negative down-weighting.** Ancient and modern strains of the same taxon carry identical genomic sequence but different damage states. Without correction, the encoder learns to separate them based on C→T and G→A patterns rather than genomic sequence, pushing them into different bins. AMBER down-weights negatives that appear damage-incompatible, preventing damage state from becoming a discriminative feature:
 
 $$w_{ij}^{\text{damage}} = 1 - \lambda_{\text{att}} \cdot c_i \cdot c_j \cdot (1 - f_{\text{compat}}(i, j))$$
 
@@ -91,7 +91,7 @@ so SCG hard negatives are always amplified regardless of damage similarity, whil
 
 AMBER clusters the consensus kNN graph using the Leiden algorithm [13] with a three-phase quality refinement driven by SCG-based completeness and contamination estimates.
 
-**Phase 1 — SCG-guided Leiden.** Before each Leiden run, edges between contigs sharing any SCG marker are penalised:
+**Phase 1: SCG-guided Leiden.** Before each Leiden run, edges between contigs sharing any SCG marker are penalised:
 
 $$w'_{ij} = w_{ij} \cdot e^{-\gamma \cdot n_{\text{shared}}}$$
 
@@ -99,9 +99,9 @@ with γ = 3.0 (default) and *n_shared* = |M(i) ∩ M(j)|. This pre-conditions th
 
 The resolution parameter is swept over [0.5, 5.0] with 25 random Leiden seeds per resolution value. The configuration retained is the one that maximises a tiered quality score: strict-HQ bins (≥90% completeness, <5% contamination [14]) outrank pre-HQ bins (≥72% completeness, <5% contamination), which outrank MQ bins, which outrank raw completeness.
 
-**Phase 2 — Contamination splitting.** After Phase 1, any bin with excess SCG duplication (*dup_excess* > 0, meaning more copies of any marker than expected) is re-clustered at 3× the Phase 1 resolution on its contig subgraph. The split is accepted if total *dup_excess* decreases across the resulting sub-bins.
+**Phase 2: Contamination splitting.** After Phase 1, any bin with excess SCG duplication (*dup_excess* > 0, meaning more copies of any marker than expected) is re-clustered at 3× the Phase 1 resolution on its contig subgraph. The split is accepted if total *dup_excess* decreases across the resulting sub-bins.
 
-**Phase 3 — Near-HQ rescue.** Bins estimated at 75–90% completeness are given one opportunity to recover missing SCG markers by recruiting kNN neighbours. A neighbouring contig is accepted into the target bin only if all of its SCG markers are absent from the current bin — ensuring no duplication is introduced.
+**Phase 3: Near-HQ rescue.** Bins estimated at 75–90% completeness are given one opportunity to recover missing SCG markers by recruiting kNN neighbours. A neighbouring contig is accepted into the target bin only if all of its SCG markers are absent from the current bin, ensuring no duplication is introduced.
 
 ### 4. Partition consensus and `amber resolve`
 
@@ -131,7 +131,7 @@ conda env create -f environment.yml
 conda activate amber
 ```
 
-### Build (no GPU — works anywhere)
+### Build (no GPU)
 
 ```bash
 git clone https://github.com/genomewalker/amber.git
@@ -143,7 +143,7 @@ cmake --build . --parallel
 
 All subcommands work **except `amber bin`**, which requires LibTorch for neural network training.
 
-### Enabling `amber bin` — CPU (no GPU required)
+### Enabling `amber bin` (CPU, no GPU required)
 
 ```bash
 conda install pytorch cpuonly -c pytorch
@@ -153,7 +153,7 @@ cmake --build . --parallel
 
 CPU training is ~5–10× slower than GPU but produces identical results.
 
-### Enabling `amber bin` — GPU (CUDA 12)
+### Enabling `amber bin` (GPU, CUDA 12)
 
 ```bash
 conda install pytorch pytorch-cuda=12.1 -c pytorch -c nvidia
@@ -181,7 +181,7 @@ cmake --install build --prefix /usr/local
 
 The CheckM marker HMM (`auxiliary/checkm_markers_only.hmm`) is bundled with AMBER and located automatically. No `--hmm` flag is required.
 
-### Binning (3 encoder restarts, 25 Leiden seeds — recommended)
+### Binning (3 encoder restarts, 25 Leiden seeds)
 
 ```bash
 amber bin \
@@ -256,7 +256,7 @@ For subcommand help: `amber <command> --help`
 | `--encoder-restarts` | 3 | Independent encoder training restarts for consensus kNN |
 | `--leiden-restarts` | 25 | Leiden random seed restarts per resolution |
 | `--epochs` | 100 | Training epochs |
-| `--threads` | 1 | CPU threads |
+| `--threads` | 16 | CPU threads |
 | `--min-length` | 1001 | Minimum contig length (bp) |
 | `--no-damage-infonce` | — | Disable damage-aware negative down-weighting |
 | `--no-scg-infonce` | — | Disable SCG hard negative mining |
@@ -271,7 +271,7 @@ For subcommand help: `amber <command> --help`
 
 ## EM deconvolution (`amber deconvolve`)
 
-AMBER models each read as arising from one of two populations — **ancient** (high terminal damage, short fragment) or **modern** (low damage, longer fragment) — using an EM algorithm [15].
+AMBER models each read as arising from one of two populations (**ancient**: high terminal damage, short fragment; or **modern**: low damage, longer fragment) using an EM algorithm [15].
 
 **E-step.** For each read *r*, compute the posterior probability of ancient origin:
 
@@ -352,4 +352,4 @@ A high-quality (HQ) bin has ≥90% completeness and <5% contamination per the MI
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
