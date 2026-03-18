@@ -66,7 +66,7 @@ Four terminal mismatch rates: T→C at 5′, C→T at 3′, other mismatches at 
 
 AMBER extends COMEBin's self-supervised InfoNCE with two modifications. Positive pairs are the **6 augmented views of the same contig** (3 coverage subsampling levels × 2 feature-noise intensities), identical to COMEBin. The two extensions concern the *denominator*:
 
-**Modification 1 — SCG hard negatives.** Single-copy marker genes (SCGs) are typically present exactly once per genome. Two contigs both containing the same SCG are therefore likely from *different* genomes — high-confidence (though not guaranteed) negative pairs. AMBER amplifies these pairs in the denominator by a factor α (default 2.0), providing stronger repulsion for contigs that embeddings might otherwise conflate:
+**Modification 1: SCG hard negatives.** Single-copy marker genes (SCGs) are typically present exactly once per genome. Two contigs both containing the same SCG are therefore likely from *different* genomes, making them high-confidence (though not guaranteed) negative pairs. AMBER amplifies these pairs in the denominator by a factor α (default 2.0), providing stronger repulsion for contigs that embeddings might otherwise conflate:
 
 $$w_{ij}^{\text{SCG}} = \begin{cases} \alpha & \text{if } M(i) \cap M(j) \neq \emptyset \\ 1.0 & \text{otherwise} \end{cases}$$
 
@@ -78,7 +78,7 @@ Six views per contig are constructed:
 - 3 coverage subsampling levels (33%, 66%, 100% of reads)
 - 2 feature noise intensities (low and medium Gaussian noise on TNF and coverage)
 
-All 6 views pass through the shared MLP encoder (138→512→256→128, BatchNorm+ReLU, L2-normalised).
+All 6 views pass through the shared MLP encoder (138→2048→2048→2048→128, n_layer=3, BatchNorm+LeakyReLU, L2-normalised).
 
 ### InfoNCE loss with combined weights
 

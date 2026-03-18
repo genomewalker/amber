@@ -31,7 +31,7 @@ amber bin [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--epochs N` | 100 | Training epochs |
-| `--batch-size N` | 2048 | Training batch size |
+| `--batch-size N` | 1024 | Training batch size |
 | `--lr F` | 1e-3 | Learning rate |
 | `--temperature F` | 0.1 | InfoNCE temperature τ |
 | `--encoder-seed N` | 42 | Random seed for encoder initialisation |
@@ -61,7 +61,7 @@ amber bin [options]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--threads N` | 1 | CPU threads |
+| `--threads N` | 16 | CPU threads |
 | `--verbose` | off | Verbose logging |
 
 ---
@@ -78,7 +78,7 @@ amber resolve --runs run1/run.abin run2/run.abin ... --output DIR [options]
 |------|---------|-------------|
 | `--runs FILES` | — | Space-separated list of .abin files |
 | `--output DIR` | — | Output directory |
-| `--threads N` | 1 | CPU threads |
+| `--threads N` | 16 | CPU threads |
 | `--resolution F` | auto | Override Leiden resolution (default: sweep) |
 | `--leiden-restarts N` | 5 | Leiden seed restarts |
 
@@ -118,7 +118,7 @@ amber deconvolve --contigs FILE --bam FILE --output DIR [options]
 | `--write-stats` | off | Write per-position deconvolution stats |
 | `--write-modern-bam` | off | Write modern-classified reads to BAM |
 | `--modern-bam-threshold F` | 0.2 | p_ancient threshold for modern BAM inclusion |
-| `--threads N` | 1 | CPU threads |
+| `--threads N` | 16 | CPU threads |
 | `--damage-positions N` | 15 | Terminal positions for damage likelihood |
 
 ### Outputs
@@ -144,7 +144,7 @@ amber damage --bam FILE --bins DIR --output FILE [options]
 | `--bam FILE` | — | Input BAM (must be indexed) |
 | `--bins DIR` | — | Directory of bin FASTA files |
 | `--output FILE` | `damage_per_bin.tsv` | Output TSV |
-| `--threads N` | 1 | CPU threads |
+| `--threads N` | 16 | CPU threads |
 | `--damage-positions N` | 15 | Terminal positions to analyse |
 | `--min-insert N` | 0 | Skip paired reads with insert size < N (filters overlapping pairs) |
 
@@ -191,7 +191,7 @@ amber polish --contigs FILE --bam FILE --library-type ds|ss --output DIR [option
 | `--min-mapq N` | 30 | Minimum mapping quality |
 | `--min-baseq N` | 20 | Minimum base quality |
 | `--min-length N` | 0 | Skip contigs shorter than N bp |
-| `--threads N` | 1 | CPU threads |
+| `--threads N` | 16 | CPU threads |
 | `--verbose` | off | Verbose logging |
 | `--no-bayesian` | off | Use legacy log-LR mode instead of Bayesian caller |
 | `--min-posterior F` | 0.7 | Minimum posterior probability for a correction call |
@@ -226,4 +226,4 @@ amber seeds --contigs FILE --bam FILE --hmm FILE --output DIR [options]
 | `--bam FILE` | — | Input BAM |
 | `--hmm FILE` | — | HMM marker profile |
 | `--output DIR` | — | Output directory |
-| `--threads N` | 1 | CPU threads |
+| `--threads N` | 16 | CPU threads |

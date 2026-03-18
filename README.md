@@ -51,13 +51,13 @@ where *d* is the damage amplitude and λ is the per-position decay constant. AMB
 
 **CGR features (9 dimensions).** The chaos game representation [8] maps a nucleotide sequence onto the unit square by iterating toward one of four corner attractors (A, C, G, T). AMBER computes three metrics (Shannon entropy H, occupancy O as fraction of non-empty cells, and lacunarity L as coefficient of variation of cell densities) at grid resolutions 16×16, 32×32, and 64×64. The nine features are the three absolute values at 32×32 plus the six cross-scale slopes (Δmetric between adjacent resolutions), capturing sequence complexity across scales [9].
 
-The encoder input is a 138-dimensional vector: 136 tetranucleotide frequencies (normalised, reverse-complement collapsed) + 2 coverage dimensions (log-normalised mean depth, coverage variance). The 20 aDNA and 9 CGR dimensions bypass the encoder and are concatenated directly to the 128-dimensional encoder output, forming the 157-dimensional clustering space.
+The encoder input is a 138-dimensional vector: 136 tetranucleotide frequencies (normalised, reverse-complement collapsed) + 2 coverage features (sqrt-transformed coverage variance and normalised mean depth). The 20 aDNA and 9 CGR dimensions bypass the encoder and are concatenated directly to the 128-dimensional encoder output, forming the 157-dimensional clustering space.
 
 ### 2. SCG-guided damage-aware contrastive learning
 
 AMBER trains a contig encoder using InfoNCE [10] (contrastive predictive coding), extended with two aDNA-specific modifications: SCG-guided hard negative mining and damage-aware negative down-weighting.
 
-**Base encoder.** The architecture follows COMEBin [3]: a four-layer MLP (138→512→256→128) with BatchNorm and ReLU activations, with L2-normalised output embeddings. Six augmented views are generated per contig at training time (three coverage subsampling levels × two feature-noise intensities), matching the COMEBin augmentation protocol.
+**Base encoder.** The architecture follows COMEBin [3]: a MLP (138→2048→2048→2048→128, n_layer=3) with BatchNorm and LeakyReLU activations, with L2-normalised output embeddings. Six augmented views are generated per contig at training time (three coverage subsampling levels × two feature-noise intensities), matching the COMEBin augmentation protocol.
 
 **Standard InfoNCE loss** [10] for a batch of *B* contigs with *V* views each:
 
@@ -83,7 +83,7 @@ $$w_{ij} = \max(w_{ij}^{\text{SCG}},\; w_{ij}^{\text{damage}})$$
 
 so SCG hard negatives are always amplified regardless of damage similarity, while non-SCG pairs are modulated by damage compatibility alone.
 
-**Consensus kNN.** Three independent encoder restarts (different random seeds) are trained on the same data. Each produces an HNSW approximate nearest-neighbour graph [12] (*k* = 10, cosine distance, 157-dim feature space). Edge weights from the three graphs are averaged into a single consensus graph before Leiden clustering, reducing sensitivity to training stochasticity.
+**Consensus kNN.** Three independent encoder restarts (different random seeds) are trained on the same data. Each produces an HNSW approximate nearest-neighbour graph [12] (*k* = 100, cosine distance, 157-dim feature space). Edge weights from the three graphs are averaged into a single consensus graph before Leiden clustering, reducing sensitivity to training stochasticity.
 
 **Marker gene database.** SCG detection uses the 206 universal bacterial and archaeal single-copy marker HMM profiles from CheckM [11], bundled as `auxiliary/checkm_markers_only.hmm`. HMM search is performed with HMMER3 hmmsearch.
 
