@@ -175,7 +175,7 @@ struct DeconvolutionResult {
     std::array<int64_t, HIST_BINS> p_length_hist = {};     // Length-only posterior
 
     // Read length histograms by classification
-    static constexpr int LENGTH_BINS = 50;  // 0-249bp in 5bp bins
+    static constexpr int LENGTH_BINS = 1000;  // 0-4999bp in 5bp bins
     std::array<int64_t, LENGTH_BINS> length_hist_ancient = {};
     std::array<int64_t, LENGTH_BINS> length_hist_modern = {};
     std::array<int64_t, LENGTH_BINS> length_hist_ambiguous = {};

@@ -554,7 +554,14 @@ std::unordered_map<std::string, bin2::DamageProfile> extract_damage_profiles(
                     acc.add_read(p_damaged, weight);
 
                     // Accumulate aDNA-specific features (thread-exclusive per ci)
-                    adna.add_read(read_len, p_damaged);
+                    // For paired-end reads use insert size (TLEN) on read1 only to avoid
+                    // double-counting; fall back to read length for SE or invalid isize.
+                    int frag_len = read_len;
+                    if ((aln->core.flag & BAM_FPAIRED) &&
+                        !(aln->core.flag & BAM_FREAD2) &&
+                        aln->core.isize > 0 && aln->core.isize < 10000)
+                        frag_len = aln->core.isize;
+                    adna.add_read(frag_len, p_damaged);
                 }
                 hts_itr_destroy(iter);
             }
