@@ -83,10 +83,10 @@ struct DeconvolutionConfig {
     // Ancient DNA typically has shorter fragments due to degradation
     bool use_length_model = true;         // Enable length-based classification (default: on)
     double length_weight = 0.5;           // Weight for length contribution
-    double mode_length_ancient = 42.0;    // Mode fragment length for ancient (bp)
-    double std_length_ancient = 15.0;     // Std dev for ancient length
-    double mode_length_modern = 103.0;    // Mode fragment length for modern (bp)
-    double std_length_modern = 30.0;      // Std dev for modern length
+    double mode_length_ancient = 0.0;     // Mode fragment length for ancient (bp); 0 = auto-estimate
+    double std_length_ancient = 0.0;      // Std dev for ancient length; 0 = auto-estimate
+    double mode_length_modern = 0.0;      // Mode fragment length for modern (bp); 0 = auto-estimate
+    double std_length_modern = 0.0;       // Std dev for modern length; 0 = auto-estimate
 
     // Read identity model for classification
     // Ancient reads map at ~100% to ancient assembly, modern at ~99%
@@ -511,10 +511,10 @@ inline void compute_theta_uncertainty(
 // Structure to hold estimated model parameters
 struct EstimatedModelParams {
     // Length model
-    double mode_length_ancient = 42.0;
-    double std_length_ancient = 15.0;
-    double mode_length_modern = 103.0;
-    double std_length_modern = 30.0;
+    double mode_length_ancient = 0.0;
+    double std_length_ancient = 0.0;
+    double mode_length_modern = 0.0;
+    double std_length_modern = 0.0;
     bool length_bimodal = false;
 
     // Identity model
@@ -849,12 +849,15 @@ inline DeconvolutionResult deconvolve_contig(
 
         EstimatedModelParams estimated = estimate_model_params(lengths, identities);
 
-        // Update rc_config with estimated values (if bimodal detected)
+        // Update rc_config with estimated values, or disable if no bimodal signal
         if (config.use_length_model && estimated.length_bimodal) {
             rc_config.mode_length_ancient = estimated.mode_length_ancient;
             rc_config.std_length_ancient = estimated.std_length_ancient;
             rc_config.mode_length_modern = estimated.mode_length_modern;
             rc_config.std_length_modern = estimated.std_length_modern;
+        } else if (config.use_length_model) {
+            std::cerr << "[deconvolve] No bimodal length signal detected — disabling length model\n";
+            rc_config.use_length_model = false;
         }
 
         if (config.use_identity_model && estimated.identity_bimodal) {

@@ -45,10 +45,10 @@ struct DeconvolveConfig {
     // Length model options
     bool use_length_model = true;
     double length_weight = 0.5;
-    double mode_length_ancient = 42.0;
-    double std_length_ancient = 15.0;
-    double mode_length_modern = 103.0;
-    double std_length_modern = 30.0;
+    double mode_length_ancient = 0.0;
+    double std_length_ancient = 0.0;
+    double mode_length_modern = 0.0;
+    double std_length_modern = 0.0;
 
     // Identity model options
     bool use_identity_model = false;
