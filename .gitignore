@@ -52,5 +52,6 @@ test_deconv_comparison/
 # Cache
 .cache/
 .claude/
+CLAUDE.md
 .entities
 .predicates
